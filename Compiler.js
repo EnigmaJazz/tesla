@@ -76,8 +76,7 @@ try {
             stopUiStr += (stopUiStr ? ", " : "") + pArr[s] + "m";
         }
 
-        // Preserve V24.16 behaviour.
-        duration += stopPadSecs;
+        // stopPadSecs enters the next-leg gap at lines 241/308; durationSecs is route-only.
     }
 
     const nowSec = Math.floor(Date.now() / 1000);
