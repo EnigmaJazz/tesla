@@ -1,0 +1,70 @@
+# openspec/config.yaml
+# SDD configuration for the tesla project (Tasker Android Automation)
+schema: spec-driven
+
+context: |
+  Tesla — Tasker Android automation for Tesla itinerary management.
+  Language: JavaScript (Tasker-flavored, ES5/ES6 mixed, using local()/global()/readFile()/writeFile()).
+  No Node.js, no npm, no package.json — runs directly inside Tasker's JSlet engine.
+  18 core scripts (~8.6K lines total) + 2 backup variants in Backup/.
+  Data stored as JSON files under Tasker/Tesla/Data/ (Itin_Master, TDS_Overrides, etc.).
+  Architecture: Monolithic Alpha engine (V18.x) with modular satellite scripts
+  (Compiler V24, Dispatcher V15, Gatekeeper, Dashboard, etc.), GPS-aware API integration.
+  No CI, no test framework, no linter, no type checker, no formatter.
+  Testing via manual Tasker execution and deterministic scenario verification.
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Respect the 18-file module boundary; do not propose merging satellites into Alpha
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+    - Each task MUST reference the spec requirement it fulfills
+  apply:
+    guidelines:
+      - Follow existing code patterns (Tasker-local variable conventions, ES5 patterns in satellites, ES6 in Alpha)
+      - Do NOT introduce npm/Node dependencies — this is a Tasker environment
+    tdd: false
+    test_command: "manual — verify via Tasker run or harness script"
+  verify:
+    test_command: "manual — execute in Tasker and inspect output JSON"
+    build_command: ""
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
+
+testing:
+  strict_tdd: false
+  runner:
+    command: "none"
+    framework: "none — manual execution in Tasker environment"
+  layers:
+    unit:
+      available: false
+      tool: "—"
+    integration:
+      available: false
+      tool: "—"
+    e2e:
+      available: false
+      tool: "Tasker (manual execution)"
+  coverage:
+    available: false
+    command: "—"
+  quality:
+    linter:
+      available: false
+      command: "—"
+    type_checker:
+      available: false
+      command: "—"
+    formatter:
+      available: false
+      command: "—"
