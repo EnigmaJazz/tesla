@@ -439,13 +439,34 @@ try {
         let oldItinRaw = readFile("Tasker/Tesla/Data/Itin_Master.json") || "[]";
         if (oldItinRaw.indexOf("%") === 0) oldItinRaw = "[]";
         let oldItin = []; try { oldItin = JSON.parse(oldItinRaw); } catch(e){}
+
+        const liveAtBase = (global('User_At_Base') === "true");
+        const currentStatus = (global('Current_Status') || "").trim();
+        const activeInProgress = /^(Driving|Walking|Public Transport|Lift)/i.test(currentStatus);
+
         if (oldItin.length > 0) {
             let aLeg = oldItin[oldItin.length - 1];
-            if (aLeg.mode === "EOD_RETURN" || aLeg.pitstopState === "end_of_day" || aLeg.pitstopState === "forced" || aLeg.pitstopState === "handled" || (aLeg.targetEventId || "").indexOf("_IN") !== -1) {
+            const priorLegAtBase = (aLeg.mode === "EOD_RETURN" || aLeg.pitstopState === "end_of_day" || (aLeg.targetEventId || "").indexOf("_IN") !== -1) ? "true" : "false";
+            if (activeInProgress) {
+                simAtBase = false;
+            } else if (liveAtBase) {
+                if (priorLegAtBase === "false") {
+                    flash(JSON.stringify({
+                        timestamp: nowSec,
+                        generationId: null,
+                        component: "Sandbox",
+                        severity: "WARN",
+                        code: "LIVE_BASE_OVERRIDES_LEGACY_ORIGIN",
+                        tripId: null,
+                        details: { oldItinLength: oldItin.length, userAtBase: "true", priorSimAtBase: false }
+                    }));
+                }
                 simAtBase = true;
+            } else {
+                simAtBase = (priorLegAtBase === "true");
             }
         } else {
-            simAtBase = (global('User_At_Base') === "true");
+            simAtBase = liveAtBase;
         }
 
         function getCachedTime(orig, dest, mode, targetUnix) {
@@ -1149,7 +1170,7 @@ try {
             if (routeToEv.mode === "DRIVE" && carDist > 200) {
                 let recMode5 = getRecoveryMode(state.loc, state.carLoc, carDist);
                 let rTime = getCachedTime(state.loc, state.carLoc, recMode5, state.time) || Math.round(carDist / getSpeed(recMode5));
-                queue.push("RECOVERY|Car|" + state.carLoc + "|" + recMode5 + "|" + state.time + "|" + (state.time + rTime) + "|false|DEPART|" + state.time + "|REC_EV_" + evId + "|" + state.carLoc + "|0|false|none|Vehicle Retrieval|");
+                queue.push("RECOVERY|Car|" + state.carLoc + "|" + recMode5 + "|" + state.time + "|" + (state.time + rTime) + "|false|DEPART|" + state.time + "|REC_EV_" + evId + "|" + state.carLoc + "|0|false|none|Vehicle Retrieval|||ASAP");
                 state.time += rTime; state.loc = state.carLoc; 
             }
 
@@ -1186,7 +1207,20 @@ try {
             let safeDesc = encodeURIComponent(evDesc);
             let dropinStatusFlag = (ev.isDropin && isAttachedDropin) ? "attached_dropin" : (isNormalStrict ? "detached_strict" : "none");
             
-            queue.push("EVENT|" + evTitle + "|" + evCoords + "|" + routeToEv.mode + "|" + displayTime + "|" + trueDepartureTime + "|" + pitstopState + "|" + apiTimeType + "|" + apiTimeUnix + "|" + evId + "|" + evLoc + "|" + engineLateMins + "|" + currentLegStable + "|" + dropinStatusFlag + "|" + safeDesc + "|" + adHocObj.arr.join(","));
+            const legPolicy = (() => {
+                if (pitstopState === "end_of_day") return "ASAP";
+                if (apiTimeType === "ACTIVE_TRAVEL" || activeInProgress || trueDepartureTime <= nowSec) return "ASAP";
+                if (!isPrevBase) return "ASAP";
+                if (dropinStatusFlag === "attached_dropin") return "ASAP";
+                if (currentLegStable === "false" || pitstopState === "forced") return "ASAP";
+                return "JIT";
+            })();
+
+            queue.push("EVENT|" + evTitle + "|" + evCoords + "|" + routeToEv.mode + "|" + displayTime + "|" + trueDepartureTime + "|" + pitstopState + "|" + apiTimeType + "|" + apiTimeUnix + "|" + evId + "|" + evLoc + "|" + engineLateMins + "|" + currentLegStable + "|" + dropinStatusFlag + "|" + safeDesc + "|" + adHocObj.arr.join(",") + "|||" + legPolicy);
+
+            if (i === idx) {
+                setLocal('block_step19', legPolicy);
+            }
             
             state.loc = evCoords; state.time = trueDepartureTime;
             if (routeToEv.mode === "DRIVE") state.carLoc = evCoords;
@@ -1209,12 +1243,12 @@ try {
                 if (eodMode === "DRIVE" && carDistEOD > 200) {
                     let recModeEOD = getRecoveryMode(state.loc, state.carLoc, carDistEOD);
                     let rTimeEOD = getCachedTime(state.loc, state.carLoc, recModeEOD, state.time) || Math.round(carDistEOD / getSpeed(recModeEOD));
-                    queue.push("RECOVERY|Car|" + state.carLoc + "|" + recModeEOD + "|" + state.time + "|" + (state.time + rTimeEOD) + "|false|DEPART|" + state.time + "|REC_EOD_FINAL|" + state.carLoc + "|0|false|none|Vehicle Retrieval|");
+                    queue.push("RECOVERY|Car|" + state.carLoc + "|" + recModeEOD + "|" + state.time + "|" + (state.time + rTimeEOD) + "|false|DEPART|" + state.time + "|REC_EOD_FINAL|" + state.carLoc + "|0|false|none|Vehicle Retrieval|||ASAP");
                     state.time += rTimeEOD; 
                     state.loc = state.carLoc;
                 }
 
-                queue.push("EOD_RETURN|" + eodBase.name + "|" + eodBase.coords + "|" + eodMode + "|" + state.time + "|" + (state.time + 3600) + "|end_of_day|DEPART|" + state.time + "|" + finalAnchorId + "|" + eodBase.name + "|0|true|none|Return Journey|");
+                queue.push("EOD_RETURN|" + eodBase.name + "|" + eodBase.coords + "|" + eodMode + "|" + state.time + "|" + (state.time + 3600) + "|end_of_day|DEPART|" + state.time + "|" + finalAnchorId + "|" + eodBase.name + "|0|true|none|Return Journey|||ASAP");
                 simAtBase = true;
             }
         }
