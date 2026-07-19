@@ -69,19 +69,15 @@ for t in harness/test_*.js; do node "$t" || break; done
 | Test                          | What it verifies                                |
 | ----------------------------- | ----------------------------------------------- |
 | `test_compiler_ac8.js`        | `pendingStopsRaw="5,10"` → `durationSecs`=1800, next-leg gap = 900s |
-| `test_dispatcher_ac9.js`      | past leg rejected with `STALE_TRIP_REJECTED`; future leg selected |
+| `test_dispatcher_ac9.js`      | past leg rejected with `STALE_TRIP_REJECTED`; future leg selected; `Next_Sync` = +30 min bucket |
 | `test_dispatcher_ac10.js`     | empty master → `IDLE_SYNC_ENGAGED`; `Next_Sync` = +60 min |
 
 ## Known issues
 
-`Dispatcher.js` references `targetDrive.depUnix` (line 235 and 248)
-but the master entries carry `targetDrive.departUnix`. With the typo
-`Math.floor((undefined - nowSec) / 60) = NaN`, so the bucket
-selection falls through into the SOON bucket (`syncIntervalMins = 10`).
-The harness asserts the actual current behaviour and labels the
-non-bucket result. Fix the typo in `Dispatcher.js` and update
-`test_dispatcher_ac9.js` if you want the test to lock in the
-correct bucket.
+None at the time of writing. The `targetDrive.depUnix` typo that the
+harness originally caught was fixed in Patch B' and `test_dispatcher_ac9.js`
+was tightened to assert the 30-min bucket. See the commit message of
+that patch for the line-level change.
 
 ## Notes
 

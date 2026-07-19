@@ -2,13 +2,9 @@
 // A master with one past and one future leg must select the future leg.
 // The past leg must be rejected and logged as STALE_TRIP_REJECTED.
 //
-// KNOWN ISSUE: Dispatcher.js:235 and :248 reference `targetDrive.depUnix`,
-// but the master entries carry `targetDrive.departUnix`. With the typo,
-// `gapMins = Math.floor((undefined - nowSec) / 60)` is NaN; NaN comparisons
-// fall through every bucket into the SOON bucket, so `syncIntervalMins`
-// is SOON_SYNC_MINS (10), not 30. The harness asserts the actual current
-// behaviour. When the typo is fixed, update the sync-timing expectation
-// to the appropriate bucket (30 for a 60-min future leg).
+// After Patch B' (targetDrive.depUnix → targetDrive.departUnix typo fix),
+// the gapMins calculation is correct: a 60-min future leg lands in the
+// >30 bucket → syncIntervalMins = 30.
 //
 // Sync timing is verified through the global `Next_Sync` (HH.MM in local
 // time, computed as `Date.now() + syncIntervalMins * 60_000`). TZ=UTC
@@ -47,7 +43,7 @@ const { sandbox, store } = createSandbox({ globals: globals, files: files, nowMs
 const scriptPath = path.resolve(__dirname, '..', 'Dispatcher.js');
 runScript(scriptPath, sandbox, store);
 
-const testName = 'AC-9 Dispatcher: selects future leg, rejects past, sync = 30 min';
+const testName = 'AC-9 Dispatcher: selects future leg, rejects past, sync = 30 min bucket';
 
 function fail(msg) {
   console.log('FAIL: ' + testName + ' — ' + msg);
@@ -76,10 +72,8 @@ try {
   if (!staleFlashed) fail('expected at least one STALE_TRIP_REJECTED flash entry, got: ' + JSON.stringify(store.flashLog));
 
   // sync timing: assert the future leg drives the bucket (not the past one)
-  // and that we are not in the negative-gap 3-min tight loop.
-  // With the depUnix typo, gapMins is NaN → SOON_SYNC_MINS=10.
-  // Without the typo, gapMins=60 would land in the >30 bucket → 30.
-  // Either way, the sync is NOT 3 min (the original bug).
+  // and that we are in the correct 30-min bucket for a 60-min gap.
+  // gapMins = Math.floor((1700003600 - 1700000000) / 60) = 60 → 60 > 30 → syncIntervalMins = 30.
   const nextSync = store.globals['Next_Sync'];
 
   function hhmmFromNow(plusMin) {
@@ -87,21 +81,15 @@ try {
     return (d.getHours() < 10 ? '0' : '') + d.getHours() + '.' + (d.getMinutes() < 10 ? '0' : '') + d.getMinutes();
   }
 
-  const tenMin   = hhmmFromNow(10);
   const thirtyMin = hhmmFromNow(30);
-  const sixtyMin  = hhmmFromNow(60);
-  const oneTwenty = hhmmFromNow(120);
   const threeMin  = hhmmFromNow(3);
 
-  assert.ok(
-    nextSync === tenMin || nextSync === thirtyMin || nextSync === sixtyMin || nextSync === oneTwenty,
-    'Next_Sync should reflect a legitimate bucket (10/30/60/120 min), got ' + nextSync
-  );
+  assert.equal(nextSync, thirtyMin, 'Next_Sync should be the +30 min bucket for a 60-min gap, got ' + nextSync);
   if (nextSync === threeMin) fail('Next_Sync is the +3 min tight-loop bug bucket');
 
   console.log('PASS: ' + testName);
   console.log('  selectedTime   = ' + selectedTime + ' (future=' + futureDep + ')');
-  console.log('  Next_Sync      = ' + nextSync + ' (bucket in 10/30/60/120, not 3)');
+  console.log('  Next_Sync      = ' + nextSync + ' (30-min bucket, not 3)');
   console.log('  STALE flash    = ' + (staleFlashed ? 'yes' : 'no'));
   process.exit(0);
 } catch (e) {
