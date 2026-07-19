@@ -21,9 +21,11 @@ primitives lets the test observe behaviour through side effects
 harness/
   mock_tasker.js   # createSandbox({ locals, globals, files, nowMs }) → { sandbox, store }
   runner.js        # runScript(scriptPath, sandbox, store) — reads + runs in vm context
-  test_compiler_ac8.js    # AC-8: stop padding applied once
-  test_dispatcher_ac9.js  # AC-9: stale past leg rejected; future leg selected
-  test_dispatcher_ac10.js # AC-10: empty master → idle sync at 60 min
+  test_compiler_ac8.js            # AC-8: stop padding applied once
+  test_dispatcher_ac9.js          # AC-9: overdue-within-window ranks below future; future leg selected
+  test_dispatcher_ac10.js         # AC-10: empty master → idle sync at 60 min
+  test_dispatcher_relevance.js    # INV-0.6: truly stale leg rejected; idle sync at 60 min
+  test_dispatcher_overdue_wins.js # INV-0.6: overdue-within-window selected when no future leg exists
   README.md        # this file
 ```
 
@@ -35,10 +37,12 @@ From the project root:
 node harness/test_compiler_ac8.js
 node harness/test_dispatcher_ac9.js
 node harness/test_dispatcher_ac10.js
+node harness/test_dispatcher_relevance.js
+node harness/test_dispatcher_overdue_wins.js
 ```
 
 Each test prints `PASS:` or `FAIL:` with a single-line reason and
-exits 0/1. Run all three with a loop:
+exits 0/1. Run all five with a loop:
 
 ```
 for t in harness/test_*.js; do node "$t" || break; done
@@ -69,8 +73,10 @@ for t in harness/test_*.js; do node "$t" || break; done
 | Test                          | What it verifies                                |
 | ----------------------------- | ----------------------------------------------- |
 | `test_compiler_ac8.js`        | `pendingStopsRaw="5,10"` → `durationSecs`=1800, next-leg gap = 900s |
-| `test_dispatcher_ac9.js`      | past leg rejected with `STALE_TRIP_REJECTED`; future leg selected; `Next_Sync` = +30 min bucket |
+| `test_dispatcher_ac9.js`      | overdue-within-window ranks below future; future leg selected; `Next_Sync` = +30 min bucket |
 | `test_dispatcher_ac10.js`     | empty master → `IDLE_SYNC_ENGAGED`; `Next_Sync` = +60 min |
+| `test_dispatcher_relevance.js` | truly stale leg rejected with `STALE_TRIP_REJECTED`; `IDLE_SYNC_ENGAGED`; `Next_Sync` = +60 min |
+| `test_dispatcher_overdue_wins.js` | overdue-within-window selected when no future leg exists; `Next_Sync` = +10 min |
 
 ## Known issues
 

@@ -104,3 +104,43 @@ Capture the emitted event JSON and `Next_Sync` value for each observation.
 - The gentle-ai lifecycle receipt is not bound for Patch A or Patch B. Manual reviews above stand in for the receipts.
 - The gentle-ai projection for Patch B still inflates (8 files / 849 lines) when base-ref `99229c8` is used because the chore commit `c0b5ae7` lies between Patch A and Patch B. A future review should use base-ref `c0b5ae7` (or the immediate parent of the patch commit) to avoid this.
 - The orphaned review transactions at `.git/gentle-ai/review-transactions/v2/tasker-tesla-upgrade{,-patch-a,-patch-a-r2,-patch-b}/` are dead state. They do not affect git history but are visible to `gentle-ai review status`. Quarantining them via `gentle-ai review reclaim` is a candidate follow-up but is not required for the upgrade to proceed.
+
+## Patch C — full INV-0.6 relevance deadlines
+
+This patch resolves the verify-report CRITICAL finding that `MODIFIED INV-0.6` was only PARTIAL.
+
+### Changes
+
+- `Dispatcher.js`: added named per-leg relevance-window constants (`RELEVANCE_DEFAULT_SECS`, `RELEVANCE_RECOVERY_SECS`, `RELEVANCE_EOD_SECS`, `RELEVANCE_DROPIN_GRACE_SECS`).
+- `Dispatcher.js`: added `relevanceDeadlineForLeg(trip, nowSec)` helper that honours explicit `relevanceDeadlineUnix` overrides and derives deadlines by leg/action type.
+- `Dispatcher.js`: refactored the master scan to rank future DUE legs above overdue legs still within their relevance window, and to reject only truly stale legs (past their relevance deadline) with `STALE_TRIP_REJECTED`.
+- `Dispatcher.js`: changed the idle-sync condition from `targetDrive === undefined || targetDrive.departUnix < nowSec` to `targetDrive === undefined`, so an overdue-but-actionable leg drives sync timing from the selected trip (negative gap → `SOON_SYNC_MINS`) rather than idle fallback.
+- `harness/test_dispatcher_ac9.js`: updated test name and comment to reflect that the past leg is now eligible within its relevance window and is not rejected.
+- `harness/test_dispatcher_relevance.js` (new): verifies a truly stale leg (5h departed, 4h arrived) is rejected and idle sync is engaged.
+- `harness/test_dispatcher_overdue_wins.js` (new): verifies an overdue leg within its relevance window is selected when no future leg exists and syncs in the 10-minute bucket.
+- `harness/README.md`: documented the two new harness tests.
+
+### Verification
+
+```
+node harness/test_compiler_ac8.js          # PASS
+node harness/test_dispatcher_ac9.js        # PASS
+node harness/test_dispatcher_ac10.js       # PASS
+node harness/test_dispatcher_relevance.js  # PASS
+node harness/test_dispatcher_overdue_wins.js # PASS
+```
+
+### Task ledger reconciliation
+
+- Tasks 3 and 6 (bind gentle-ai review receipts for Patches A and B) remain superseded. The gentle-ai lifecycle receipt is still not bound for any patch; the manual readability review (Patch A) and manual reliability review (Patch B) above remain the canonical review evidence.
+- Task 7 (real-device scenarios) remains outstanding and is still the user's responsibility on the Android device.
+
+### CRITICAL finding closure
+
+The verify-report CRITICAL finding for `MODIFIED INV-0.6` is closed by this patch. `Dispatcher.js` no longer rejects every `depUnix < nowSec` leg; it retains recently-overdue legs inside their relevance deadline and ranks them below future DUE legs, exactly as the delta spec requires.
+
+### Commit
+
+- Commit hash: `8c7c1d4`
+- Subject: `fix(dispatcher): full per-leg relevance deadlines; rank past-within-window below future (INV-0.6)`
+- Body: cites `MODIFIED INV-0.6`, `AC-9`, `AC-10`, and the verify-report CRITICAL finding.

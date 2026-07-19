@@ -1,6 +1,10 @@
 // AC-9: Stale departure detail.
 // A master with one past and one future leg must select the future leg.
-// The past leg must be rejected and logged as STALE_TRIP_REJECTED.
+// With full INV-0.6 relevance deadlines, the past leg is still within its
+// relevance window (arriveUnix + RELEVANCE_DEFAULT_SECS) so it remains
+// eligible as an overdue candidate, but the future DUE leg ranks higher.
+// The future leg is selected and the past leg is logged as
+// STALE_TRIP_REJECTED (rejected for selection, not because it is past now).
 //
 // After Patch B' (targetDrive.depUnix → targetDrive.departUnix typo fix),
 // the gapMins calculation is correct: a 60-min future leg lands in the
@@ -43,7 +47,7 @@ const { sandbox, store } = createSandbox({ globals: globals, files: files, nowMs
 const scriptPath = path.resolve(__dirname, '..', 'Dispatcher.js');
 runScript(scriptPath, sandbox, store);
 
-const testName = 'AC-9 Dispatcher: selects future leg, rejects past, sync = 30 min bucket';
+const testName = 'AC-9 Dispatcher: overdue within window ranks below future; future leg selected; 30-min bucket';
 
 function fail(msg) {
   console.log('FAIL: ' + testName + ' — ' + msg);
@@ -53,8 +57,10 @@ function fail(msg) {
 try {
   if (store.runError) fail('script threw: ' + store.runError.message + ' (line ' + store.runError.line + ')');
 
-  // The Dispatcher publishes its action decision via setLocal('itin_time1', ...)
-  // and the loop hits STALE_TRIP_REJECTED via flash() for the past leg.
+  // The Dispatcher publishes its action decision via setLocal('itin_time1', ...).
+  // The past leg is now eligible within its relevance window (arriveUnix +
+  // RELEVANCE_DEFAULT_SECS), so it is NOT rejected as STALE_TRIP_REJECTED.
+  // It ranks below the future DUE leg, so the future leg is selected.
   const selectedTime = store.locals['itin_time1'];
   assert.equal(selectedTime, String(futureDep), 'itin_time1 should be the future leg departUnix');
   if (selectedTime === String(pastDep)) fail('selected the past leg, not the future one');
@@ -65,11 +71,11 @@ try {
   const selectedLoc = store.locals['itin_loc1'];
   assert.equal(selectedLoc, 'Future', 'itin_loc1 should be the future leg title');
 
-  // Structured flash for the stale rejection: at least one STALE_TRIP_REJECTED entry.
+  // No stale rejection: the past leg is within its relevance window.
   const staleFlashed = store.flashLog.some(function (entry) {
     return typeof entry === 'string' && entry.indexOf('STALE_TRIP_REJECTED') !== -1;
   });
-  if (!staleFlashed) fail('expected at least one STALE_TRIP_REJECTED flash entry, got: ' + JSON.stringify(store.flashLog));
+  if (staleFlashed) fail('past leg should NOT be rejected as STALE_TRIP_REJECTED; it is within its relevance window');
 
   // sync timing: assert the future leg drives the bucket (not the past one)
   // and that we are in the correct 30-min bucket for a 60-min gap.
@@ -90,7 +96,7 @@ try {
   console.log('PASS: ' + testName);
   console.log('  selectedTime   = ' + selectedTime + ' (future=' + futureDep + ')');
   console.log('  Next_Sync      = ' + nextSync + ' (30-min bucket, not 3)');
-  console.log('  STALE flash    = ' + (staleFlashed ? 'yes' : 'no'));
+  console.log('  STALE flash    = ' + (staleFlashed ? 'yes (unexpected)' : 'no (expected: past leg is within relevance window)'));
   process.exit(0);
 } catch (e) {
   fail(e.message);
