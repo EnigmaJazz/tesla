@@ -141,6 +141,6 @@ The verify-report CRITICAL finding for `MODIFIED INV-0.6` is closed by this patc
 
 ### Commit
 
-- Commit hash: `8c7c1d4`
+- Commit hash: `33e070f`
 - Subject: `fix(dispatcher): full per-leg relevance deadlines; rank past-within-window below future (INV-0.6)`
 - Body: cites `MODIFIED INV-0.6`, `AC-9`, `AC-10`, and the verify-report CRITICAL finding.
