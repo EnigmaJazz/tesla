@@ -13,6 +13,23 @@ function getDist(lat1, lon1, lat2, lon2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+const SECONDS_PER_DAY = 86400;
+
+// INV-0.2: DST-safe day-boundary comparison. Both unixSec values are in UTC.
+function isSameUTCDay(unixSecA, unixSecB) {
+    const dA = new Date(unixSecA * 1000);
+    const dB = new Date(unixSecB * 1000);
+    return dA.getUTCFullYear() === dB.getUTCFullYear()
+        && dA.getUTCMonth() === dB.getUTCMonth()
+        && dA.getUTCDate() === dB.getUTCDate();
+}
+
+// INV-0.2: UTC midnight of the day containing unixSec (the "day boundary" in UTC).
+function utcDayBoundaryUnix(unixSec) {
+    const d = new Date(unixSec * 1000);
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000;
+}
+
 try {
     let tempRaw = local('tds_temp_json') || "[]";
     if (tempRaw.indexOf("%") === 0) tempRaw = "[]";
@@ -57,9 +74,7 @@ try {
         
         let timeEligible = false;
         if (ev.isDropin) {
-            let evDay = new Date(ev.start * 1000).setHours(0,0,0,0);
-            let todayDay = new Date(nowSec * 1000).setHours(0,0,0,0);
-            if (evDay === todayDay) timeEligible = true;
+            if (isSameUTCDay(ev.start, nowSec)) timeEligible = true;
             else if (nowSec <= (ev.end + 14400)) timeEligible = true;
         } else {
             timeEligible = (nowSec >= (ev.start - 7200) && nowSec <= (ev.end + 14400));

@@ -28,6 +28,8 @@ harness/
   test_dispatcher_overdue_wins.js # INV-0.6: overdue-within-window selected when no future leg exists
   test_sandbox_ac6.js             # AC-6: stale-away itinerary loses to live base; future trip JIT
   test_compiler_ac1.js            # AC-1: Compiler consumes explicit block_step19 departure policy
+  test_dst_utc.js                 # DST-safe UTC day-boundary helpers
+  day_utils.js                    # Shared UTC helpers for DST tests
   README.md        # this file
 ```
 
@@ -43,10 +45,11 @@ node harness/test_dispatcher_relevance.js
 node harness/test_dispatcher_overdue_wins.js
 node harness/test_sandbox_ac6.js
 node harness/test_compiler_ac1.js
+node harness/test_dst_utc.js
 ```
 
 Each test prints `PASS:` or `FAIL:` with a single-line reason and
-exits 0/1. Run all six with a loop:
+exits 0/1. Run all eight with a loop:
 
 ```
 for t in harness/test_*.js; do node "$t" || break; done
@@ -83,6 +86,7 @@ for t in harness/test_*.js; do node "$t" || break; done
 | `test_dispatcher_overdue_wins.js` | overdue-within-window selected when no future leg exists; `Next_Sync` = +10 min |
 | `test_sandbox_ac6.js`             | stale `handled` itinerary + live `User_At_Base="true"` emits `LIVE_BASE_OVERRIDES_LEGACY_ORIGIN`; head leg policy = `JIT` |
 | `test_compiler_ac1.js`            | `block_step19="ASAP"` → `departUnix` = `hardFloor`; `block_step19="JIT"` → `departUnix` = `Math.max(hardFloor, depTarget)`; no fallback flash |
+| `test_dst_utc.js`                 | UTC day-boundary helpers; Dispatcher breaks multi-waypoint chains at UTC midnight, not local midnight |
 
 ## Known issues
 
