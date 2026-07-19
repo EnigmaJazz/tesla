@@ -1,6 +1,6 @@
 # Itinerary Scheduler Specification
 
-> **First-slice status:** Applied 2026-07-19; see `openspec/changes/archive/2026-07-19-tasker-tesla-upgrade/` for the audit trail. AC-8, AC-9, AC-10 PASS via harness. Remaining Phase 0 (AC-1, AC-5, AC-6) and Phases 1–6 are open.
+> **Status:** First slice (tasker-tesla-upgrade) applied 2026-07-19; second slice (tasker-tesla-upgrade-slice-2) applied 2026-07-19. AC-8, AC-9, AC-10 PASS via harness (slice 1); AC-1, AC-6 PASS via harness (slice 2). Remaining Phase 0 (AC-5), sub-items 0B and 0E, and Phases 1–6 are open.
 
 **Authority:** canonicalised from `_spec_source.md` (verbatim source). Requirements use RFC 2119 terms; source-section references are evidence pointers. Exceptions are only those stated below.
 
@@ -13,11 +13,15 @@ Upgrade the Tasker scheduler while preserving existing behaviour where possible:
 ### INV-0.1 — Explicit departure policy
 Every planned leg MUST carry `departurePolicy: "ASAP"` or `"JIT"`; the planning engine owns it. Compiler and Dispatcher MUST consume it and MUST NOT reconstruct it from location, leg order, event type, or prior-base state. Use ASAP for between-event/attached chains, recovery, returns, manual travel, and due/in-progress legs; use JIT for a first/base/future post-overnight trip unless active state supersedes it. A multi-leg chain is ASAP when any continuation requires it. Compiler MUST use the specified `pendingChain.some(...)` `chainForcesASAP` check. **Evidence:** source §0.1. **Exception:** compatibility checks MAY remain, but explicit policy is authoritative.
 
+The Planner (Sandbox) MUST emit `departurePolicy: "ASAP"|"JIT"` as the 19th positional column in `block_queue` and as `block_step19`. The Compiler MUST read `block_step19` and MUST NOT reconstruct policy from `pitstopState`, `_IN` suffix, or `EOD_RETURN` mode. An EOD return is a return-by-policy and MUST always be ASAP.
+
 ### INV-0.2 — Day-boundary reset
 A later local calendar day MUST close the current day, create an appropriate return when plausibly away, start the next day at base unless trip state proves otherwise, and terminate drop-ins/pending chains at the boundary. Same-location consecutive-day events MUST NOT suppress the return. Day comparisons MUST use configured local timezone and be DST-safe; fixed-second “same day” inference is forbidden. **Evidence:** §0.2. **Exception:** active trip state can contradict base reset.
 
 ### INV-0.3 — Live origin precedence
 Fresh-generation origin precedence is: active manual trip; active `IN_PROGRESS`; live location/`User_At_Base`; last confirmed trip-state destination; legacy itinerary. Stale itinerary MUST NOT override reliable live base; a future-day first event with no active trip starts at base. **Evidence:** §0.3. **Exception:** previous itinerary is compatibility fallback only.
+
+On a fresh pass, when `oldItin.length > 0` and `global('User_At_Base') === "true"`, Sandbox MUST set `simAtBase = true` regardless of the prior itinerary's reconstructed `pitstopState`. Legacy itinerary is consulted only when the live priority chain yields no answer. Active `IN_PROGRESS` is approximated by `/(Driving|Walking|Public Transport|Lift)/i.test(currentStatus)`.
 
 ### INV-0.4 — No synthetic empty-day return
 Unplanned movement on a day without remaining planned travel is observation, not a planning instruction. Return is permitted only for explicit Return to Base, active-chain recovery, completed-day EOD policy, or explicit safety/vehicle rule. **Evidence:** §0.4. **Exception:** those four explicit policies.
@@ -139,11 +143,13 @@ Phase 0 is immediate priority before Phase 1: policy propagation, overnight boun
 | ID | Acceptance criterion |
 |---|---|
 | AC-1 | Between-event travel: previous event completes away; next leg ASAP. |
+| | Detail: Given a head leg with `block_step19 === "ASAP"`, when Compiler schedules it, then `actualHeadDeparture` MUST equal `hardFloor`. Given `block_step19 === "JIT"`, then `actualHeadDeparture` MUST equal `Math.max(hardFloor, headLeg.depTarget)`. Compiler MUST NOT read `isPrevBase` from `pitstopState`, `_IN` suffix, or `EOD_RETURN` mode. |
 | AC-2 | Attached end-of-day drop-in return uses ASAP. |
 | AC-3 | Same-location overnight: today gets EOD return; tomorrow begins base/JIT. |
 | AC-4 | Empty-day ad-hoc walk creates no synthetic return or three-minute loop. |
 | AC-5 | Return home: tomorrow remains future PLANNED, not due now. |
 | AC-6 | Stale-away itinerary loses to live base; future trip base/JIT. |
+| | Detail: Given `Itin_Master` has a stale leg with `pitstopState: "handled"`, `User_At_Base: "true"`, and `Base_Arrival_Unix` = `nowSec`, when Sandbox runs its first planning pass, then `simAtBase` MUST be `true`, `targetEventId` MUST be the home base, and an `EVT-LIVE_BASE_OVERRIDES_LEGACY_ORIGIN` flash MUST be present. |
 | AC-7 | Queue flush never removes/bypasses day boundary. |
 | AC-8 | "stop padding changes timing exactly once." |
 | | Detail: Given a leg with `pendingStopsRaw="5,10"`, when compiled, then its `durationSecs` MUST exclude the 15-minute total; the following leg's `depTarget` MUST be advanced by exactly 15 minutes, not 30. |
