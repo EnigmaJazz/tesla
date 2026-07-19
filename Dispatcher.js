@@ -8,6 +8,10 @@
 const IDLE_SYNC_MINS = 60;  // INV-0.6 AC-10: idle sync default when no actionable trip.
 const SOON_SYNC_MINS = 10;  // Bucket for actionable heads within 30 minutes (replaces the stale-leg 3-min loop).
 const ACTIONABLE_LOOKAHEAD_SECS = 86400;  // First-slice default lookahead; per-leg relevanceDeadlineUnix is second slice.
+const RELEVANCE_DEFAULT_SECS = 4 * 3600;  // INV-0.6: fallback relevance window (planned arrival + 4h).
+const RELEVANCE_RECOVERY_SECS = 2 * 3600;  // INV-0.6: recovery leg relevance window (planned arrival + 2h).
+const RELEVANCE_EOD_SECS = 24 * 3600;  // INV-0.6: EOD return remains actionable for the rest of the day.
+const RELEVANCE_DROPIN_GRACE_SECS = 15 * 60;  // INV-0.6: drop-in explicit deadline; if absent, +15 min after planned arrival.
 
 function getDist(lat1, lon1, lat2, lon2) {
     var R = 6371e3; var rLat1 = lat1 * Math.PI / 180; var rLat2 = lat2 * Math.PI / 180;
@@ -24,6 +28,36 @@ function getBoltMins(unixSecs) {
     return mins > 1424 ? 1424 : mins; 
 }
 
+/**
+ * INV-0.6: compute the relevance deadline for a candidate leg.
+ * Returns the explicit planner override if present, otherwise derives a
+ * deadline from leg type / action type. The result is never before now;
+ * a leg with no timing info is treated as fresh (now + default window).
+ */
+function relevanceDeadlineForLeg(trip, nowSec) {
+    if (!trip) return nowSec + RELEVANCE_DEFAULT_SECS;
+
+    var explicit = parseInt(trip.relevanceDeadlineUnix, 10) || 0;
+    if (explicit > 0) return explicit;
+
+    var arriveUnix = parseInt(trip.arriveUnix || trip.start || trip.departUnix || trip.time || 0, 10) || 0;
+    var legType = (trip.legType || "").toUpperCase();
+    var actionType = (trip.actionType || "").toUpperCase();
+
+    if (legType === "DROPIN" || actionType === "DROPIN") {
+        return (arriveUnix > 0 ? arriveUnix : nowSec) + RELEVANCE_DROPIN_GRACE_SECS;
+    }
+    if (legType === "EOD_RETURN" || actionType === "EOD_RETURN") {
+        return nowSec + RELEVANCE_EOD_SECS;
+    }
+    if (legType === "RECOVERY" || actionType === "RECOVERY") {
+        if (arriveUnix > 0) return arriveUnix + RELEVANCE_RECOVERY_SECS;
+        return nowSec + RELEVANCE_DEFAULT_SECS;
+    }
+    if (arriveUnix > 0) return arriveUnix + RELEVANCE_DEFAULT_SECS;
+    return nowSec + RELEVANCE_DEFAULT_SECS;
+}
+
 try {
     var nowSec = Math.floor(Date.now() / 1000);
 
@@ -38,23 +72,25 @@ try {
     }
     var master = JSON.parse(masterRaw);
 
-    let relevanceDeadlineUnix = nowSec + ACTIONABLE_LOOKAHEAD_SECS;
-
-    var targetDrive = undefined;
-    var driveIdx = -1;
+    let targetDrive = undefined;
+    let driveIdx = -1;
     let skippedStale = 0;
+    let bestFuture = null;
+    let bestFutureIdx = -1;
+    let bestOverdue = null;
+    let bestOverdueIdx = -1;
 
-    for (var i = 0; i < master.length; i++) {
-        var trip = master[i];
+    // INV-0.6: rank future > overdue-within-window; truly stale (past relevance) is rejected with STALE_TRIP_REJECTED.
+    for (let i = 0; i < master.length; i++) {
+        const trip = master[i];
         if (!trip) continue;
-        
-        var tripMode = (trip.mode || "").toUpperCase();
-        var depUnix  = parseInt(trip.departUnix || trip.time || 0);
 
-        // Locates the next valid active routing block within a 24-hour window
+        const tripMode = (trip.mode || "").toUpperCase();
+        const depUnix = parseInt(trip.departUnix || trip.time || 0, 10) || 0;
+
         if (tripMode === "DRIVE" || tripMode === "EOD_RETURN" || tripMode === "WALK" || tripMode === "TRANSIT" || tripMode === "LIFT") {
-            if (depUnix < nowSec) {
-                // INV-0.6 AC-9: stale past departure; skip and continue to the next actionable leg.
+            const relDeadline = relevanceDeadlineForLeg(trip, nowSec);
+            if (nowSec >= relDeadline) {
                 skippedStale++;
                 flash(JSON.stringify({
                     timestamp: nowSec,
@@ -63,16 +99,31 @@ try {
                     severity: "WARN",
                     code: "STALE_TRIP_REJECTED",
                     tripId: trip.tripId || null,
-                    details: { depUnix: depUnix, nowSec: nowSec }
+                    details: { depUnix: depUnix, nowSec: nowSec, relevanceDeadline: relDeadline }
                 }));
                 continue;
             }
-            if (depUnix <= relevanceDeadlineUnix) {
-                targetDrive = trip;
-                driveIdx = i;
-                break;
+
+            if (depUnix >= nowSec) {
+                if (bestFuture === null) {
+                    bestFuture = trip;
+                    bestFutureIdx = i;
+                }
+            } else {
+                if (bestOverdue === null) {
+                    bestOverdue = trip;
+                    bestOverdueIdx = i;
+                }
             }
         }
+    }
+
+    if (bestFuture !== null) {
+        targetDrive = bestFuture;
+        driveIdx = bestFutureIdx;
+    } else if (bestOverdue !== null) {
+        targetDrive = bestOverdue;
+        driveIdx = bestOverdueIdx;
     }
 
     if (targetDrive) {
@@ -232,8 +283,8 @@ try {
     var syncIntervalMins = 120;
     if (isActionLocked) {
         syncIntervalMins = 120;
-    } else if (targetDrive === undefined || targetDrive.departUnix < nowSec) {
-        // INV-0.6 AC-10: no actionable trip → idle sync. The 3-min bucket is no longer reached from a negative gap.
+    } else if (targetDrive === undefined) {
+        // INV-0.6 AC-10: no actionable trip → idle sync.
         syncIntervalMins = IDLE_SYNC_MINS;
         flash(JSON.stringify({
             timestamp: nowSec,
@@ -249,7 +300,8 @@ try {
         if (gapMins > 180) syncIntervalMins = 120;
         else if (gapMins > 60) syncIntervalMins = 60;
         else if (gapMins > 30) syncIntervalMins = 30;
-        else syncIntervalMins = SOON_SYNC_MINS;  // bucket for legitimately-soon heads; was 3 and burned CPU on stale legs
+        // If targetDrive is overdue, gapMins is negative → SOON_SYNC_MINS; IDLE_SYNC_ENGAGED is reserved for the empty-master / all-truly-stale case.
+        else syncIntervalMins = SOON_SYNC_MINS;
     }
 
     var nextSyncMs = Date.now() + (syncIntervalMins * 60000);
