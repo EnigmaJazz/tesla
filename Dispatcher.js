@@ -13,6 +13,23 @@ const RELEVANCE_RECOVERY_SECS = 2 * 3600;  // INV-0.6: recovery leg relevance wi
 const RELEVANCE_EOD_SECS = 24 * 3600;  // INV-0.6: EOD return remains actionable for the rest of the day.
 const RELEVANCE_DROPIN_GRACE_SECS = 15 * 60;  // INV-0.6: drop-in explicit deadline; if absent, +15 min after planned arrival.
 
+const SECONDS_PER_DAY = 86400;
+
+// INV-0.2: DST-safe day-boundary comparison. Both unixSec values are in UTC.
+function isSameUTCDay(unixSecA, unixSecB) {
+    const dA = new Date(unixSecA * 1000);
+    const dB = new Date(unixSecB * 1000);
+    return dA.getUTCFullYear() === dB.getUTCFullYear()
+        && dA.getUTCMonth() === dB.getUTCMonth()
+        && dA.getUTCDate() === dB.getUTCDate();
+}
+
+// INV-0.2: UTC midnight of the day containing unixSec (the "day boundary" in UTC).
+function utcDayBoundaryUnix(unixSec) {
+    const d = new Date(unixSec * 1000);
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000;
+}
+
 function getDist(lat1, lon1, lat2, lon2) {
     var R = 6371e3; var rLat1 = lat1 * Math.PI / 180; var rLat2 = lat2 * Math.PI / 180;
     var dLat = (lat2 - lat1) * Math.PI / 180; var dLon = (lon2 - lon1) * Math.PI / 180;
@@ -156,9 +173,7 @@ try {
                 let nextT = master[j];
                 let nextDep = parseInt(nextT.departUnix || nextT.time || 0);
                 
-                let d1 = new Date(lastArrive * 1000).getDate();
-                let d2 = new Date(nextDep * 1000).getDate();
-                if (d1 !== d2) break; // Break clustering at overnight boundaries
+                if (!isSameUTCDay(lastArrive, nextDep)) break; // Break clustering at overnight boundaries
                 
                 let stayMins = (nextDep - lastArrive) / 60;
                 let isShortStay = stayMins >= 0 && stayMins <= 45; 

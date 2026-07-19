@@ -31,6 +31,23 @@ function getDist(lat1, lon1, lat2, lon2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+const SECONDS_PER_DAY = 86400;
+
+// INV-0.2: DST-safe day-boundary comparison. Both unixSec values are in UTC.
+function isSameUTCDay(unixSecA, unixSecB) {
+    const dA = new Date(unixSecA * 1000);
+    const dB = new Date(unixSecB * 1000);
+    return dA.getUTCFullYear() === dB.getUTCFullYear()
+        && dA.getUTCMonth() === dB.getUTCMonth()
+        && dA.getUTCDate() === dB.getUTCDate();
+}
+
+// INV-0.2: UTC midnight of the day containing unixSec (the "day boundary" in UTC).
+function utcDayBoundaryUnix(unixSec) {
+    const d = new Date(unixSec * 1000);
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000;
+}
+
 function isClose(cStrA, cStrB) {
     if (!cStrA || !cStrB || cStrA === "0,0" || cStrB === "0,0") return false;
     let pA = cStrA.split(","), pB = cStrB.split(",");
@@ -179,10 +196,13 @@ try {
         }
     } 
 
-    let todayStr     = getTodayStr();
-    let lastSyncDate = (global('Tesla_Last_Sync') || "").trim();
-    if (lastSyncDate !== todayStr) {
-        setGlobal('Tesla_Last_Sync', todayStr);
+    let lastSyncRaw  = (global('Tesla_Last_Sync') || "").trim();
+    let lastSyncUnix = parseInt(lastSyncRaw, 10);
+    if (isNaN(lastSyncUnix) || lastSyncUnix <= 0) {
+        lastSyncUnix = 0; // legacy date-string or empty value forces a one-time migration
+    }
+    if (!isSameUTCDay(lastSyncUnix, nowSec)) {
+        setGlobal('Tesla_Last_Sync', String(utcDayBoundaryUnix(nowSec)));
         setGlobal('Daily_Walk_Meters', "0");
     }
 
