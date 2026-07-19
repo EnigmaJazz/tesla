@@ -149,23 +149,12 @@ try {
         } catch(e) {}
 
         let hardFloor = nowSec; 
-        let isPrevBase = false;
 
         if (itinerary.length > 0) {
             let prevLeg = itinerary[itinerary.length - 1];
             let prevArr = parseInt(prevLeg.arriveUnix, 10);
 
             hardFloor = prevArr + 60; 
-            
-            if (
-                prevLeg.mode === "EOD_RETURN" ||
-                prevLeg.pitstopState === "end_of_day" ||
-                prevLeg.pitstopState === "forced" ||
-                prevLeg.pitstopState === "handled" ||
-                (prevLeg.targetEventId || "").indexOf("_IN") !== -1
-            ) {
-                isPrevBase = true;
-            }
 
             let pId = prevLeg.targetEventId;
             let pEv = masterArr.find(e => (e.id || "DEFAULT") === pId);
@@ -201,10 +190,6 @@ try {
                 hardFloor = prevArr + 1800; 
             } else if (prevLeg.mode === "EOD_RETURN" || prevLeg.pitstopState === "end_of_day") {
                 hardFloor = prevArr;
-            }
-        } else {
-            if (global('User_At_Base') === "true") {
-                isPrevBase = true;
             }
         }
         
@@ -242,13 +227,25 @@ try {
         }
 
         let headLeg = pendingChain[0];
-        let actualHeadDeparture;
-        
-        let leaveASAP = false;
-        if (!isPrevBase || headLeg.actionType === "EOD_RETURN") {
-            leaveASAP = true;
-        }
 
+        const rawPolicy = (local('block_step19') || "").toString().toUpperCase().trim();
+        if (!rawPolicy) {
+            // EVT-DEPARTURE_POLICY_FALLBACK_USED: migration safety net.
+            flash(JSON.stringify({
+                timestamp: nowSec,
+                generationId: null,
+                component: "Compiler",
+                severity: "WARN",
+                code: "DEPARTURE_POLICY_FALLBACK_USED",
+                tripId: evId || null,
+                details: { block_step19: null, reconstructed: "ASAP" }
+            }));
+        }
+        currentLeg.departurePolicy = rawPolicy || "ASAP";
+        const chainForcesASAP = pendingChain.some(leg => leg.departurePolicy === "ASAP" || leg.actionType === "EOD_RETURN" || leg.mode === "EOD_RETURN");
+        const leaveASAP = (headLeg.departurePolicy === "ASAP") || chainForcesASAP;
+
+        let actualHeadDeparture;
         if (leaveASAP || headLeg.apiType === "ACTIVE_TRAVEL") {
             actualHeadDeparture = hardFloor;
         } else {
@@ -405,6 +402,7 @@ try {
                 targetDesc: leg.targetDesc,
                 targetCoords: leg.targetCoords,
                 mode: leg.mode,
+                departurePolicy: leg.departurePolicy,
                 departUnix: leg.actualDeparture,
                 arriveUnix: leg.actualArrival,
                 durationSecs: leg.durationSecs,
