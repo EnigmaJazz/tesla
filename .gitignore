@@ -1,0 +1,10 @@
+# CodeGraph: derived knowledge-graph index; rebuilt by `codegraph init`/`codegraph sync`.
+.codegraph/
+codegraph.codegraph.db
+codegraph.codegraph.db-journal
+codegraph.codegraph.db-shm
+codegraph.codegraph.db-wal
+
+# Working files for the SDD propose phase; the canonical spec lives in
+# openspec/specs/ and the delta lives in openspec/changes/<change>/specs/.
+_spec_source.md
