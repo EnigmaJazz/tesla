@@ -5,6 +5,10 @@
 // [V15.1] Flawed synthetic EOD removed. Relies strictly on Sandbox spatial EOD generation.
 // ==========================================
 
+const IDLE_SYNC_MINS = 60;  // INV-0.6 AC-10: idle sync default when no actionable trip.
+const SOON_SYNC_MINS = 10;  // Bucket for actionable heads within 30 minutes (replaces the stale-leg 3-min loop).
+const ACTIONABLE_LOOKAHEAD_SECS = 86400;  // First-slice default lookahead; per-leg relevanceDeadlineUnix is second slice.
+
 function getDist(lat1, lon1, lat2, lon2) {
     var R = 6371e3; var rLat1 = lat1 * Math.PI / 180; var rLat2 = lat2 * Math.PI / 180;
     var dLat = (lat2 - lat1) * Math.PI / 180; var dLon = (lon2 - lon1) * Math.PI / 180;
@@ -34,8 +38,11 @@ try {
     }
     var master = JSON.parse(masterRaw);
 
-    var targetDrive = null;
+    let relevanceDeadlineUnix = nowSec + ACTIONABLE_LOOKAHEAD_SECS;
+
+    var targetDrive = undefined;
     var driveIdx = -1;
+    let skippedStale = 0;
 
     for (var i = 0; i < master.length; i++) {
         var trip = master[i];
@@ -45,10 +52,26 @@ try {
         var depUnix  = parseInt(trip.departUnix || trip.time || 0);
 
         // Locates the next valid active routing block within a 24-hour window
-        if ((tripMode === "DRIVE" || tripMode === "EOD_RETURN" || tripMode === "WALK" || tripMode === "TRANSIT" || tripMode === "LIFT") && (depUnix - nowSec) <= 86400) {
-            targetDrive = trip;
-            driveIdx = i;
-            break;
+        if (tripMode === "DRIVE" || tripMode === "EOD_RETURN" || tripMode === "WALK" || tripMode === "TRANSIT" || tripMode === "LIFT") {
+            if (depUnix < nowSec) {
+                // INV-0.6 AC-9: stale past departure; skip and continue to the next actionable leg.
+                skippedStale++;
+                flash(JSON.stringify({
+                    timestamp: nowSec,
+                    generationId: null,
+                    component: "Dispatcher",
+                    severity: "WARN",
+                    code: "STALE_TRIP_REJECTED",
+                    tripId: trip.tripId || null,
+                    details: { depUnix: depUnix, nowSec: nowSec }
+                }));
+                continue;
+            }
+            if (depUnix <= relevanceDeadlineUnix) {
+                targetDrive = trip;
+                driveIdx = i;
+                break;
+            }
         }
     }
 
@@ -206,19 +229,27 @@ try {
         isActionLocked = false;
     }
 
-    var syncIntervalMins = 120; 
+    var syncIntervalMins = 120;
     if (isActionLocked) {
-        syncIntervalMins = 120; 
-    } else if (master.length > 0) {
-        var immediateHead = master[0]; 
-        var headTimeSecs  = parseFloat(immediateHead.departUnix || immediateHead.time || immediateHead.start || 0);
-        if (headTimeSecs > 0) {
-            var gapMins = Math.floor((headTimeSecs - nowSec) / 60);
-            if (gapMins > 180) syncIntervalMins = 120; 
-            else if (gapMins > 60) syncIntervalMins = 60; 
-            else if (gapMins > 30) syncIntervalMins = 30; 
-            else syncIntervalMins = 3; 
-        }
+        syncIntervalMins = 120;
+    } else if (targetDrive === undefined || targetDrive.depUnix < nowSec) {
+        // INV-0.6 AC-10: no actionable trip → idle sync. The 3-min bucket is no longer reached from a negative gap.
+        syncIntervalMins = IDLE_SYNC_MINS;
+        flash(JSON.stringify({
+            timestamp: nowSec,
+            generationId: null,
+            component: "Dispatcher",
+            severity: "INFO",
+            code: "IDLE_SYNC_ENGAGED",
+            tripId: null,
+            details: { syncIntervalMins: IDLE_SYNC_MINS }
+        }));
+    } else {
+        var gapMins = Math.floor((targetDrive.depUnix - nowSec) / 60);
+        if (gapMins > 180) syncIntervalMins = 120;
+        else if (gapMins > 60) syncIntervalMins = 60;
+        else if (gapMins > 30) syncIntervalMins = 30;
+        else syncIntervalMins = SOON_SYNC_MINS;  // bucket for legitimately-soon heads; was 3 and burned CPU on stale legs
     }
 
     var nextSyncMs = Date.now() + (syncIntervalMins * 60000);
