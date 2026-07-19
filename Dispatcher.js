@@ -232,7 +232,7 @@ try {
     var syncIntervalMins = 120;
     if (isActionLocked) {
         syncIntervalMins = 120;
-    } else if (targetDrive === undefined || targetDrive.depUnix < nowSec) {
+    } else if (targetDrive === undefined || targetDrive.departUnix < nowSec) {
         // INV-0.6 AC-10: no actionable trip → idle sync. The 3-min bucket is no longer reached from a negative gap.
         syncIntervalMins = IDLE_SYNC_MINS;
         flash(JSON.stringify({
@@ -245,7 +245,7 @@ try {
             details: { syncIntervalMins: IDLE_SYNC_MINS }
         }));
     } else {
-        var gapMins = Math.floor((targetDrive.depUnix - nowSec) / 60);
+        var gapMins = Math.floor((targetDrive.departUnix - nowSec) / 60);
         if (gapMins > 180) syncIntervalMins = 120;
         else if (gapMins > 60) syncIntervalMins = 60;
         else if (gapMins > 30) syncIntervalMins = 30;
