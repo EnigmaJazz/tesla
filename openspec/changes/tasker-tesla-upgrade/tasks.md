@@ -13,17 +13,17 @@
    Verify: The command exits 0 and emits a terminal receipt.
    Done when: The receipt is bound and its hash is recorded by the orchestrator.
 
-- [ ] 4. Action: Apply the Dispatcher.js fix per design §3.
+- [x] 4. Action: Apply the Dispatcher.js fix per design §3.
    Files: Dispatcher.js (lines 30-60, 200-230, plus top-of-file for `IDLE_SYNC_MINS`).
-   Verify: `git diff Dispatcher.js` shows `const IDLE_SYNC_MINS = 60;`, stale departures skipped with `continue` and structured `STALE_DEPARTURE_REJECTED` flash event, idle sync first, and the negative-gap 3-minute branch removed.
+   Verify: `git diff Dispatcher.js` shows `const IDLE_SYNC_MINS = 60;`, stale departures skipped with `continue` and structured `STALE_TRIP_REJECTED` flash event, idle sync first, and the negative-gap 3-minute branch removed.
    Done when: AC-9 and AC-10 pass. Commit as `fix(dispatcher): skip stale departures; idle sync at 60 min (AC-9, AC-10)`, citing `MODIFIED INV-0.6`, `AC-9`, and `AC-10`; note 60 minutes is the first-slice default and `relevanceDeadlineUnix` is deferred.
 
-- [ ] 5. Action: Run `git commit` on Patch B and let GGA review against AGENTS.md.
+- [x] 5. Action: Run `git commit` on Patch B and let GGA review against AGENTS.md.
    Files: Dispatcher.js (modified by task 4).
    Verify: The hook accepts; fix only blocking AGENTS.md findings.
    Done when: `git log --oneline` shows both Patch A and Patch B commits with no follow-up fixes required.
 
-- [ ] 6. Action: Run `gentle-ai review validate --gate pre-commit --cwd . --lineage tasker-tesla-upgrade` to bind Patch B's receipt.
+- [x] 6. Action: Run `gentle-ai review validate --gate pre-commit --cwd . --lineage tasker-tesla-upgrade` to bind Patch B's receipt.
    Verify: The command exits 0 and the receipt binds both patches.
    Done when: Both patches have a bound terminal receipt.
 
