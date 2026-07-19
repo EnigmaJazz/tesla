@@ -417,8 +417,8 @@ try {
                     component: "Sandbox",
                     severity: "WARN",
                     code: "DEPARTURE_POLICY_FALLBACK_USED",
-                    tripId: null,
-                    details: { rowType: fields[0] || "UNKNOWN", reconstructed: "ASAP" }
+                    tripId: fields[9] || null,
+                    details: { block_step19: null, rowType: fields[0] || "UNKNOWN", reconstructed: "ASAP" }
                 }));
                 effectivePolicy = "ASAP";
             }
@@ -1205,7 +1205,7 @@ try {
             if (routeToEv.mode === "DRIVE" && carDist > 200) {
                 let recMode5 = getRecoveryMode(state.loc, state.carLoc, carDist);
                 let rTime = getCachedTime(state.loc, state.carLoc, recMode5, state.time) || Math.round(carDist / getSpeed(recMode5));
-                queue.push("RECOVERY|Car|" + state.carLoc + "|" + recMode5 + "|" + state.time + "|" + (state.time + rTime) + "|false|DEPART|" + state.time + "|REC_EV_" + evId + "|" + state.carLoc + "|0|false|none|Vehicle Retrieval|||ASAP");
+                enqueuePlannedRow(["RECOVERY", "Car", state.carLoc, recMode5, state.time, (state.time + rTime), "false", "DEPART", state.time, "REC_EV_" + evId, state.carLoc, "0", "false", "none", "Vehicle Retrieval"], "ASAP");
                 state.time += rTime; state.loc = state.carLoc; 
             }
 
@@ -1251,12 +1251,9 @@ try {
                 return "JIT";
             })();
 
-            queue.push("EVENT|" + evTitle + "|" + evCoords + "|" + routeToEv.mode + "|" + displayTime + "|" + trueDepartureTime + "|" + pitstopState + "|" + apiTimeType + "|" + apiTimeUnix + "|" + evId + "|" + evLoc + "|" + engineLateMins + "|" + currentLegStable + "|" + dropinStatusFlag + "|" + safeDesc + "|" + adHocObj.arr.join(",") + "|||" + legPolicy);
+            enqueuePlannedRow(["EVENT", evTitle, evCoords, routeToEv.mode, displayTime, trueDepartureTime, pitstopState, apiTimeType, apiTimeUnix, evId, evLoc, engineLateMins, currentLegStable, dropinStatusFlag, safeDesc, adHocObj.arr.join(",")], legPolicy);
 
-            if (i === idx) {
-                setLocal('block_step19', legPolicy);
-            }
-            
+            if (i === idx) state.isStableOrigin = false;
             state.loc = evCoords; state.time = trueDepartureTime;
             if (routeToEv.mode === "DRIVE") state.carLoc = evCoords;
             if (evId.indexOf("_IN") !== -1) simAtBase = true; else simAtBase = false;
@@ -1278,12 +1275,12 @@ try {
                 if (eodMode === "DRIVE" && carDistEOD > 200) {
                     let recModeEOD = getRecoveryMode(state.loc, state.carLoc, carDistEOD);
                     let rTimeEOD = getCachedTime(state.loc, state.carLoc, recModeEOD, state.time) || Math.round(carDistEOD / getSpeed(recModeEOD));
-                    queue.push("RECOVERY|Car|" + state.carLoc + "|" + recModeEOD + "|" + state.time + "|" + (state.time + rTimeEOD) + "|false|DEPART|" + state.time + "|REC_EOD_FINAL|" + state.carLoc + "|0|false|none|Vehicle Retrieval|||ASAP");
+                    enqueuePlannedRow(["RECOVERY", "Car", state.carLoc, recModeEOD, state.time, (state.time + rTimeEOD), "false", "DEPART", state.time, "REC_EOD_FINAL", state.carLoc, "0", "false", "none", "Vehicle Retrieval"], "ASAP");
                     state.time += rTimeEOD; 
                     state.loc = state.carLoc;
                 }
 
-                queue.push("EOD_RETURN|" + eodBase.name + "|" + eodBase.coords + "|" + eodMode + "|" + state.time + "|" + (state.time + 3600) + "|end_of_day|DEPART|" + state.time + "|" + finalAnchorId + "|" + eodBase.name + "|0|true|none|Return Journey|||ASAP");
+                enqueuePlannedRow(["EOD_RETURN", eodBase.name, eodBase.coords, eodMode, state.time, (state.time + 3600), "end_of_day", "DEPART", state.time, finalAnchorId, eodBase.name, "0", "true", "none", "Return Journey"], "ASAP");
                 simAtBase = true;
             }
         }
