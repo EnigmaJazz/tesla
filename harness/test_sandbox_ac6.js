@@ -151,6 +151,26 @@ try {
   const headAway = rowsAway[0].split("|");
   if (headAway.length < 18) fail('stale-away head expected at least 18 columns, got ' + headAway.length);
 
+  // Direct origin assertion: the head EVENT row is the future event, so its
+  // destination coords (column 2) are the event coords, not the stale-away
+  // virtual_loc. The EOD_RETURN row's destination is the configured home
+  // coords, proving the queue is anchored to the live base rather than away.
+  const headAwayDestCoords = headAway[2];
+  if (headAwayDestCoords !== eventCoords) {
+    fail('stale-away head destination coords should be eventCoords (' + eventCoords + '), got ' + headAwayDestCoords);
+  }
+  const awayCoordsLeaked = rowsAway.some(function (row) {
+    return row.split("|")[2] === awayCoords;
+  });
+  if (awayCoordsLeaked) fail('stale-away virtual_loc (' + awayCoords + ') leaked into a queue row destination');
+
+  const eodReturnRow = rowsAway.find(function (row) { return row.split("|")[0] === "EOD_RETURN"; });
+  if (!eodReturnRow) fail('stale-away fixture expected an EOD_RETURN row');
+  const eodReturnDestCoords = eodReturnRow.split("|")[2];
+  if (eodReturnDestCoords !== homeCoords) {
+    fail('stale-away EOD_RETURN destination coords should be homeCoords (' + homeCoords + '), got ' + eodReturnDestCoords);
+  }
+
   // The stale-away virtual origin must be overridden to the live base. The
   // strongest observable signal is that the planned queue becomes identical to
   // the control fixture (home origin) — same route origin, same policy, same JIT.
