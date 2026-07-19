@@ -1,5 +1,7 @@
 # Itinerary Scheduler Specification
 
+> **First-slice status:** Applied 2026-07-19; see `openspec/changes/archive/2026-07-19-tasker-tesla-upgrade/` for the audit trail. AC-8, AC-9, AC-10 PASS via harness. Remaining Phase 0 (AC-1, AC-5, AC-6) and Phases 1–6 are open.
+
 **Authority:** canonicalised from `_spec_source.md` (verbatim source). Requirements use RFC 2119 terms; source-section references are evidence pointers. Exceptions are only those stated below.
 
 ## Objective
@@ -24,13 +26,25 @@ Unplanned movement on a day without remaining planned travel is observation, not
 Returning home completes the current manual/active trip and makes live origin base; tomorrow’s first trip remains `PLANNED` and JIT, inherits no ASAP policy, and is unselectable before its due window. Complete/reselect before scheduling the next vehicle action. **Evidence:** §0.5. **Exception:** none.
 
 ### INV-0.6 — Actionable-trip bounds
-Dispatcher MUST NOT use unbounded selection such as `departUnix - now <= 86400`. A candidate is actionable only when non-terminal, active-generation or active-manual, before relevance deadline, meaningful in timing/destination, not newer-equivalent-replaced, and predecessor-satisfied. **Evidence:** §0.6. **Exception:** active manual trips are allowed outside published generation.
+
+The Dispatcher MUST NOT use an unbounded condition such as `departUnix - now <= 86400`, because it admits indefinitely stale trips. A candidate is actionable only when non-terminal, active-generation or active-manual, before relevance deadline, meaningful in timing/destination, not newer-equivalent-replaced, and predecessor-satisfied.
+
+For this slice, a leg with `depUnix < nowSec - relevanceDeadline` is stale and MUST be excluded from candidate selection. A leg where `nowSec - relevanceDeadline <= depUnix < nowSec` remains eligible but MUST rank below future DUE legs. A negative `gapMins` MUST NOT select the tight-loop sync bucket; sync timing MUST derive from the selected actionable trip, or idle fallback when none exists.
+
+> Source §6: "If no trip is actionable: clear stale action outputs; use the normal idle sync interval; do not enter a three-minute loop solely because a past departure time produces a negative gap."
+
+**Exception:** active manual trips remain eligible outside the active published generation.
 
 ### INV-0.7 — Route-duration fallback
 Migration contract: `block_step17` route duration seconds, `block_step18` route distance, `block_step19` departure policy. Compiler fallback order MUST be validated API metrics, Sandbox metrics, supported local active-travel estimate, then reject/log. Zero-duration planned travel MUST NOT publish. **Evidence:** §0.7. **Exception:** none.
 
-### INV-0.8 — Stop padding exactly once
-Route duration, stop duration, event/drop-in duration, and arrival buffer MUST remain distinct. `stopPadSecs` MUST NOT be added to both leg duration and forward-propagation gap. **Evidence:** §0.8. **Exception:** none.
+### INV-0.8 — Stop-padding exactly once
+
+Stop padding MUST be applied exactly once. Route duration, stop duration, event/drop-in duration, and arrival buffer remain distinct. `durationSecs` is route-only and MUST NOT include `stopPadSecs`; `stopPadSecs` is applied to the gap to the next leg (or represented by the leg's `stopDurationSecs`), never both.
+
+> Source §0.8: "Do not add `stopPadSecs` to both the leg duration and the forward-propagation gap."
+
+**Exception:** none.
 
 ## §1 Core architectural model
 
@@ -131,13 +145,16 @@ Phase 0 is immediate priority before Phase 1: policy propagation, overnight boun
 | AC-5 | Return home: tomorrow remains future PLANNED, not due now. |
 | AC-6 | Stale-away itinerary loses to live base; future trip base/JIT. |
 | AC-7 | Queue flush never removes/bypasses day boundary. |
-| AC-8 | “stop padding changes timing exactly once.” |
-| AC-9 | “an expired past leg cannot block the next valid trip.” |
-| AC-10 | “stale outputs are cleared; normal idle polling is used.” |
+| AC-8 | "stop padding changes timing exactly once." |
+| | Detail: Given a leg with `pendingStopsRaw="5,10"`, when compiled, then its `durationSecs` MUST exclude the 15-minute total; the following leg's `depTarget` MUST be advanced by exactly 15 minutes, not 30. |
+| AC-9 | "an expired past leg cannot block the next valid trip." |
+| | Detail: Given a master with one past `depUnix` and one future `depUnix`, when Dispatcher selects sync timing, then it MUST select the future actionable leg and MUST NOT allow the past leg to block it. |
+| AC-10 | "stale outputs are cleared; normal idle polling is used." |
+| | Detail: Given an empty `Itin_Master` or an all-past master, when Dispatcher has no actionable trip, then it MUST clear stale outputs and use normal idle sync of at least 60 minutes. |
 
 ## §17 Error logging — LOG-17
 Significant failures/state decisions MUST use append-only structured JSON: `timestamp`, `generationId`, `component`, `severity`, `code`, `tripId`, `details`. Required codes:
-`EVT-LIVE_BASE_OVERRIDES_LEGACY_ORIGIN`, `EVT-OVERNIGHT_BOUNDARY_CREATED`, `EVT-CROSS_DAY_CHAIN_REJECTED`, `EVT-SYNTHETIC_RETURN_SUPPRESSED`, `EVT-FUTURE_TRIP_NOT_DUE`, `EVT-STALE_TRIP_REJECTED`, `EVT-REDUNDANT_EOD_RETURN_REJECTED`, `EVT-ZERO_DURATION_LEG_REJECTED`, `EVT-DEPARTURE_POLICY_FALLBACK_USED`, `EVT-GENERATION_VALIDATION_FAILED`, `EVT-STALE_API_RESPONSE_DISCARDED`. **Evidence:** §17. **Exception:** none.
+`EVT-LIVE_BASE_OVERRIDES_LEGACY_ORIGIN`, `EVT-OVERNIGHT_BOUNDARY_CREATED`, `EVT-CROSS_DAY_CHAIN_REJECTED`, `EVT-SYNTHETIC_RETURN_SUPPRESSED`, `EVT-FUTURE_TRIP_NOT_DUE`, `EVT-STALE_TRIP_REJECTED`, `EVT-REDUNDANT_EOD_RETURN_REJECTED`, `EVT-ZERO_DURATION_LEG_REJECTED`, `EVT-DEPARTURE_POLICY_FALLBACK_USED`, `EVT-GENERATION_VALIDATION_FAILED`, `EVT-STALE_API_RESPONSE_DISCARDED`, `EVT-IDLE_SYNC_ENGAGED`. **Evidence:** §17. **Exception:** none.
 
 ## §18 Validation and testing — VAL-18
 Deterministically validate all source §18 scenarios: ordinary/ASAP/late/missed/GPS/drop-in/overnight/stops/cache/cluster/stale API/failed rebuild/active trip/live-base/ad-hoc/manual/future/stale/redundant-return/idle/manual/event removal/DST/local-midnight cases. Run shadow mode before publication switch; compare origin, policy, planning day, EOD returns, selected trip, timing, deadline, and sync interval; log old/new divergence. **Evidence:** §18. **Exception:** none.
