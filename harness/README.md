@@ -26,6 +26,7 @@ harness/
   test_dispatcher_ac10.js         # AC-10: empty master → idle sync at 60 min
   test_dispatcher_relevance.js    # INV-0.6: truly stale leg rejected; idle sync at 60 min
   test_dispatcher_overdue_wins.js # INV-0.6: overdue-within-window selected when no future leg exists
+  test_sandbox_ac6.js             # AC-6: stale-away itinerary loses to live base; future trip JIT
   README.md        # this file
 ```
 
@@ -39,10 +40,11 @@ node harness/test_dispatcher_ac9.js
 node harness/test_dispatcher_ac10.js
 node harness/test_dispatcher_relevance.js
 node harness/test_dispatcher_overdue_wins.js
+node harness/test_sandbox_ac6.js
 ```
 
 Each test prints `PASS:` or `FAIL:` with a single-line reason and
-exits 0/1. Run all five with a loop:
+exits 0/1. Run all six with a loop:
 
 ```
 for t in harness/test_*.js; do node "$t" || break; done
@@ -77,6 +79,7 @@ for t in harness/test_*.js; do node "$t" || break; done
 | `test_dispatcher_ac10.js`     | empty master → `IDLE_SYNC_ENGAGED`; `Next_Sync` = +60 min |
 | `test_dispatcher_relevance.js` | truly stale leg rejected with `STALE_TRIP_REJECTED`; `IDLE_SYNC_ENGAGED`; `Next_Sync` = +60 min |
 | `test_dispatcher_overdue_wins.js` | overdue-within-window selected when no future leg exists; `Next_Sync` = +10 min |
+| `test_sandbox_ac6.js`             | stale `handled` itinerary + live `User_At_Base="true"` emits `LIVE_BASE_OVERRIDES_LEGACY_ORIGIN`; head leg policy = `JIT` |
 
 ## Known issues
 
