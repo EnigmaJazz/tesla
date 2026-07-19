@@ -2,9 +2,13 @@
 //
 // Seed an old Itin_Master.json whose tail leg says handled (away), set
 // User_At_Base="true" and Current_Status="" (not in progress), and run
-// Sandbox_Engine.js once. Assert the script does not throw, the override
-// flash is emitted, and the head leg's origin is the base (queue row
-// columns [2] and the explicit departure policy column [19] is JIT).
+// Sandbox_Engine.js once. Two fixtures are exercised:
+//   1. virtual_loc at home (the original control) — head origin must be home.
+//   2. virtual_loc at a stale-away city (the probe) — live base must override
+//      the stale virtual origin, so the head queue row's origin column is the
+//      home base coords and the override flash is emitted.
+// Every planned queue row must carry an explicit ASAP/JIT policy in its final
+// |-delimited field.
 
 process.env.TZ = 'UTC';
 
@@ -15,6 +19,7 @@ const { runScript } = require('./runner');
 
 const nowSec = 1700000000;
 const homeCoords = "51.9,-2.1";
+const awayCoords = "50.0,-1.0"; // stale-away virtual origin probe
 const eventCoords = "52.0,-2.0";
 const futureEventStart = nowSec + 3600;
 
@@ -52,14 +57,16 @@ const baseGeocodes = [
   "home_base"
 ].join("~");
 
-const locals = {
-  idx: "1",
-  virtual_loc: homeCoords,
-  vcar_loc: homeCoords,
-  virtual_time: String(nowSec)
+const commonFiles = {
+  "Tasker/Tesla/Data/Itin_Master.json": itinJson,
+  "Tasker/Tesla/Data/TDS_Master.json": masterJson,
+  "Tasker/Tesla/Data/TDS_Base_Geocodes.txt": baseGeocodes,
+  "Tasker/Tesla/Data/TDS_Overrides.json": "{}",
+  "Tasker/Tesla/Data/Temp_Route_Cache.txt": "",
+  "Tasker/Tesla/Data/RouteCache.txt": ""
 };
 
-const globals = {
+const commonGlobals = {
   User_At_Base: "true",
   Base_Arrival_Unix: nowSec.toString(),
   User_Loc: homeCoords,
@@ -73,52 +80,97 @@ const globals = {
   Car_Connected: "false"
 };
 
-const files = {
-  "Tasker/Tesla/Data/Itin_Master.json": itinJson,
-  "Tasker/Tesla/Data/TDS_Master.json": masterJson,
-  "Tasker/Tesla/Data/TDS_Base_Geocodes.txt": baseGeocodes,
-  "Tasker/Tesla/Data/TDS_Overrides.json": "{}",
-  "Tasker/Tesla/Data/Temp_Route_Cache.txt": "",
-  "Tasker/Tesla/Data/RouteCache.txt": ""
+const commonLocals = {
+  idx: "1",
+  vcar_loc: homeCoords,
+  virtual_time: String(nowSec)
 };
 
-const { sandbox, store } = createSandbox({ locals: locals, globals: globals, files: files, nowMs: nowSec * 1000 });
 const scriptPath = path.resolve(__dirname, '..', 'Sandbox_Engine.js');
-runScript(scriptPath, sandbox, store);
 
-const testName = 'AC-6 Sandbox: stale-away itinerary loses to live base; future trip JIT';
+function buildSandbox(virtualLoc) {
+  return createSandbox({
+    locals: Object.assign({}, commonLocals, { virtual_loc: virtualLoc }),
+    globals: Object.assign({}, commonGlobals),
+    files: Object.assign({}, commonFiles),
+    nowMs: nowSec * 1000
+  });
+}
+
+function runScenario(virtualLoc) {
+  const { sandbox, store } = buildSandbox(virtualLoc);
+  runScript(scriptPath, sandbox, store);
+  return store;
+}
+
+function assertRowsHavePolicy(rows, label) {
+  rows.forEach(function (row, idx) {
+    const cols = row.split("|");
+    const last = cols[cols.length - 1];
+    if (last !== "ASAP" && last !== "JIT") {
+      throw new Error(label + ' row ' + idx + ' missing explicit ASAP/JIT policy (got ' + JSON.stringify(last) + ')');
+    }
+  });
+}
 
 function fail(msg) {
-  console.log('FAIL: ' + testName + ' — ' + msg);
+  console.log('FAIL: AC-6 Sandbox — ' + msg);
   process.exit(1);
 }
 
 try {
-  if (store.runError) fail('script threw: ' + store.runError.message + ' (line ' + store.runError.line + ')');
+  // Fixture 1: control — virtual origin already at home.
+  const storeHome = runScenario(homeCoords);
+  if (storeHome.runError) fail('control fixture threw: ' + storeHome.runError.message + ' (line ' + storeHome.runError.line + ')');
 
-  const overrideFound = store.flashLog.some(function (m) {
+  const queueHome = storeHome.locals['block_queue'];
+  if (!queueHome || queueHome === "EOF") fail('control fixture expected non-empty block_queue');
+  const rowsHome = queueHome.split("~");
+  const headHome = rowsHome[0].split("|");
+  if (headHome.length < 18) fail('control head expected at least 18 columns, got ' + headHome.length);
+  if (headHome[headHome.length - 1] !== "JIT") fail('control head policy should be JIT, got ' + headHome[headHome.length - 1]);
+  assertRowsHavePolicy(rowsHome, 'control');
+
+  const overrideHome = storeHome.flashLog.some(function (m) {
     return m.indexOf('LIVE_BASE_OVERRIDES_LEGACY_ORIGIN') !== -1;
   });
-  if (!overrideFound) fail('expected EVT-LIVE_BASE_OVERRIDES_LEGACY_ORIGIN flash');
+  if (!overrideHome) fail('control fixture expected EVT-LIVE_BASE_OVERRIDES_LEGACY_ORIGIN flash');
 
-  const queue = store.locals['block_queue'];
-  if (!queue || queue === "EOF") fail('expected non-empty block_queue');
-  const rows = queue.split("~");
-  const headRow = rows[0];
-  const cols = headRow.split("|");
+  // Fixture 2: probe — stale-away virtual origin must be overridden to home.
+  const storeAway = runScenario(awayCoords);
+  if (storeAway.runError) fail('stale-away fixture threw: ' + storeAway.runError.message + ' (line ' + storeAway.runError.line + ')');
 
-  if (cols.length < 19) fail('expected at least 19 queue columns, got ' + cols.length);
+  const overrideAway = storeAway.flashLog.some(function (m) {
+    return m.indexOf('LIVE_BASE_OVERRIDES_LEGACY_ORIGIN') !== -1;
+  });
+  if (!overrideAway) fail('stale-away fixture expected EVT-LIVE_BASE_OVERRIDES_LEGACY_ORIGIN flash');
 
-  const policy = cols[18];
-  if (policy !== "JIT") fail('expected head leg departurePolicy JIT, got ' + policy);
+  const queueAway = storeAway.locals['block_queue'];
+  if (!queueAway || queueAway === "EOF") fail('stale-away fixture expected non-empty block_queue');
+  const rowsAway = queueAway.split("~");
+  const headAway = rowsAway[0].split("|");
+  if (headAway.length < 18) fail('stale-away head expected at least 18 columns, got ' + headAway.length);
 
-  const blockStep19 = store.locals['block_step19'];
-  if (blockStep19 !== "JIT") fail('expected block_step19=JIT, got ' + blockStep19);
+  // The stale-away virtual origin must be overridden to the live base. The
+  // strongest observable signal is that the planned queue becomes identical to
+  // the control fixture (home origin) — same route origin, same policy, same JIT.
+  if (queueAway !== queueHome) {
+    fail('stale-away queue should match control queue after live-base override;\n  away:   ' + queueAway + '\n  home:   ' + queueHome);
+  }
 
-  console.log('PASS: ' + testName);
-  console.log('  flash contains LIVE_BASE_OVERRIDES_LEGACY_ORIGIN');
-  console.log('  head policy = ' + policy);
+  const headPolicy = headAway[headAway.length - 1];
+  if (headPolicy !== "JIT") fail('stale-away head policy should be JIT, got ' + headPolicy);
+
+  const blockStep19 = storeAway.locals['block_step19'];
+  if (blockStep19 !== "JIT") fail('stale-away block_step19 should be JIT, got ' + blockStep19);
+
+  assertRowsHavePolicy(rowsAway, 'stale-away');
+
+  console.log('PASS: AC-6 Sandbox: stale-away itinerary loses to live base; future trip JIT');
+  console.log('  control: head policy = ' + headHome[headHome.length - 1]);
+  console.log('  stale-away: queue identical to control (origin rebound to home), head policy = ' + headPolicy);
   console.log('  block_step19 = ' + blockStep19);
+  console.log('  all ' + rowsAway.length + ' stale-away queue rows carry an explicit ASAP/JIT policy');
   process.exit(0);
 } catch (e) {
   fail(e.message);

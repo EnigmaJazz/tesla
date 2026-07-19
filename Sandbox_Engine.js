@@ -402,7 +402,31 @@ try {
         }
 
         let queue = []; let notifQueue = []; let blockMode = null; let skipIdx = idx; let stepConflict = "";
-        let stateHistory = {}; 
+        let stateHistory = {};
+
+        // INV-0.1 / AC-1: every planned queue row must carry an explicit
+        // departurePolicy as the final | field. Pad missing columns, default
+        // to ASAP with a structured fallback flash, and mirror the head policy
+        // into block_step19 for the Compiler.
+        function enqueuePlannedRow(fields, policy) {
+            let effectivePolicy = (policy || "").toString().toUpperCase().trim();
+            if (!effectivePolicy) {
+                flash(JSON.stringify({
+                    timestamp: nowSec,
+                    generationId: null,
+                    component: "Sandbox",
+                    severity: "WARN",
+                    code: "DEPARTURE_POLICY_FALLBACK_USED",
+                    tripId: null,
+                    details: { rowType: fields[0] || "UNKNOWN", reconstructed: "ASAP" }
+                }));
+                effectivePolicy = "ASAP";
+            }
+            while (fields.length < 18) fields.push("");
+            fields.push(effectivePolicy);
+            queue.push(fields.join("|"));
+            if (queue.length === 1) setLocal('block_step19', effectivePolicy);
+        }
         
         let skippedPitstops = getOvr('Skipped_Pitstops'); 
         let ignoredLateness = getOvr('Ignored_Lateness'); let ignoredWalks = getOvr('Ignored_Walks');
@@ -467,6 +491,16 @@ try {
             }
         } else {
             simAtBase = liveAtBase;
+        }
+
+        // INV-0.3: a fresh pass with a stale away itinerary and live base must
+        // plan from the actual base coords, not from the stale virtual origin.
+        // Only rebind for the first leg of this pass; chain math carries
+        // state.loc forward after the first emission. The live base is a stable
+        // origin, so the first leg is eligible for JIT planning.
+        if (oldItin.length > 0 && liveAtBase && !activeInProgress) {
+            state.loc = getBase(state.time).coords;
+            state.isStableOrigin = true;
         }
 
         function getCachedTime(orig, dest, mode, targetUnix) {
@@ -695,12 +729,12 @@ try {
                             let recModeEOD = getRecoveryMode(state.loc, state.carLoc, carDistEOD);
                             let rTimeEOD = getCachedTime(state.loc, state.carLoc, recModeEOD, state.time) || Math.round(carDistEOD / getSpeed(recModeEOD));
                             
-                            queue.push("RECOVERY|Car|" + state.carLoc + "|" + recModeEOD + "|" + state.time + "|" + (state.time + rTimeEOD) + "|false|DEPART|" + state.time + "|REC_" + tailInheritedId + "|" + state.carLoc + "|0|false|none|Vehicle Retrieval|");
+                            enqueuePlannedRow(["RECOVERY", "Car", state.carLoc, recModeEOD, state.time, (state.time + rTimeEOD), "false", "DEPART", state.time, "REC_" + tailInheritedId, state.carLoc, "0", "false", "none", "Vehicle Retrieval"], "ASAP");
                             state.time += rTimeEOD; 
                             state.loc = state.carLoc;
                         }
 
-                        queue.push("EOD_RETURN|" + activeBase.name + "|" + activeBase.coords + "|" + eodMode + "|" + state.time + "|" + (state.time + 3600) + "|end_of_day|DEPART|" + state.time + "|" + tailInheritedId + "|" + activeBase.name + "|0|true|none|Return Journey|");
+                        enqueuePlannedRow(["EOD_RETURN", activeBase.name, activeBase.coords, eodMode, state.time, (state.time + 3600), "end_of_day", "DEPART", state.time, tailInheritedId, activeBase.name, "0", "true", "none", "Return Journey"], "ASAP");
                         state.loc = activeBase.coords;
                         if (eodMode === "DRIVE") state.carLoc = activeBase.coords;
                     } else state.loc = activeBase.coords;
@@ -896,12 +930,13 @@ try {
                     if (!blockMode) blockMode = routeToBase.mode;
                     if (routeToBase.mode === "DRIVE" && carDist > 200) {
                         let recMode3 = getRecoveryMode(state.loc, state.carLoc, carDist);
-                        queue.push("RECOVERY|Car|" + state.carLoc + "|" + recMode3 + "|" + state.time + "|" + (state.time + recTimeBase) + "|false|DEPART|" + state.time + "|REC_PIT_" + evId + "|" + state.carLoc + "|0|false|none|Vehicle Retrieval|");
+                        enqueuePlannedRow(["RECOVERY", "Car", state.carLoc, recMode3, state.time, (state.time + recTimeBase), "false", "DEPART", state.time, "REC_PIT_" + evId, state.carLoc, "0", "false", "none", "Vehicle Retrieval"], "ASAP");
                         state.time += recTimeBase; state.loc = state.carLoc;
                     }
                     
                     let currentLegStable = (i === idx) ? state.isStableOrigin.toString() : "true";
-                    queue.push(stopType + "|" + activeBase.name + "|" + activeBase.coords + "|" + routeToBase.mode + "|" + evStart + "|" + (state.time + timeToBase) + "|" + pitFlag + "|DEPART|" + state.time + "|" + compositeId + "|" + activeBase.name + "|0|" + currentLegStable + "|none|" + stopDesc + "|");
+                    let stopPolicy = (stopType === "EOD_RETURN" || pitFlag === "forced" || pitstopState === "handled" || pitstopState === "forced") ? "ASAP" : "JIT";
+                    enqueuePlannedRow([stopType, activeBase.name, activeBase.coords, routeToBase.mode, evStart, (state.time + timeToBase), pitFlag, "DEPART", state.time, compositeId, activeBase.name, "0", currentLegStable, "none", stopDesc], stopPolicy);
                     state.loc = activeBase.coords; 
                     state.time += timeToBase + (isOvernight ? 0 : 1800); 
                     if (routeToBase.mode === "DRIVE") state.carLoc = activeBase.coords;
