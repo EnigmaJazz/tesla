@@ -125,6 +125,12 @@ try {
         pendingChain = JSON.parse(pendingCompilerRaw); 
     } catch(e) {}
 
+    // INV-0.1: assign the explicit departure policy before storing the leg.
+    // Attached chains are always ASAP per spec §0.1; non-attached heads fall
+    // back to the explicit block_step19 value from the Sandbox.
+    const rawPolicy = (local('block_step19') || "").toString().toUpperCase().trim();
+    currentLeg.departurePolicy = (actionType === "EVENT" && isAttachedDropin) ? "ASAP" : (rawPolicy || "ASAP");
+
     if (actionType === "EVENT" && isAttachedDropin) {
         pendingChain.push(currentLeg);
         writeFile("Tasker/Tesla/Data/Pending_Compiler.json", JSON.stringify(pendingChain), false);
@@ -228,20 +234,6 @@ try {
 
         let headLeg = pendingChain[0];
 
-        const rawPolicy = (local('block_step19') || "").toString().toUpperCase().trim();
-        if (!rawPolicy) {
-            // EVT-DEPARTURE_POLICY_FALLBACK_USED: migration safety net.
-            flash(JSON.stringify({
-                timestamp: nowSec,
-                generationId: null,
-                component: "Compiler",
-                severity: "WARN",
-                code: "DEPARTURE_POLICY_FALLBACK_USED",
-                tripId: evId || null,
-                details: { block_step19: null, reconstructed: "ASAP" }
-            }));
-        }
-        currentLeg.departurePolicy = rawPolicy || "ASAP";
         const chainForcesASAP = pendingChain.some(leg => leg.departurePolicy === "ASAP" || leg.actionType === "EOD_RETURN" || leg.mode === "EOD_RETURN");
         const leaveASAP = (headLeg.departurePolicy === "ASAP") || chainForcesASAP;
 
