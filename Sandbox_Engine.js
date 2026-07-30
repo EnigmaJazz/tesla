@@ -459,7 +459,7 @@ try {
             if (!effectivePolicy) {
                 flash(JSON.stringify({
                     timestamp: nowSec,
-                    generationId: null,
+                    generationId: global('TDS_Active_Generation') || null,
                     component: "Sandbox",
                     severity: "WARN",
                     code: "DEPARTURE_POLICY_FALLBACK_USED",
@@ -521,7 +521,7 @@ try {
                 if (priorLegAtBase === "false") {
                     flash(JSON.stringify({
                         timestamp: nowSec,
-                        generationId: null,
+                        generationId: global('TDS_Active_Generation') || null,
                         component: "Sandbox",
                         severity: "WARN",
                         code: "LIVE_BASE_OVERRIDES_LEGACY_ORIGIN",
