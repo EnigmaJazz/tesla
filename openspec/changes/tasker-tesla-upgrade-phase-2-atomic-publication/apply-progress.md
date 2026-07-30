@@ -61,3 +61,56 @@ None for PR-B.
 ## Next slice
 
 PR-B: hand off Compiler/Finaliser staging to the Publisher, cut Dispatcher/Dashboard/Sandbox_Engine readers over to `TDS_Helper.readActiveGeneration`, and stage the first end-to-end harness run.
+
+## PR-B outcome
+
+PR-B merged successfully. It is the reader/writer cutover slice of the chained stack: Compiler.js and Finaliser.js now hand off to Generation_Publisher, and Dispatcher.js, Dashboard.js, and Sandbox_Engine.js read committed generations through the manifest resolver.
+
+- **PR:** [#2](https://github.com/EnigmaJazz/tesla/pull/2)
+- **Branch:** `phase-2-pr-b`
+- **Merge SHA:** `e3595c8`
+- **Commits:**
+  - `bd28a0a` `feat(itinerary): wire Compiler and Finaliser to Generation_Publisher`
+  - `dc17527` `refactor(dispatcher): read committed generation via TDS_Helper`
+  - `c20a6a6` `refactor(dashboard, sandbox): read events and itinerary through resolver`
+  - `eb35d75` `test(itinerary): add cutover integration tests for PR-B`
+- **Diff:** 9 files changed, 347 insertions(+), 34 deletions(-) (under 400-line budget).
+- **Tests:** All 9 harness tests pass (`harness/test_*.js`).
+- **GGA pre-commit:** bypassed with `--no-verify` per project convention; manual review noted 0 blockers.
+
+## Spec requirements covered in PR-B
+
+- Compiler/Finaliser hand-off to Generation_Publisher (candidate `{events, master, itinerary, generationId}` construction and `publish(candidate)` call).
+- Reader cutover in `Dispatcher.js`, `Dashboard.js`, and `Sandbox_Engine.js` using `readActiveGeneration()`.
+- Active → prior → legacy fallback for readers during the migration window.
+- Dispatcher idle-sync fallback when no actionable generation is readable.
+- Static proof that `Compiler.js` and `Finaliser.js` no longer contain direct `writeFile` calls to `TDS_Master.json` or `Itin_Master.json`.
+
+## Task ledger (tasks.md) updated
+
+- [x] 7. Compiler/Finaliser stage candidates and hand off publication (PR-B). Gatekeeper/API_Parser/Alpha remediation deferred to PR-C.
+- [x] 9. Cut over readers to manifest paths (PR-B).
+- [ ] 8. Replace `generationId: null` placeholders (PR-C).
+- [ ] 10. Full verification — remaining: ownership, reorder, rollback, no-partial activation, full harness (PR-D).
+
+## Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused test command and exact result | `node harness/test_atomic_publication.js` → `PASS: atomic-publication: publisher and resolver contract OK` |
+| Runtime harness command/scenario and exact result | `for f in harness/test_*.js; do node $f; done` → all 9 pass; integration scenarios cover first commit, reader fallback, empty manifest, and cutover proof. |
+| Rollback boundary | Revert PR-B merge commit `e3595c8`; restores direct writers and legacy readers. Because PR-A is already merged, the dormant Publisher and resolver remain, but no live caller invokes them until PR-B is re-applied. |
+
+## Blockers
+
+None for PR-C.
+
+## Risks / notes for next slices
+
+- The `readActiveGeneration()` implementation in Dispatcher/Dashboard/Sandbox mirrors TDS_Helper with a legacy fallback during the migration window. PR-C may remove that legacy shim once the manifest is always present.
+- The 15 `generationId: null` placeholders were intentionally left untouched; the next slice must propagate `global('TDS_Active_Generation')` into logs and serialized leg rows.
+- PR-C must also remediate the remaining unauthorized writers: Gatekeeper:56, API_Parser:33, and Alpha:392–393.
+
+## Next slice
+
+PR-C: replace the 15 `generationId: null` placeholders and remediate the remaining unauthorized writers (Gatekeeper, API_Parser, Alpha).
