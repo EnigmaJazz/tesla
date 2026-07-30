@@ -87,6 +87,17 @@ const { sandbox, store } = createSandbox({ locals: locals, globals: globals, fil
 const scriptPath = path.resolve(__dirname, '..', 'Compiler.js');
 runScript(scriptPath, sandbox, store);
 
+// Phase 2: Compiler publishes through Generation_Publisher. Read the committed
+// generation from the manifest instead of the live Itin_Master.json.
+function readActiveItinerary(store) {
+  const manifestRaw = store.files['Tasker/Tesla/Data/TDS_Run_Manifest.json'];
+  if (!manifestRaw) return null;
+  const manifest = JSON.parse(manifestRaw);
+  const itinRaw = store.files[manifest.itineraryPath];
+  if (!itinRaw) return null;
+  return JSON.parse(itinRaw);
+}
+
 const testName = 'AC-8 Compiler: stop padding applied once (5,10 = 15 min, not 30)';
 
 function fail(msg) {
@@ -97,10 +108,8 @@ function fail(msg) {
 try {
   if (store.runError) fail('script threw: ' + store.runError.message + ' (line ' + store.runError.line + ')');
 
-  const itinRaw = store.files['Tasker/Tesla/Data/Itin_Master.json'];
-  if (!itinRaw) fail('Itin_Master.json was not written');
-
-  const itin = JSON.parse(itinRaw);
+  const itin = readActiveItinerary(store);
+  if (!itin) fail('published itinerary was not found');
   if (itin.length !== 2) fail('expected 2 legs in Itin_Master, got ' + itin.length);
 
   const leg1 = itin[0];

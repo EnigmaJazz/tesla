@@ -5,6 +5,11 @@
 // sandbox that mimics the runtime and exposes a live store the test can
 // inspect after the script has run.
 
+const path = require('node:path');
+const { runScript } = require('./runner');
+
+const PUBLISHER_PATH = path.resolve(__dirname, '..', 'Generation_Publisher.js');
+
 function createSandbox(options) {
   options = options || {};
   const initialLocals = options.locals || {};
@@ -33,6 +38,12 @@ function createSandbox(options) {
   const writeThrows = failures.writeThrows || [];
   const tornWrites = failures.tornWrites || [];
   let now = initialNowMs;
+
+  function publish(candidate) {
+    setLocal('par1', JSON.stringify(candidate));
+    runScript(PUBLISHER_PATH, sandbox, store);
+    return local('return_value');
+  }
 
   function local(key) {
     return Object.prototype.hasOwnProperty.call(liveLocals, key) ? liveLocals[key] : "";
@@ -110,7 +121,8 @@ function createSandbox(options) {
     Object: Object,
     Array: Array,
     String: String,
-    Boolean: Boolean
+    Boolean: Boolean,
+    publish: publish
   };
 
   const store = {
