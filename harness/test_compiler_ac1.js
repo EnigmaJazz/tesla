@@ -91,6 +91,18 @@ function runWithPolicy(policy) {
   return store;
 }
 
+// Phase 2: Compiler no longer writes the live Itin_Master.json directly.
+// It publishes through Generation_Publisher, so read the committed generation
+// from the manifest.
+function readActiveItinerary(store) {
+  const manifestRaw = store.files['Tasker/Tesla/Data/TDS_Run_Manifest.json'];
+  if (!manifestRaw) return null;
+  const manifest = JSON.parse(manifestRaw);
+  const itinRaw = store.files[manifest.itineraryPath];
+  if (!itinRaw) return null;
+  return JSON.parse(itinRaw);
+}
+
 function fail(msg) {
   console.log('FAIL: AC-1 Compiler: ' + msg);
   process.exit(1);
@@ -114,9 +126,8 @@ try {
   });
   if (asapFallback) fail('ASAP: unexpected DEPARTURE_POLICY_FALLBACK_USED flash');
 
-  const asapItinRaw = asapStore.files['Tasker/Tesla/Data/Itin_Master.json'];
-  if (!asapItinRaw) fail('ASAP: Itin_Master.json was not written');
-  const asapItin = JSON.parse(asapItinRaw);
+  const asapItin = readActiveItinerary(asapStore);
+  if (!asapItin) fail('ASAP: published itinerary was not found');
   if (asapItin.length !== 2) fail('ASAP: expected 2 legs, got ' + asapItin.length);
   const asapHead = asapItin[1];
   assert.equal(asapHead.departurePolicy, 'ASAP', 'ASAP: published leg should carry departurePolicy ASAP');
@@ -131,9 +142,8 @@ try {
   });
   if (jitFallback) fail('JIT: unexpected DEPARTURE_POLICY_FALLBACK_USED flash');
 
-  const jitItinRaw = jitStore.files['Tasker/Tesla/Data/Itin_Master.json'];
-  if (!jitItinRaw) fail('JIT: Itin_Master.json was not written');
-  const jitItin = JSON.parse(jitItinRaw);
+  const jitItin = readActiveItinerary(jitStore);
+  if (!jitItin) fail('JIT: published itinerary was not found');
   if (jitItin.length !== 2) fail('JIT: expected 2 legs, got ' + jitItin.length);
   const jitHead = jitItin[1];
   assert.equal(jitHead.departurePolicy, 'JIT', 'JIT: published leg should carry departurePolicy JIT');
