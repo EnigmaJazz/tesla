@@ -60,6 +60,24 @@
 **Change:** [x] PR-A partial: cover lifecycle, schema/counts, all write failures, fallback, retention, and migration in `harness/test_atomic_publication.js`. Remaining: 15 IDs, ownership, reorder, rollback, no-partial activation, full harness (PR-D).  
 **Acceptance:** `node harness/test_atomic_publication.js` and every existing harness test pass.
 
+## 18. Harness mock extensions
+**Files:** `harness/mock_tasker.js`, `harness/test_atomic_publication.js`  
+**Spec requirements:** PUB-7, VAL-18. **Estimate:** ~25 lines. **Depends on:** 3, 10.  
+**Change:** [x] Document and expose `deleteFile`, `writeOrder`, and `deleteOrder`; keep torn-write read-back failure injection for read-back mismatch tests. Add focused assertions that the Publisher writes events → master → itinerary → manifest and that retention pruning deletes the oldest generation files.  
+**Acceptance:** mock surface supports delete/write-order/read-back; new assertions pass. **Verification:** `node harness/test_atomic_publication.js`.
+
+## 19. Compiler committed-generation read (discovered in PR-D)
+**Files:** `Compiler.js`  
+**Spec requirements:** Discovery, PUB-7. **Estimate:** ~50 lines. **Depends on:** 9, 10.  
+**Change:** [x] Make `Compiler.js` read the active/prior generation's master and itinerary through the manifest before falling back to legacy `TDS_Master.json` / `Itin_Master.json`, matching the reader cutover in `Dispatcher.js`/`Dashboard.js`/`Sandbox_Engine.js`.  
+**Acceptance:** Alpha → Finaliser → Compiler → Publisher end-to-end flow works without manually seeding legacy master files. **Verification:** end-to-end harness test.
+
+## 20. Full end-to-end regression
+**Files:** `harness/test_atomic_publication.js`  
+**Spec requirements:** PUB-7, OWN-8, VAL-18, DOD-19. **Estimate:** ~150 lines. **Depends on:** 10, 18, 19.  
+**Change:** [x] Add a harness test that exercises the full live flow: Alpha ingests calendar events, Finaliser stages, Compiler assembles, Publisher commits, and Dispatcher/Dashboard/Sandbox read the committed generation. Verify generation ID propagation in structured flashes.  
+**Acceptance:** all 9 `harness/test_*.js` files pass on master. **Verification:** `for f in harness/test_*.js; do node $f; done`.
+
 ## Review Workload Forecast
 
 - **Total estimated changed lines:** 845

@@ -524,6 +524,184 @@ function testPlaceholderDispatcherIdle() {
   assert.strictEqual(JSON.parse(flash).generationId, activeGen, 'Dispatcher idle flash must propagate active generation');
 }
 
+function testManifestLastWriteOrder() {
+  const c = { events: [{ id: 'e1' }], master: [{ id: 'l1' }], itinerary: [{ tripId: 't1' }] };
+  const r = runPub({}, c);
+  assert.match(r.result, ID_RE);
+  const enc = r.result.replace(/:/g, '_');
+  const expectedPaths = [
+    DATA + 'TDS_Events.' + enc + '.json',
+    DATA + 'TDS_Master.' + enc + '.json',
+    DATA + 'Itin_Master.' + enc + '.json',
+    MANIFEST
+  ];
+  const firstWrites = [];
+  const seen = {};
+  for (let i = 0; i < r.store.writeOrder.length; i++) {
+    const p = r.store.writeOrder[i];
+    if (expectedPaths.indexOf(p) !== -1 && !seen[p]) {
+      firstWrites.push(p);
+      seen[p] = true;
+    }
+  }
+  assert.deepStrictEqual(firstWrites, expectedPaths, 'Publisher must write events -> master -> itinerary -> manifest before any prune manifest update');
+}
+
+function testPruneDeletesOldGenerations() {
+  const ids = [];
+  let files = {};
+  let finalStore;
+  for (let i = 0; i < 6; i++) {
+    const r = runPub(files, { events: [{ n: i }], master: [{ n: i }], itinerary: [{ n: i }] });
+    ids.push(r.result);
+    files = r.store.files;
+    finalStore = r.store;
+  }
+  const oldEnc = ids[0].replace(/:/g, '_');
+  const expectedDeletes = [
+    DATA + 'TDS_Events.' + oldEnc + '.json',
+    DATA + 'TDS_Master.' + oldEnc + '.json',
+    DATA + 'Itin_Master.' + oldEnc + '.json'
+  ];
+  const actualDeletes = expectedDeletes.filter(function (p) {
+    return files[p] === undefined;
+  });
+  assert.deepStrictEqual(actualDeletes, expectedDeletes, 'prune must delete the oldest generation files');
+  assert(finalStore.deleteOrder.some(function (p) { return p === expectedDeletes[0]; }), 'deleteOrder must record the events file deletion');
+}
+
+function testReadBackRejectsTornWrite() {
+  const c = { events: [{ id: 'e1' }], master: [{ id: 'l1' }], itinerary: [{ tripId: 't1' }] };
+  const r = runPub({}, c, { tornWrites: ['TDS_Events.gen_'] });
+  assert(r.result.indexOf('ERROR:') === 0, 'torn events write should fail the generation');
+  const tornPath = r.store.writeOrder.find(function (p) { return p.indexOf('TDS_Events.gen_') !== -1; });
+  assert(tornPath, 'a torn events file should have been written');
+  const fullContent = JSON.stringify(c.events);
+  const storedContent = r.store.files[tornPath];
+  assert(storedContent && storedContent.length < fullContent.length, 'read-back must return partial bytes for a torn write');
+  assert.strictEqual(r.sandbox.global('TDS_Active_Generation'), '', 'active generation must be cleared on torn write failure');
+}
+
+function testEndToEndFlow() {
+  // Full live flow: Alpha ingests calendar events, Finaliser stages them,
+  // Compiler assembles the leg, Publisher commits the generation, and
+  // Dispatcher/Dashboard/Sandbox read the committed generation.
+  const ALPHA = path.resolve(__dirname, '..', 'Alpha.js');
+  const FINALISER = path.resolve(__dirname, '..', 'Finaliser.js');
+  const COMPILER = path.resolve(__dirname, '..', 'Compiler.js');
+  const DISPATCHER = path.resolve(__dirname, '..', 'Dispatcher.js');
+  const DASHBOARD = path.resolve(__dirname, '..', 'Dashboard.js');
+  const SANDBOX = path.resolve(__dirname, '..', 'Sandbox_Engine.js');
+
+  const futureEventStart = nowSec + 3600;
+  const durationSecs = 1800;
+  const locals = {
+    ce_title1: 'Work',
+    ce_description1: '',
+    ce_event_id1: 'evt1_lkj000',
+    ce_start_time1: String(futureEventStart * 1000),
+    ce_end_time1: String((futureEventStart + 3600) * 1000),
+    ce_location1: 'Work'
+  };
+  const globals = {
+    User_Loc: '51.9,-2.1',
+    User_At_Base: 'true',
+    Home_Coords: '51.9,-2.1',
+    Arrival_Buffer_Mins: '5',
+    Departure_Buffer_Mins: '5',
+    Max_Walk_Meters: '8046',
+    Daily_Walk_Meters: '0',
+    Live_Traffic_Threshold: '7200',
+    Car_Connected: 'false',
+    Current_Status: 'Idle',
+    TIMEMS: String(nowSec * 1000),
+    Auto_Base_Hours: '3'
+  };
+  const files = {
+    [DATA + 'TDS_Master.json']: '[]',
+    [DATA + 'Itin_Master.json']: '[]',
+    [DATA + 'TDS_Overrides.json']: '{}',
+    [DATA + 'Geocode_Cache.json']: JSON.stringify({ work: '52.1,-2.2' })
+  };
+
+  const { sandbox: alphaBox, store: alphaStore } = createSandbox({ locals: locals, globals: globals, files: files, nowMs: nowSec * 1000 });
+  runScript(ALPHA, alphaBox, alphaStore);
+  if (alphaStore.runError) throw new Error(alphaStore.runError.message);
+  const tempEvents = alphaBox.local('tds_temp_json');
+  assert(tempEvents && JSON.parse(tempEvents).length > 0, 'Alpha should output staged events');
+
+  const { sandbox: finBox, store: finStore } = createSandbox({
+    locals: { tds_temp_json: tempEvents },
+    globals: globals,
+    files: alphaStore.files,
+    nowMs: nowSec * 1000
+  });
+  runScript(FINALISER, finBox, finStore);
+  if (finStore.runError) throw new Error(finStore.runError.message);
+  let m = manifest(finStore);
+  assert(m && m.state === 'committed', 'Finaliser should publish a committed generation');
+
+  const compilerLocals = {
+    block_step1: 'EVENT',
+    block_step2: 'Work',
+    block_step3: '52.1,-2.2',
+    block_step4: 'DRIVE',
+    block_step5: String(futureEventStart),
+    block_step7: 'false',
+    block_step8: 'DEPART',
+    block_step9: String(futureEventStart),
+    block_step10: 'evt1_lkj000',
+    block_step14: '',
+    block_step15: '',
+    block_step16: '',
+    block_step19: 'JIT',
+    api_duration_secs: String(durationSecs),
+    api_distance_miles: '15',
+    api_transit_steps: '',
+    virtual_time: String(nowSec - 60)
+  };
+  const { sandbox: compBox, store: compStore } = createSandbox({
+    locals: compilerLocals,
+    globals: Object.assign({}, globals, { TDS_Active_Generation: finBox.global('TDS_Active_Generation') }),
+    files: finStore.files,
+    nowMs: nowSec * 1000
+  });
+  runScript(COMPILER, compBox, compStore);
+  if (compStore.runError) throw new Error(compStore.runError.message);
+  m = manifest(compStore);
+  assert(m && m.state === 'committed', 'Compiler should publish a committed generation');
+  assert.strictEqual(m.eventCount, 1, 'Compiler generation should contain one event');
+  assert.strictEqual(m.itineraryCount, 1, 'Compiler generation should contain one itinerary leg');
+  const itin = JSON.parse(compStore.files[m.itineraryPath]);
+  assert.strictEqual(itin[0].departurePolicy, 'JIT', 'Compiler should preserve explicit departure policy');
+
+  const readerGlobals = Object.assign({}, globals, { TDS_Active_Generation: compBox.global('TDS_Active_Generation') });
+  const { sandbox: dispBox, store: dispStore } = createSandbox({ files: compStore.files, globals: readerGlobals, nowMs: nowSec * 1000 });
+  runScript(DISPATCHER, dispBox, dispStore);
+  if (dispStore.runError) throw new Error(dispStore.runError.message);
+  assert.strictEqual(dispBox.local('itin_mode1'), 'DRIVE', 'Dispatcher should read the committed DRIVE leg');
+
+  const { sandbox: dashBox, store: dashStore } = createSandbox({ files: compStore.files, globals: readerGlobals, nowMs: nowSec * 1000 });
+  runScript(DASHBOARD, dashBox, dashStore);
+  if (dashStore.runError) throw new Error(dashStore.runError.message);
+  const btnCount = parseInt(dashBox.local('btn_count'), 10);
+  assert(btnCount > 0, 'Dashboard should render at least one action button from the committed generation');
+
+  const sandboxLocals = { idx: '1', vcar_loc: '51.9,-2.1', virtual_time: String(nowSec), virtual_loc: '51.9,-2.1' };
+  const baseGeocodes = [nowSec.toString(), (nowSec + 86400).toString(), '51.9,-2.1', '0', 'Home', '', 'home_base'].join('~');
+  const sandboxFiles = Object.assign({}, compStore.files, {
+    [DATA + 'TDS_Base_Geocodes.txt']: baseGeocodes,
+    [DATA + 'Temp_Route_Cache.txt']: '',
+    [DATA + 'RouteCache.txt']: ''
+  });
+  const { sandbox: sboxBox, store: sboxStore } = createSandbox({ locals: sandboxLocals, globals: readerGlobals, files: sandboxFiles, nowMs: nowSec * 1000 });
+  runScript(SANDBOX, sboxBox, sboxStore);
+  if (sboxStore.runError) throw new Error(sboxStore.runError.message);
+  const liveBaseFlash = sboxStore.flashLog.find(function (f) { return f.indexOf('LIVE_BASE_OVERRIDES_LEGACY_ORIGIN') !== -1; });
+  assert(liveBaseFlash, 'Sandbox should emit LIVE_BASE_OVERRIDES_LEGACY_ORIGIN when live base overrides a non-base leg');
+  assert.strictEqual(JSON.parse(liveBaseFlash).generationId, compBox.global('TDS_Active_Generation'), 'Sandbox flash must propagate active generation');
+}
+
 try {
   testResolver();
   testId();
@@ -546,6 +724,10 @@ try {
   testPlaceholderSandboxPolicyFallback();
   testPlaceholderDispatcherStale();
   testPlaceholderDispatcherIdle();
+  testManifestLastWriteOrder();
+  testPruneDeletesOldGenerations();
+  testReadBackRejectsTornWrite();
+  testEndToEndFlow();
   console.log('PASS: atomic-publication: publisher and resolver contract OK');
 } catch (e) {
   fail(e.message);
