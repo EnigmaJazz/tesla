@@ -38,10 +38,10 @@ function validateReorderCommand(cmd, master, events, genId) {
   if (!cmd || cmd.type !== REORDER_COMMAND_TYPE) {
     return { valid: false, reason: "type mismatch" };
   }
-  if (!GENERATION_ID_REGEX.test(cmd.generationId || "")) {
+  if (cmd.generationId && !GENERATION_ID_REGEX.test(cmd.generationId)) {
     return { valid: false, reason: "invalid generationId format" };
   }
-  if (cmd.generationId !== genId) {
+  if (cmd.generationId && cmd.generationId !== genId) {
     return { valid: false, reason: "stale generation" };
   }
   if (!Array.isArray(cmd.orderedEventIds) || cmd.orderedEventIds.length === 0) {
