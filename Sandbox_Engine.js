@@ -38,7 +38,7 @@ function pathFor(g, kind) {
 function readActiveGeneration(kind) {
     let m = readJson("Tasker/Tesla/Data/TDS_Run_Manifest.json");
     let key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
-    if (m && m.activeGeneration) {
+    if (m && m.state === "committed" && m.activeGeneration) {
         let data = readJson(m[key] || pathFor(m.activeGeneration, kind));
         if (data !== null) return data;
     }
