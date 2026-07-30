@@ -98,8 +98,16 @@ function testPublish() {
   const c = { events: [{ id: 'e1' }], master: [{ id: 'l1' }], itinerary: [{ tripId: 't1' }] };
   const r = runPub({}, c);
   const m = manifest(r.store);
+  const enc = r.result.replace(/:/g, '_');
   assert(m && m.state === 'committed' && m.activeGeneration === r.result && m.writer === 'Generation Publisher');
+  assert.strictEqual(m.schemaVersion, 1, 'manifest schemaVersion must be 1');
+  assert.strictEqual(m.previousGeneration, null, 'first publication previousGeneration must be null');
+  assert.strictEqual(m.publishedAt, nowSec, 'manifest publishedAt must match current time');
+  assert.strictEqual(m.eventsPath, DATA + 'TDS_Events.' + enc + '.json', 'manifest eventsPath must be encoded');
+  assert.strictEqual(m.masterPath, DATA + 'TDS_Master.' + enc + '.json', 'manifest masterPath must be encoded');
+  assert.strictEqual(m.itineraryPath, DATA + 'Itin_Master.' + enc + '.json', 'manifest itineraryPath must be encoded');
   assert.strictEqual(m.eventCount, 1); assert.strictEqual(m.legCount, 1); assert.strictEqual(m.itineraryCount, 1);
+  assert.deepStrictEqual(m.generationHistory, [r.result], 'first publication history must contain the active generation');
   assert.strictEqual(r.sandbox.global('TDS_Active_Generation'), r.result);
 
   const t = runPub({}, c, { tornWrites: ['TDS_Run_Manifest.json'] });
@@ -107,8 +115,45 @@ function testPublish() {
   assert.strictEqual(t.sandbox.global('TDS_Active_Generation'), '');
 }
 
+function testGenIdParsing() {
+  const parts = 'gen:1784369000:ab12'.split(':');
+  assert.strictEqual(parts[1], '1784369000');
+  assert.strictEqual(parts[2], 'ab12');
+  assert.match('gen:1784369000:ab12', ID_RE);
+}
+
+function testSupersedingPublication() {
+  const a = runPub({}, { events: [{ id: 'e1' }], master: [{ id: 'l1' }], itinerary: [{ tripId: 't1' }] });
+  assert.match(a.result, ID_RE);
+  const b = runPub(a.store.files, { events: [{ id: 'e2' }], master: [{ id: 'l2' }], itinerary: [{ tripId: 't2' }] });
+  assert.match(b.result, ID_RE);
+  assert.notStrictEqual(a.result, b.result);
+  const m = manifest(b.store);
+  assert(m && m.state === 'committed' && m.activeGeneration === b.result && m.previousGeneration === a.result, 'superseding publication must link previous generation');
+  assert(m.generationHistory.indexOf(a.result) !== -1 && m.generationHistory.indexOf(b.result) !== -1 && m.generationHistory[0] === b.result, 'superseding publication history must include both generations with newest first');
+  assert.strictEqual(m.eventCount, 1);
+  assert.strictEqual(m.legCount, 1);
+  assert.strictEqual(m.itineraryCount, 1);
+}
+
+function testFirstCommitNoPrune() {
+  const r = runPub({}, { events: [{ id: 'e1' }], master: [{ id: 'l1' }], itinerary: [{ tripId: 't1' }] });
+  const enc = r.result.replace(/:/g, '_');
+  const deleted = r.store.deleteOrder.some(function (p) {
+    return p === DATA + 'TDS_Events.' + enc + '.json' || p === DATA + 'TDS_Master.' + enc + '.json' || p === DATA + 'Itin_Master.' + enc + '.json';
+  });
+  assert(!deleted, 'first commit must not prune the generation it just published');
+}
+
+function testRestartClearsGeneration() {
+  const { sandbox } = make();
+  assert.strictEqual(sandbox.global('TDS_Active_Generation'), '', 'TDS_Active_Generation must be empty after application restart');
+}
+
 function testFailures() {
   const c = { events: [{ id: 'e1' }], master: [{ id: 'l1' }], itinerary: [{ tripId: 't1' }] };
+  const priorGen = 'gen:1699999999:0001';
+  const priorEnc = priorGen.replace(/:/g, '_');
   [
     { name: 'events', throws: ['TDS_Events'] },
     { name: 'master', throws: ['TDS_Master.gen_'] },
@@ -118,14 +163,37 @@ function testFailures() {
     const r = runPub(prior(), c, { writeThrows: b.throws });
     assert(r.result.indexOf('ERROR:') === 0, b.name + ' should error');
     const m = manifest(r.store);
-    assert(m && m.activeGeneration === 'gen:1699999999:0001', b.name + ' should preserve prior active');
+    assert(m && m.activeGeneration === priorGen, b.name + ' should preserve prior active');
     assert.strictEqual(r.sandbox.global('TDS_Active_Generation'), '');
+    if (b.name !== 'manifest') {
+      assert.strictEqual(m.state, 'failed', b.name + ' failure must leave the candidate in failed state');
+      assert.match(m.generationId, ID_RE, b.name + ' failed manifest must preserve the candidate generationId');
+      assert.notStrictEqual(m.generationId, priorGen, b.name + ' failed candidate must have a distinct generationId');
+      const candidateEnc = m.generationId.replace(/:/g, '_');
+      const candidatePaths = [
+        DATA + 'TDS_Events.' + candidateEnc + '.json',
+        DATA + 'TDS_Master.' + candidateEnc + '.json',
+        DATA + 'Itin_Master.' + candidateEnc + '.json'
+      ];
+      if (b.name === 'events') {
+        assert(!candidatePaths.slice(1).some(function (p) { return r.store.writeOrder.indexOf(p) !== -1; }), 'events failure must stop later resource writes');
+      } else if (b.name === 'master') {
+        assert.strictEqual(r.store.writeOrder.indexOf(candidatePaths[2]), -1, 'master failure must stop itinerary write');
+      } else if (b.name === 'itinerary') {
+        assert(!r.store.writeOrder.some(function (p) { return p === MANIFEST && p !== r.store.writeOrder[r.store.writeOrder.length - 1]; }), 'itinerary failure must not write a committed manifest');
+      }
+    } else {
+      assert.strictEqual(m.state, 'committed', 'manifest write failure must not overwrite the prior committed manifest');
+    }
   });
   const i = runPub({}, { events: null, master: [], itinerary: [] });
   assert(i.result.indexOf('ERROR:') === 0, 'invalid candidate should error');
+  const emptyManifest = manifest(i.store);
+  assert(emptyManifest === null || emptyManifest.state === 'failed', 'invalid candidate must not produce a committed manifest');
 
   const t = runPub({}, { events: [{ id: 'e1' }], master: [{ id: 'l1' }], itinerary: [] }, { tornWrites: ['TDS_Events.gen_'] });
   assert(t.result.indexOf('ERROR:') === 0, 'torn events write should fail');
+  assert.strictEqual(t.sandbox.global('TDS_Active_Generation'), '', 'torn events write must clear active generation');
 }
 
 function testRetention() {
@@ -145,15 +213,33 @@ function testRetention() {
 }
 
 function testMigration() {
+  const master = [{ id: 'legacy1' }];
+  const itin = [{ tripId: 'legacyItin1' }];
   const files = {};
-  files[DATA + 'TDS_Master.json'] = JSON.stringify([{ id: 'legacy1' }]);
-  files[DATA + 'Itin_Master.json'] = JSON.stringify([{ tripId: 'legacyItin1' }]);
+  files[DATA + 'TDS_Master.json'] = JSON.stringify(master);
+  files[DATA + 'Itin_Master.json'] = JSON.stringify(itin);
   const r = runPub(files, 'MIGRATE');
   assert.match(r.result, ID_RE);
   assert(r.store.files[DATA + 'TDS_Master.legacy.json']);
   assert(r.store.files[DATA + 'Itin_Master.legacy.json']);
+  assert.deepStrictEqual(JSON.parse(r.store.files[DATA + 'TDS_Master.legacy.json']), master, 'legacy master backup must contain the original data');
+  assert.deepStrictEqual(JSON.parse(r.store.files[DATA + 'Itin_Master.legacy.json']), itin, 'legacy itinerary backup must contain the original data');
   const m = manifest(r.store);
   assert.strictEqual(m.eventCount, 0); assert.strictEqual(m.legCount, 1); assert.strictEqual(m.itineraryCount, 1);
+}
+
+function testRollbackRestoresLegacy() {
+  const master = [{ id: 'legacy1' }];
+  const itin = [{ tripId: 'legacyItin1' }];
+  const files = {};
+  files[DATA + 'TDS_Master.json'] = JSON.stringify(master);
+  files[DATA + 'Itin_Master.json'] = JSON.stringify(itin);
+  const r = runPub(files, 'MIGRATE');
+  assert.match(r.result, ID_RE);
+  assert.deepStrictEqual(JSON.parse(r.store.files[DATA + 'TDS_Master.legacy.json']), master, 'rollback must restore legacy master from backup');
+  assert.deepStrictEqual(JSON.parse(r.store.files[DATA + 'Itin_Master.legacy.json']), itin, 'rollback must restore legacy itinerary from backup');
+  assert(r.store.files[DATA + 'TDS_Master.json'] !== undefined, 'legacy TDS_Master.json must remain readable for rollback');
+  assert(r.store.files[DATA + 'Itin_Master.json'] !== undefined, 'legacy Itin_Master.json must remain readable for rollback');
 }
 
 function readViaResolver(store, kind) {
@@ -918,10 +1004,14 @@ function testEndToEndFlow() {
 try {
   testResolver();
   testId();
+  testGenIdParsing();
   testPublish();
+  testSupersedingPublication();
   testFailures();
   testRetention();
+  testFirstCommitNoPrune();
   testMigration();
+  testRollbackRestoresLegacy();
   testCompilerCutover();
   testCompilerRejectsZeroDurationLeg();
   testFinaliserCutover();
@@ -935,6 +1025,7 @@ try {
   testApiParserEmitsCommand();
   testRule8aOwnership();
   testGenerationPropagation();
+  testRestartClearsGeneration();
   testPlaceholderSandboxLiveBase();
   testPlaceholderSandboxPolicyFallback();
   testPlaceholderDispatcherStale();
