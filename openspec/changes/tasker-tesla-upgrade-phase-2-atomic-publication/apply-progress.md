@@ -126,7 +126,8 @@ PR-C merged successfully. It is the writer-remediation and generationId-propagat
   - `0c3c3a4` `feat(itinerary): add reorder command infrastructure to Generation_Publisher`
   - `0bfc992` `refactor(gatekeeper, api-parser): emit APPLY_CLUSTER_REORDER command instead of writing master`
   - `29e8a85` `fix(rule-8a): remove Alpha.js master clears and propagate generationId through placeholders`
-- **Diff:** 7 files changed, 371 insertions(+), 9 deletions(-) (under 400-line budget).
+  - `73f8b6f` `fix(publisher): accept null generationId in pre-publication reorder commands` (merge-after-fix)
+- **Diff:** 7 files changed, 371 insertions(+), 9 deletions(-) in the code/test slice. Including the PR-C ledger and task updates, the delta from PR-B to final PR-C merge is 498 insertions(+), 12 deletions(-). This exceeds the 400-line PR review budget by 110 lines; the overrun is due to the apply-progress/task documentation and the post-merge validation fix. The code/test slice itself is within budget.
 - **Tests:** All 9 harness tests pass (`harness/test_*.js`).
 - **GGA pre-commit:** bypassed with `--no-verify` per project convention; manual review noted 0 blockers.
 
