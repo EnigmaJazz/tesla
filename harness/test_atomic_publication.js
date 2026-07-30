@@ -727,6 +727,74 @@ function readJsonFromStore(store, path) {
   try { return JSON.parse(raw); } catch (e) { return null; }
 }
 
+function activeGenFiles() {
+  const activeGen = 'gen:1700000000:ab12';
+  const files = {};
+  files[MANIFEST] = JSON.stringify({ schemaVersion: 1, generationId: activeGen, activeGeneration: activeGen, previousGeneration: null, publishedAt: nowSec, writer: 'Generation Publisher', eventsPath: DATA + 'TDS_Events.gen_1700000000_ab12.json', masterPath: DATA + 'TDS_Master.gen_1700000000_ab12.json', itineraryPath: DATA + 'Itin_Master.gen_1700000000_ab12.json', eventCount: 1, legCount: 1, itineraryCount: 1, generationHistory: [activeGen], state: 'committed' });
+  files[DATA + 'TDS_Events.gen_1700000000_ab12.json'] = JSON.stringify([{ id: 'evt1' }]);
+  files[DATA + 'TDS_Master.gen_1700000000_ab12.json'] = JSON.stringify([{ id: 'evt1' }]);
+  return files;
+}
+
+function publishPar1(store, candidate) {
+  const nextLocals = Object.assign({}, store.locals);
+  nextLocals['par1'] = JSON.stringify(candidate);
+  const { sandbox: pubBox, store: pubStore } = createSandbox({ files: store.files, locals: nextLocals, nowMs: nowSec * 1000 });
+  runScript(PUBLISHER, pubBox, pubStore);
+  if (pubStore.runError) throw new Error(pubStore.runError.message);
+  return pubStore;
+}
+
+function testDepartNowCommandAdapter() {
+  const DEPART_NOW = path.resolve(__dirname, '..', 'Depart_Now.js');
+  const files = activeGenFiles();
+  files[DATA + 'Itin_Master.gen_1700000000_ab12.json'] = JSON.stringify([{ tripId: 'leg1', targetEventId: 'evt1', mode: 'DRIVE', departUnix: nowSec + 3600, arriveUnix: nowSec + 5400, durationSecs: 1800, latenessMins: 5, bufferMins: 10, targetTitle: 'Work' }]);
+
+  const { sandbox: box, store: s } = createSandbox({ files: files, nowMs: nowSec * 1000 });
+  runScript(DEPART_NOW, box, s);
+  if (s.runError) throw new Error(s.runError.message);
+
+  assert(!s.writeLog.some(function (w) { return w.path === DATA + 'Itin_Master.json'; }), 'Depart_Now.js must not write Itin_Master.json directly');
+  assert(s.locals['par1'], 'Depart_Now.js should stage a publish candidate');
+
+  const pubStore = publishPar1(s, JSON.parse(s.locals['par1']));
+  const m = manifest(pubStore);
+  assert(m && m.state === 'committed', 'Depart_Now candidate should publish a committed generation');
+  const itin = JSON.parse(pubStore.files[m.itineraryPath]);
+  assert.strictEqual(itin[0].departUnix, nowSec, 'depart-now should set departUnix to now');
+  assert.strictEqual(itin[0].arriveUnix, nowSec + 1800, 'depart-now should preserve duration');
+  assert.strictEqual(itin[0].latenessMins, 0, 'depart-now should clear lateness');
+  assert.strictEqual(itin[0].bufferMins, 0, 'depart-now should clear buffer');
+}
+
+function testReturnToBaseCommandAdapter() {
+  const RETURN_TO_BASE = path.resolve(__dirname, '..', 'Return_to_Base.js');
+  const files = activeGenFiles();
+  files[DATA + 'Itin_Master.gen_1700000000_ab12.json'] = JSON.stringify([{ tripId: 'leg1', targetEventId: 'evt1', mode: 'DRIVE', departUnix: nowSec + 3600, arriveUnix: nowSec + 5400, targetTitle: 'Work' }]);
+
+  const globals = {
+    TDS_Return_Coords: '51.9,-2.1',
+    TDS_Return_Mode: 'DRIVE',
+    TDS_Return_Name: 'Home',
+    User_Loc: '51.9,-2.1',
+    Car_Loc: '51.9,-2.1'
+  };
+  const { sandbox: box, store: s } = createSandbox({ files: files, globals: globals, nowMs: nowSec * 1000 });
+  runScript(RETURN_TO_BASE, box, s);
+  if (s.runError) throw new Error(s.runError.message);
+
+  assert(!s.writeLog.some(function (w) { return w.path === DATA + 'Itin_Master.json'; }), 'Return_to_Base.js must not write Itin_Master.json directly');
+  assert(s.locals['par1'], 'Return_to_Base.js should stage a publish candidate');
+
+  const pubStore = publishPar1(s, JSON.parse(s.locals['par1']));
+  const m = manifest(pubStore);
+  assert(m && m.state === 'committed', 'Return-to-base candidate should publish a committed generation');
+  const itin = JSON.parse(pubStore.files[m.itineraryPath]);
+  assert.strictEqual(itin.length, 2, 'itinerary should prepend return leg');
+  assert.strictEqual(itin[0].targetEventId, 'MANUAL_RETURN', 'return leg should be first');
+  assert.strictEqual(itin[0].mode, 'DRIVE', 'return leg mode should be DRIVE');
+}
+
 function testEndToEndFlow() {
   // Full live flow: Alpha ingests calendar events, Finaliser stages them,
   // Compiler assembles the leg, Publisher commits the generation, and
@@ -871,6 +939,8 @@ try {
   testPlaceholderSandboxPolicyFallback();
   testPlaceholderDispatcherStale();
   testPlaceholderDispatcherIdle();
+  testDepartNowCommandAdapter();
+  testReturnToBaseCommandAdapter();
   testManifestLastWriteOrder();
   testPruneDeletesOldGenerations();
   testReadBackRejectsTornWrite();
