@@ -2,17 +2,116 @@
 
 const PHASE2_MANIFEST_PATH = "Tasker/Tesla/Data/TDS_Run_Manifest.json";
 const PHASE2_DATA_DIR = "Tasker/Tesla/Data/";
+const PHASE2_REORDER_QUEUE_PATH = PHASE2_DATA_DIR + "TDS_Reorder_Commands.json";
 const PHASE2_RETENTION = 5;
 const ID_COLLISION_RETRY_MAX = 16;
 const MANIFEST_SCHEMA_VERSION = 1;
 const MANIFEST_WRITER = "Generation Publisher";
 const GENERATION_ID_REGEX = /^gen:\d{10}:[0-9a-f]{4}$/;
+const REORDER_COMMAND_TYPE = "APPLY_CLUSTER_REORDER";
 
 function nowSec() { return Math.floor(Date.now() / 1000); }
 function hex4(v) { let s = v.toString(16); while (s.length < 4) s = "0" + s; return s; }
 function encodeGen(g) { return String(g).replace(/:/g, "_"); }
 function pathFor(g, kind) {
   return PHASE2_DATA_DIR + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + encodeGen(g) + ".json";
+}
+function readReorderQueue() {
+  const raw = readFile(PHASE2_REORDER_QUEUE_PATH) || "";
+  if (!raw) return [];
+  try { return JSON.parse(raw); } catch (e) { return []; }
+}
+function writeReorderQueue(commands) {
+  writeFile(PHASE2_REORDER_QUEUE_PATH, JSON.stringify(commands));
+}
+function clearReorderQueue() {
+  writeFile(PHASE2_REORDER_QUEUE_PATH, "[]");
+}
+function isSameUTCDay(unixSecA, unixSecB) {
+  const dA = new Date(unixSecA * 1000);
+  const dB = new Date(unixSecB * 1000);
+  return dA.getUTCFullYear() === dB.getUTCFullYear()
+      && dA.getUTCMonth() === dB.getUTCMonth()
+      && dA.getUTCDate() === dB.getUTCDate();
+}
+function validateReorderCommand(cmd, master, events, genId) {
+  if (!cmd || cmd.type !== REORDER_COMMAND_TYPE) {
+    return { valid: false, reason: "type mismatch" };
+  }
+  if (!GENERATION_ID_REGEX.test(cmd.generationId || "")) {
+    return { valid: false, reason: "invalid generationId format" };
+  }
+  if (cmd.generationId !== genId) {
+    return { valid: false, reason: "stale generation" };
+  }
+  if (!Array.isArray(cmd.orderedEventIds) || cmd.orderedEventIds.length === 0) {
+    return { valid: false, reason: "empty orderedEventIds" };
+  }
+  const seen = {};
+  for (let i = 0; i < cmd.orderedEventIds.length; i++) {
+    const id = cmd.orderedEventIds[i];
+    if (!id || typeof id !== "string") return { valid: false, reason: "non-string event id" };
+    if (seen[id]) return { valid: false, reason: "duplicate event id" };
+    seen[id] = true;
+  }
+  const idSet = {};
+  for (let i = 0; i < master.length; i++) idSet[master[i].id] = true;
+  for (let i = 0; i < cmd.orderedEventIds.length; i++) {
+    if (!idSet[cmd.orderedEventIds[i]]) return { valid: false, reason: "event id not in master" };
+  }
+  let dayAnchor = 0;
+  for (let i = 0; i < events.length; i++) {
+    const ev = events[i];
+    if (cmd.orderedEventIds.indexOf(ev.id) !== -1) {
+      const start = parseInt(ev.start, 10) || 0;
+      if (dayAnchor === 0) dayAnchor = start;
+      else if (start > 0 && !isSameUTCDay(dayAnchor, start)) return { valid: false, reason: "cluster crosses UTC day" };
+    }
+  }
+  return { valid: true };
+}
+function applyReorderCommand(master, cmd) {
+  const targetIndices = [];
+  const clusterMap = {};
+  for (let i = 0; i < master.length; i++) {
+    if (cmd.orderedEventIds.indexOf(master[i].id) !== -1) {
+      targetIndices.push(i);
+      clusterMap[master[i].id] = master[i];
+    }
+  }
+  for (let j = 0; j < cmd.orderedEventIds.length; j++) {
+    if (targetIndices[j] !== undefined && clusterMap[cmd.orderedEventIds[j]]) {
+      master[targetIndices[j]] = clusterMap[cmd.orderedEventIds[j]];
+    }
+  }
+  return master;
+}
+function drainReorderQueue(master, events, genId) {
+  const commands = readReorderQueue();
+  const remaining = [];
+  let appliedCount = 0;
+  for (let i = 0; i < commands.length; i++) {
+    const cmd = commands[i];
+    const validation = validateReorderCommand(cmd, master, events, genId);
+    if (validation.valid) {
+      applyReorderCommand(master, cmd);
+      appliedCount++;
+    } else {
+      logEvent("warn", "REORDER_COMMAND_REJECTED", genId, { source: cmd.source, reason: validation.reason, command: cmd });
+      if (cmd.generationId === genId) {
+        // Reject invalid commands for the current generation; keep stale ones for later? No, stale never valid.
+      }
+      if (cmd.generationId !== genId) {
+        logEvent("warn", "STALE_REORDER_COMMAND_REJECTED", genId || cmd.generationId, { source: cmd.source, reason: validation.reason, command: cmd });
+      }
+      remaining.push(cmd);
+    }
+  }
+  if (appliedCount > 0) {
+    logEvent("info", "REORDER_COMMANDS_APPLIED", genId, { count: appliedCount, totalSeen: commands.length });
+  }
+  clearReorderQueue();
+  return master;
 }
 function logEvent(severity, code, genId, details) {
   flash(JSON.stringify({ timestamp: Date.now(), generationId: genId || null, component: "Generation_Publisher", severity: severity, code: code, tripId: null, details: details || {} }));
@@ -74,7 +173,8 @@ function publish(candidate) {
     const mstPath = pathFor(genId, "master");
     const itnPath = pathFor(genId, "itinerary");
     writeWithReadback(evtPath, JSON.stringify(candidate.events), genId);
-    writeWithReadback(mstPath, JSON.stringify(candidate.master), genId);
+    const reorderedMaster = drainReorderQueue(candidate.master.slice(), candidate.events, genId);
+    writeWithReadback(mstPath, JSON.stringify(reorderedMaster), genId);
     writeWithReadback(itnPath, JSON.stringify(candidate.itinerary), genId);
     writeWithReadback(PHASE2_MANIFEST_PATH, JSON.stringify(manifest(genId, previousId, counts, "committed", history)), genId);
     setGlobal("TDS_Active_Generation", genId);

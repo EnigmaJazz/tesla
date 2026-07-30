@@ -139,7 +139,7 @@ try {
                 skippedStale++;
                 flash(JSON.stringify({
                     timestamp: nowSec,
-                    generationId: null,
+                    generationId: global('TDS_Active_Generation') || null,
                     component: "Dispatcher",
                     severity: "WARN",
                     code: "STALE_TRIP_REJECTED",
@@ -331,7 +331,7 @@ try {
         syncIntervalMins = IDLE_SYNC_MINS;
         flash(JSON.stringify({
             timestamp: nowSec,
-            generationId: null,
+            generationId: global('TDS_Active_Generation') || null,
             component: "Dispatcher",
             severity: "INFO",
             code: "IDLE_SYNC_ENGAGED",

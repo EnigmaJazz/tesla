@@ -435,8 +435,8 @@ try {
     setLocal('orphaned_travel_ids', orphanedTravel.join("|"));
 
     setGlobal('TDS_Count', validEvents.length.toString());
-    writeFile("Tasker/Tesla/Data/TDS_Master.json", "[]", false);
-    writeFile("Tasker/Tesla/Data/Itin_Master.json", "[]", false);
+    // Phase 2 RULE-8A: Alpha no longer clears the live master files.
+    // Generation_Publisher owns all writes to TDS_Master.* and Itin_Master.*.
 
 } catch(e) { 
     flash("Monolithic Alpha Engine Crash:\n" + e.message); 
