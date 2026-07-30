@@ -54,6 +54,40 @@ function publishCandidate(candidate) {
     return null;
 }
 
+// Phase 2 reader cutover: the Compiler assembles against the committed
+// generation's master and itinerary when available, falling back to the
+// legacy TDS_Master.json / Itin_Master.json while migration is in flight.
+function readJson(path) {
+    let raw = "";
+    try { raw = readFile(path) || ""; } catch(e) {}
+    if (!raw || raw.indexOf("%") === 0) return null;
+    try { return JSON.parse(raw); } catch(e) { return null; }
+}
+function pathFor(g, kind) {
+    return "Tasker/Tesla/Data/" + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
+}
+function readActiveGeneration(kind) {
+    const m = readJson("Tasker/Tesla/Data/TDS_Run_Manifest.json");
+    const key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
+    if (m && m.activeGeneration) {
+        const data = readJson(m[key] || pathFor(m.activeGeneration, kind));
+        if (data !== null) return data;
+    }
+    if (m && m.previousGeneration) {
+        const prev = readJson(pathFor(m.previousGeneration, kind));
+        if (prev !== null) return prev;
+    }
+    if (kind === "events" || kind === "master") {
+        const legacy = readJson("Tasker/Tesla/Data/TDS_Master.json");
+        if (legacy !== null) return legacy;
+    }
+    if (kind === "itinerary") {
+        const legacyItin = readJson("Tasker/Tesla/Data/Itin_Master.json");
+        if (legacyItin !== null) return legacyItin;
+    }
+    return [];
+}
+
 try {
     const mode        = (local('block_step4') || "WALK").toUpperCase().trim(); 
     const apiType     = (local('block_step8') || "DEPART").trim(); 
@@ -111,13 +145,7 @@ try {
 
     const nowSec = Math.floor(Date.now() / 1000);
 
-    let masterRaw = readFile("Tasker/Tesla/Data/TDS_Master.json") || "[]";
-    if (masterRaw.indexOf("%") === 0) masterRaw = "[]";
-
-    let masterArr = [];
-    try { 
-        masterArr = JSON.parse(masterRaw); 
-    } catch(e) {}
+    const masterArr = readActiveGeneration("master");
 
     let mEv = masterArr.find(e => (e.id || "DEFAULT") === evId);
     let evStartSecs = mEv ? parseInt(mEv.start, 10) : parseInt(local('block_step5'), 10) || nowSec;
@@ -176,13 +204,7 @@ try {
         pendingChain.push(currentLeg);
         writeFile("Tasker/Tesla/Data/Pending_Compiler.json", "[]", false); 
 
-        let itineraryRaw = readFile("Tasker/Tesla/Data/Itin_Master.json") || "[]";
-        if (itineraryRaw.indexOf("%") === 0) itineraryRaw = "[]";
-
-        let itinerary = [];
-        try { 
-            itinerary = JSON.parse(itineraryRaw); 
-        } catch(e) {}
+    let itinerary = readActiveGeneration("itinerary");
 
         let hardFloor = nowSec; 
 

@@ -1,9 +1,20 @@
 // Mock Tasker runtime for the test harness.
 // Tasker scripts call local(key), setLocal(key, value), global(key), setGlobal,
-// readFile(path), writeFile(path, content), flash(message), Date.now() and
-// use built-ins like Math, JSON, parseInt, isNaN. This module builds a vm
-// sandbox that mimics the runtime and exposes a live store the test can
-// inspect after the script has run.
+// readFile(path), writeFile(path, content), deleteFile(path), flash(message),
+// Date.now() and use built-ins like Math, JSON, parseInt, isNaN. This module
+// builds a vm sandbox that mimics the runtime and exposes a live store the test
+// can inspect after the script has run.
+//
+// Failure injection (options.failures):
+//   writeThrows  - array of path substrings; writeFile throws if any match.
+//   tornWrites   - array of path substrings; writeFile stores a truncated
+//                  copy so the next readFile returns partial bytes, modelling
+//                  a torn write that read-back detection rejects.
+//
+// Store observability:
+//   store.writeLog   - every writeFile and deleteFile call with op/path/length.
+//   store.writeOrder - ordered list of paths passed to writeFile.
+//   store.deleteOrder- ordered list of paths passed to deleteFile.
 
 const path = require('node:path');
 const { runScript } = require('./runner');
@@ -34,6 +45,8 @@ function createSandbox(options) {
 
   const flashLog = [];
   const writeLog = [];
+  const writeOrder = [];
+  const deleteOrder = [];
   const failures = options.failures || {};
   const writeThrows = failures.writeThrows || [];
   const tornWrites = failures.tornWrites || [];
@@ -72,10 +85,12 @@ function createSandbox(options) {
     const written = matchesAny(path, tornWrites) ? s.slice(0, Math.max(0, s.length - 4)) : s;
     liveFiles[path] = written;
     writeLog.push({ op: "write", path: path, length: written.length });
+    writeOrder.push(path);
   }
   function deleteFile(path) {
     delete liveFiles[path];
     writeLog.push({ op: "delete", path: path });
+    deleteOrder.push(path);
   }
   function flash(message) {
     flashLog.push(typeof message === "string" ? message : String(message));
@@ -131,6 +146,8 @@ function createSandbox(options) {
     files: liveFiles,
     flashLog: flashLog,
     writeLog: writeLog,
+    writeOrder: writeOrder,
+    deleteOrder: deleteOrder,
     get now() { return now; },
     set now(v) { now = v; }
   };
