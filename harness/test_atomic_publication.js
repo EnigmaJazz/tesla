@@ -316,6 +316,60 @@ function testCutoverProof() {
   assert(!directWriteRe.test(finaliserSource), 'Finaliser.js must not contain direct writeFile to TDS_Master.json or Itin_Master.json');
 }
 
+function testReorderTiming() {
+  const expectedGen = 'gen:' + nowSec + ':ab12';
+  const files = prior();
+  files[DATA + 'TDS_Reorder_Commands.json'] = JSON.stringify([{
+    type: 'APPLY_CLUSTER_REORDER',
+    generationId: expectedGen,
+    clusterId: 'cluster-1',
+    orderedEventIds: ['e3', 'e1', 'e2'],
+    source: 'test',
+    emittedAt: nowSec
+  }]);
+  const candidate = {
+    events: [
+      { id: 'e1', start: nowSec },
+      { id: 'e2', start: nowSec },
+      { id: 'e3', start: nowSec }
+    ],
+    master: [{ id: 'e1' }, { id: 'e2' }, { id: 'e3' }],
+    itinerary: []
+  };
+  const r = runPub(files, candidate, {}, function () { return 0xab12 / 0x10000; });
+  assert.strictEqual(r.result, expectedGen, 'publisher should mint the expected generation');
+  const m = manifest(r.store);
+  const master = JSON.parse(r.store.files[m.masterPath]);
+  assert.deepStrictEqual(master.map(function (x) { return x.id; }), ['e3', 'e1', 'e2'], 'reorder command must be applied before master write');
+  const appliedLog = r.store.flashLog.find(function (f) { return f.indexOf('REORDER_COMMANDS_APPLIED') !== -1; });
+  assert(appliedLog, 'publisher should log reorder command application');
+}
+
+function testStaleReorderRejection() {
+  const expectedGen = 'gen:' + nowSec + ':ab12';
+  const staleGen = 'gen:1699999999:0001';
+  const files = prior();
+  files[DATA + 'TDS_Reorder_Commands.json'] = JSON.stringify([{
+    type: 'APPLY_CLUSTER_REORDER',
+    generationId: staleGen,
+    clusterId: 'cluster-1',
+    orderedEventIds: ['e3', 'e1', 'e2'],
+    source: 'test',
+    emittedAt: nowSec
+  }]);
+  const candidate = {
+    events: [{ id: 'e1' }, { id: 'e2' }, { id: 'e3' }],
+    master: [{ id: 'e1' }, { id: 'e2' }, { id: 'e3' }],
+    itinerary: []
+  };
+  const r = runPub(files, candidate, {}, function () { return 0xab12 / 0x10000; });
+  const m = manifest(r.store);
+  const master = JSON.parse(r.store.files[m.masterPath]);
+  assert.deepStrictEqual(master.map(function (x) { return x.id; }), ['e1', 'e2', 'e3'], 'stale reorder command must be rejected');
+  const log = r.store.flashLog.find(function (f) { return f.indexOf('REORDER_COMMAND_REJECTED') !== -1 || f.indexOf('STALE_REORDER_COMMAND_REJECTED') !== -1; });
+  assert(log, 'stale reorder command should be logged as rejected');
+}
+
 try {
   testResolver();
   testId();
@@ -328,6 +382,8 @@ try {
   testReaderFallback();
   testEmptyFallback();
   testCutoverProof();
+  testReorderTiming();
+  testStaleReorderRejection();
   console.log('PASS: atomic-publication: publisher and resolver contract OK');
 } catch (e) {
   fail(e.message);
