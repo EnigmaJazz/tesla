@@ -316,6 +316,214 @@ function testCutoverProof() {
   assert(!directWriteRe.test(finaliserSource), 'Finaliser.js must not contain direct writeFile to TDS_Master.json or Itin_Master.json');
 }
 
+function testReorderTiming() {
+  const expectedGen = 'gen:' + nowSec + ':ab12';
+  const files = prior();
+  // Commands emitted before generation minting carry a null generationId;
+  // the Publisher applies them to the generation being published.
+  files[DATA + 'TDS_Reorder_Commands.json'] = JSON.stringify([{
+    type: 'APPLY_CLUSTER_REORDER',
+    generationId: null,
+    clusterId: 'cluster-1',
+    orderedEventIds: ['e3', 'e1', 'e2'],
+    source: 'test',
+    emittedAt: nowSec
+  }]);
+  const candidate = {
+    events: [
+      { id: 'e1', start: nowSec },
+      { id: 'e2', start: nowSec },
+      { id: 'e3', start: nowSec }
+    ],
+    master: [{ id: 'e1' }, { id: 'e2' }, { id: 'e3' }],
+    itinerary: []
+  };
+  const r = runPub(files, candidate, {}, function () { return 0xab12 / 0x10000; });
+  assert.strictEqual(r.result, expectedGen, 'publisher should mint the expected generation');
+  const m = manifest(r.store);
+  const master = JSON.parse(r.store.files[m.masterPath]);
+  assert.deepStrictEqual(master.map(function (x) { return x.id; }), ['e3', 'e1', 'e2'], 'reorder command must be applied before master write');
+  const appliedLog = r.store.flashLog.find(function (f) { return f.indexOf('REORDER_COMMANDS_APPLIED') !== -1; });
+  assert(appliedLog, 'publisher should log reorder command application');
+}
+
+function testStaleReorderRejection() {
+  const expectedGen = 'gen:' + nowSec + ':ab12';
+  const staleGen = 'gen:1699999999:0001';
+  const files = prior();
+  files[DATA + 'TDS_Reorder_Commands.json'] = JSON.stringify([{
+    type: 'APPLY_CLUSTER_REORDER',
+    generationId: staleGen,
+    clusterId: 'cluster-1',
+    orderedEventIds: ['e3', 'e1', 'e2'],
+    source: 'test',
+    emittedAt: nowSec
+  }]);
+  const candidate = {
+    events: [{ id: 'e1' }, { id: 'e2' }, { id: 'e3' }],
+    master: [{ id: 'e1' }, { id: 'e2' }, { id: 'e3' }],
+    itinerary: []
+  };
+  const r = runPub(files, candidate, {}, function () { return 0xab12 / 0x10000; });
+  const m = manifest(r.store);
+  const master = JSON.parse(r.store.files[m.masterPath]);
+  assert.deepStrictEqual(master.map(function (x) { return x.id; }), ['e1', 'e2', 'e3'], 'stale reorder command must be rejected');
+  const log = r.store.flashLog.find(function (f) { return f.indexOf('REORDER_COMMAND_REJECTED') !== -1 || f.indexOf('STALE_REORDER_COMMAND_REJECTED') !== -1; });
+  assert(log, 'stale reorder command should be logged as rejected');
+}
+
+function testGatekeeperEmitsCommand() {
+  const GATEKEEPER = path.resolve(__dirname, '..', 'Gatekeeper.js');
+  const activeGen = 'gen:1700000000:ab12';
+  const files = {};
+  files[DATA + 'TDS_Reorder_Commands.json'] = '[]';
+  const cluster = { waypoints: [{ id: 'wp1', dropinOrder: 2 }, { id: 'wp2', dropinOrder: 1 }], destination: { id: 'dest1', coords: '52.0,-2.0' } };
+  const { sandbox, store } = createSandbox({
+    locals: { par1: JSON.stringify(cluster), par11: '', par12: '', par13: '', par14: '' },
+    globals: { User_Loc: '51.9,-2.1', TDS_Active_Generation: activeGen },
+    files: files,
+    nowMs: nowSec * 1000
+  });
+  runScript(GATEKEEPER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  const queue = JSON.parse(store.files[DATA + 'TDS_Reorder_Commands.json'] || '[]');
+  assert.strictEqual(queue.length, 1, 'Gatekeeper should emit one reorder command');
+  assert.strictEqual(queue[0].type, 'APPLY_CLUSTER_REORDER');
+  assert.deepStrictEqual(queue[0].orderedEventIds, ['wp2', 'wp1']);
+  assert.strictEqual(queue[0].generationId, activeGen);
+  const directMasterWrite = store.writeLog.some(function (w) { return w.path === DATA + 'TDS_Master.json'; });
+  assert(!directMasterWrite, 'Gatekeeper must not write TDS_Master.json');
+}
+
+function testApiParserEmitsCommand() {
+  const API_PARSER = path.resolve(__dirname, '..', 'API_Parser.js');
+  const activeGen = 'gen:1700000000:ab12';
+  const cluster = { waypoints: [{ id: 'wp1' }, { id: 'wp2' }], destination: { id: 'dest1' } };
+  const payload = { routes: [{ optimizedIntermediateWaypointIndex: [1, 0] }] };
+  const files = {};
+  files[DATA + 'TDS_Reorder_Commands.json'] = '[]';
+  files[DATA + 'temp_payload.json'] = JSON.stringify(payload);
+  const { sandbox, store } = createSandbox({
+    locals: { api_route_mode: 'CLUSTER', par1: JSON.stringify(cluster), par11: '', par12: '', par13: '', par14: '' },
+    globals: { User_Loc: '51.9,-2.1', TDS_Active_Generation: activeGen },
+    files: files,
+    nowMs: nowSec * 1000
+  });
+  runScript(API_PARSER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  const queue = JSON.parse(store.files[DATA + 'TDS_Reorder_Commands.json'] || '[]');
+  assert.strictEqual(queue.length, 1, 'API_Parser should emit one reorder command');
+  assert.strictEqual(queue[0].type, 'APPLY_CLUSTER_REORDER');
+  assert.deepStrictEqual(queue[0].orderedEventIds, ['wp2', 'wp1']);
+  assert.strictEqual(queue[0].generationId, activeGen);
+  const directMasterWrite = store.writeLog.some(function (w) { return w.path === DATA + 'TDS_Master.json'; });
+  assert(!directMasterWrite, 'API_Parser must not write TDS_Master.json');
+}
+
+function testRule8aOwnership() {
+  const fs = require('node:fs');
+  const directWriteRe = /writeFile\s*\(\s*["']Tasker\/Tesla\/Data\/(TDS_Master\.json|Itin_Master\.json)["']\s*,/;
+  const alphaClearRe = /writeFile\s*\(\s*["']Tasker\/Tesla\/Data\/TDS_Master\.json["']\s*,\s*"\[\]"/;
+  const alphaItinClearRe = /writeFile\s*\(\s*["']Tasker\/Tesla\/Data\/Itin_Master\.json["']\s*,\s*"\[\]"/;
+  const gatekeeperSource = fs.readFileSync(path.resolve(__dirname, '..', 'Gatekeeper.js'), 'utf8');
+  const apiParserSource = fs.readFileSync(path.resolve(__dirname, '..', 'API_Parser.js'), 'utf8');
+  const alphaSource = fs.readFileSync(path.resolve(__dirname, '..', 'Alpha.js'), 'utf8');
+  assert(!directWriteRe.test(gatekeeperSource), 'Gatekeeper.js must not write TDS_Master.json or Itin_Master.json');
+  assert(!directWriteRe.test(apiParserSource), 'API_Parser.js must not write TDS_Master.json or Itin_Master.json');
+  assert(!alphaClearRe.test(alphaSource), 'Alpha.js must not clear TDS_Master.json');
+  assert(!alphaItinClearRe.test(alphaSource), 'Alpha.js must not clear Itin_Master.json');
+}
+
+function testGenerationPropagation() {
+  const activeGen = 'gen:1700000000:ab12';
+  const files = {};
+  files[MANIFEST] = JSON.stringify({ schemaVersion: 1, activeGeneration: activeGen, previousGeneration: null, publishedAt: nowSec, writer: 'Generation Publisher', eventsPath: DATA + 'TDS_Events.gen_1700000000_ab12.json', masterPath: DATA + 'TDS_Master.gen_1700000000_ab12.json', itineraryPath: DATA + 'Itin_Master.gen_1700000000_ab12.json', eventCount: 0, legCount: 0, itineraryCount: 0, generationHistory: [activeGen], state: 'committed' });
+  files[DATA + 'TDS_Master.gen_1700000000_ab12.json'] = '[]';
+  files[DATA + 'Itin_Master.gen_1700000000_ab12.json'] = '[]';
+  files[DATA + 'TDS_Events.gen_1700000000_ab12.json'] = '[]';
+
+  const DISPATCHER = path.resolve(__dirname, '..', 'Dispatcher.js');
+  const { sandbox, store } = createSandbox({ files: files, globals: { Current_Status: 'Idle', TDS_Active_Generation: activeGen }, nowMs: nowSec * 1000 });
+  runScript(DISPATCHER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  const idleFlash = store.flashLog.find(function (f) { return f.indexOf('IDLE_SYNC_ENGAGED') !== -1; });
+  assert(idleFlash, 'expected IDLE_SYNC_ENGAGED flash');
+  assert.strictEqual(JSON.parse(idleFlash).generationId, activeGen, 'Dispatcher idle flash must propagate active generation');
+}
+
+function testPlaceholderSandboxLiveBase() {
+  const activeGen = 'gen:1700000000:ab12';
+  const itinJson = JSON.stringify([{ tripId: 'stale_away', targetEventId: 'e1', mode: 'DRIVE', pitstopState: 'handled', departUnix: nowSec - 3600, arriveUnix: nowSec - 1800 }]);
+  const masterJson = JSON.stringify([{ id: 'e1', start: nowSec + 3600, end: nowSec + 7200, duration: 3600, title: 'Future', loc: 'Work', coords: '52.0,-2.0' }]);
+  const baseGeocodes = [nowSec.toString(), (nowSec + 86400).toString(), '51.9,-2.1', '0', 'Home', '', 'home_base'].join('~');
+  const files = {
+    [DATA + 'Itin_Master.json']: itinJson,
+    [DATA + 'TDS_Master.json']: masterJson,
+    [DATA + 'TDS_Base_Geocodes.txt']: baseGeocodes,
+    [DATA + 'TDS_Overrides.json']: '{}',
+    [DATA + 'Temp_Route_Cache.txt']: '',
+    [DATA + 'RouteCache.txt']: ''
+  };
+  const globals = {
+    User_At_Base: 'true',
+    Base_Arrival_Unix: nowSec.toString(),
+    User_Loc: '51.9,-2.1',
+    Home_Coords: '51.9,-2.1',
+    Current_Status: '',
+    Arrival_Buffer_Mins: '5',
+    Departure_Buffer_Mins: '5',
+    Max_Walk_Meters: '8046',
+    Daily_Walk_Meters: '0',
+    Live_Traffic_Threshold: '7200',
+    Car_Connected: 'false',
+    TDS_Active_Generation: activeGen
+  };
+  const locals = { idx: '1', vcar_loc: '51.9,-2.1', virtual_time: String(nowSec), virtual_loc: '51.9,-2.1' };
+  const SANDBOX = path.resolve(__dirname, '..', 'Sandbox_Engine.js');
+  const { sandbox, store } = createSandbox({ locals: locals, globals: globals, files: files, nowMs: nowSec * 1000 });
+  runScript(SANDBOX, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  const flash = store.flashLog.find(function (f) { return f.indexOf('LIVE_BASE_OVERRIDES_LEGACY_ORIGIN') !== -1; });
+  assert(flash, 'expected LIVE_BASE_OVERRIDES_LEGACY_ORIGIN flash');
+  assert.strictEqual(JSON.parse(flash).generationId, activeGen, 'Sandbox live-base flash must propagate active generation');
+}
+
+function testPlaceholderSandboxPolicyFallback() {
+  const fs = require('node:fs');
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'Sandbox_Engine.js'), 'utf8');
+  const idx = source.indexOf('DEPARTURE_POLICY_FALLBACK_USED');
+  assert(idx !== -1, 'Sandbox must contain DEPARTURE_POLICY_FALLBACK_USED log site');
+  const snippet = source.substring(Math.max(0, idx - 200), idx + 60);
+  assert(snippet.indexOf("generationId: global('TDS_Active_Generation') || null") !== -1, 'Sandbox DEPARTURE_POLICY_FALLBACK_USED must read global TDS_Active_Generation');
+}
+
+function testPlaceholderDispatcherStale() {
+  const activeGen = 'gen:1700000000:ab12';
+  const files = {};
+  files[MANIFEST] = JSON.stringify({ schemaVersion: 1, activeGeneration: activeGen, previousGeneration: null, publishedAt: nowSec, writer: 'Generation Publisher', eventsPath: DATA + 'TDS_Events.gen_1700000000_ab12.json', masterPath: DATA + 'TDS_Master.gen_1700000000_ab12.json', itineraryPath: DATA + 'Itin_Master.gen_1700000000_ab12.json', eventCount: 1, legCount: 1, itineraryCount: 1, generationHistory: [activeGen], state: 'committed' });
+  files[DATA + 'TDS_Master.gen_1700000000_ab12.json'] = JSON.stringify([{ id: 'stale', start: nowSec - 18000, end: nowSec - 14400 }]);
+  files[DATA + 'Itin_Master.gen_1700000000_ab12.json'] = JSON.stringify([{ tripId: 'stale', mode: 'DRIVE', departUnix: nowSec - 18000, arriveUnix: nowSec - 14400, targetTitle: 'Past', targetCoords: '52.0,-2.0' }]);
+  files[DATA + 'TDS_Events.gen_1700000000_ab12.json'] = JSON.stringify([{ id: 'stale' }]);
+  const DISPATCHER = path.resolve(__dirname, '..', 'Dispatcher.js');
+  const { sandbox, store } = createSandbox({ files: files, globals: { Current_Status: 'Idle', TDS_Active_Generation: activeGen }, nowMs: nowSec * 1000 });
+  runScript(DISPATCHER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  const flash = store.flashLog.find(function (f) { return f.indexOf('STALE_TRIP_REJECTED') !== -1; });
+  assert(flash, 'expected STALE_TRIP_REJECTED flash');
+  assert.strictEqual(JSON.parse(flash).generationId, activeGen, 'Dispatcher stale flash must propagate active generation');
+}
+
+function testPlaceholderDispatcherIdle() {
+  const activeGen = 'gen:1700000000:ab12';
+  const DISPATCHER = path.resolve(__dirname, '..', 'Dispatcher.js');
+  const { sandbox, store } = createSandbox({ files: {}, globals: { Current_Status: 'Idle', TDS_Active_Generation: activeGen }, nowMs: nowSec * 1000 });
+  runScript(DISPATCHER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  const flash = store.flashLog.find(function (f) { return f.indexOf('IDLE_SYNC_ENGAGED') !== -1; });
+  assert(flash, 'expected IDLE_SYNC_ENGAGED flash');
+  assert.strictEqual(JSON.parse(flash).generationId, activeGen, 'Dispatcher idle flash must propagate active generation');
+}
+
 try {
   testResolver();
   testId();
@@ -328,6 +536,16 @@ try {
   testReaderFallback();
   testEmptyFallback();
   testCutoverProof();
+  testReorderTiming();
+  testStaleReorderRejection();
+  testGatekeeperEmitsCommand();
+  testApiParserEmitsCommand();
+  testRule8aOwnership();
+  testGenerationPropagation();
+  testPlaceholderSandboxLiveBase();
+  testPlaceholderSandboxPolicyFallback();
+  testPlaceholderDispatcherStale();
+  testPlaceholderDispatcherIdle();
   console.log('PASS: atomic-publication: publisher and resolver contract OK');
 } catch (e) {
   fail(e.message);
