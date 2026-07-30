@@ -28,6 +28,10 @@ function createSandbox(options) {
   });
 
   const flashLog = [];
+  const writeLog = [];
+  const failures = options.failures || {};
+  const writeThrows = failures.writeThrows || [];
+  const tornWrites = failures.tornWrites || [];
   let now = initialNowMs;
 
   function local(key) {
@@ -45,8 +49,22 @@ function createSandbox(options) {
   function readFile(path) {
     return Object.prototype.hasOwnProperty.call(liveFiles, path) ? liveFiles[path] : "";
   }
+  function matchesAny(path, patterns) {
+    for (let i = 0; i < patterns.length; i++) {
+      if (path.indexOf(patterns[i]) !== -1) return true;
+    }
+    return false;
+  }
   function writeFile(path, content) {
-    liveFiles[path] = stringify(content);
+    if (matchesAny(path, writeThrows)) throw new Error("injected write failure: " + path);
+    const s = stringify(content);
+    const written = matchesAny(path, tornWrites) ? s.slice(0, Math.max(0, s.length - 4)) : s;
+    liveFiles[path] = written;
+    writeLog.push({ op: "write", path: path, length: written.length });
+  }
+  function deleteFile(path) {
+    delete liveFiles[path];
+    writeLog.push({ op: "delete", path: path });
   }
   function flash(message) {
     flashLog.push(typeof message === "string" ? message : String(message));
@@ -79,9 +97,10 @@ function createSandbox(options) {
     setGlobal: setGlobal,
     readFile: readFile,
     writeFile: writeFile,
+    deleteFile: deleteFile,
     flash: flash,
     Date: PinnedDate,
-    Math: Math,
+    Math: Object.assign(Object.create(Math), { random: Math.random }),
     JSON: JSON,
     console: console,
     Number: Number,
@@ -99,6 +118,7 @@ function createSandbox(options) {
     globals: liveGlobals,
     files: liveFiles,
     flashLog: flashLog,
+    writeLog: writeLog,
     get now() { return now; },
     set now(v) { now = v; }
   };
