@@ -41,6 +41,19 @@ function getSpeed(mode) {
     return map[mode] || 1.4;
 }
 
+// Phase 2 hand-off: the Compiler no longer writes the live Itin_Master.json.
+// It stages a complete generation candidate and delegates the commit to the
+// Generation_Publisher. In Tasker the next action reads local('par1') and
+// runs the publisher; in the test harness a sandbox.publish callback is
+// available, so use it when present.
+function publishCandidate(candidate) {
+    setLocal('par1', JSON.stringify(candidate));
+    if (typeof publish === 'function') {
+        return publish(candidate);
+    }
+    return null;
+}
+
 try {
     const mode        = (local('block_step4') || "WALK").toUpperCase().trim(); 
     const apiType     = (local('block_step8') || "DEPART").trim(); 
@@ -428,8 +441,8 @@ try {
             writeFile("Tasker/Tesla/Data/TDS_Overrides.json", JSON.stringify(OVR), false); 
         } catch(e) {}
 
-        writeFile("Tasker/Tesla/Data/Itin_Master.json", JSON.stringify(itinerary), false);
-        
+        publishCandidate({ events: masterArr, master: masterArr, itinerary: itinerary });
+
         setLocal('cal_title_out', outTitles.join("|"));
         setLocal('cal_start_out', outStarts.join("|"));
         setLocal('cal_end_out', outEnds.join("|"));

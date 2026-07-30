@@ -30,6 +30,19 @@ function utcDayBoundaryUnix(unixSec) {
     return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000;
 }
 
+// Phase 2 hand-off: the Finaliser no longer writes the live TDS_Master.json.
+// It stages a complete generation candidate and delegates the commit to the
+// Generation_Publisher. In Tasker the next action reads local('par1') and
+// runs the publisher; in the test harness a sandbox.publish callback is
+// available, so use it when present.
+function publishCandidate(candidate) {
+    setLocal('par1', JSON.stringify(candidate));
+    if (typeof publish === 'function') {
+        return publish(candidate);
+    }
+    return null;
+}
+
 try {
     let tempRaw = local('tds_temp_json') || "[]";
     if (tempRaw.indexOf("%") === 0) tempRaw = "[]";
@@ -152,7 +165,11 @@ try {
     let adHoc = global('AdHoc_Base') || "";
     if (adHoc.indexOf("%") !== 0 && adHoc.length > 5) finalBaseStr += (finalBaseStr.length > 0 ? "|" : "") + adHoc;
 
-    writeFile("Tasker/Tesla/Data/TDS_Master.json", JSON.stringify(validEvents), false);
+    let currentItinRaw = readFile("Tasker/Tesla/Data/Itin_Master.json") || "[]";
+    let currentItin = [];
+    try { currentItin = JSON.parse(currentItinRaw); } catch(e) {}
+
+    publishCandidate({ events: validEvents, master: validEvents, itinerary: currentItin });
 
     let baseFilePath = "Tasker/Tesla/Data/TDS_Base_Geocodes.txt";
     let oldBaseStr = "";
