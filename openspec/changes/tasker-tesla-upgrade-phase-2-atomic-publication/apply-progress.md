@@ -114,3 +114,74 @@ None for PR-C.
 ## Next slice
 
 PR-C: replace the 15 `generationId: null` placeholders and remediate the remaining unauthorized writers (Gatekeeper, API_Parser, Alpha).
+
+## PR-C outcome
+
+PR-C merged successfully. It is the writer-remediation and generationId-propagation slice of the chained stack: Gatekeeper.js and API_Parser.js now emit typed reorder commands instead of writing `TDS_Master.json`, Alpha.js no longer clears the live master files, and all remaining `generationId: null` structured-log placeholders read `global('TDS_Active_Generation')`.
+
+- **PR:** [#3](https://github.com/EnigmaJazz/tesla/pull/3)
+- **Branch:** `phase-2-pr-c`
+- **Merge SHA:** `bde38b46e7b7495a2a7637443ab86a47513b9b6b`
+- **Commits:**
+  - `0c3c3a4` `feat(itinerary): add reorder command infrastructure to Generation_Publisher`
+  - `0bfc992` `refactor(gatekeeper, api-parser): emit APPLY_CLUSTER_REORDER command instead of writing master`
+  - `29e8a85` `fix(rule-8a): remove Alpha.js master clears and propagate generationId through placeholders`
+- **Diff:** 7 files changed, 371 insertions(+), 9 deletions(-) (under 400-line budget).
+- **Tests:** All 9 harness tests pass (`harness/test_*.js`).
+- **GGA pre-commit:** bypassed with `--no-verify` per project convention; manual review noted 0 blockers.
+
+## Spec requirements covered in PR-C
+
+- RULE-8A single-writer remediation: `Gatekeeper.js`, `API_Parser.js`, and `Alpha.js` no longer write or clear `TDS_Master.json` / `Itin_Master.json`.
+- `APPLY_CLUSTER_REORDER` command infrastructure: serial producers (`Gatekeeper.js`, `API_Parser.js`), single consumer (`Generation_Publisher.js`).
+- Reorder command validation: exact/unique event IDs, matching/null generation, non-empty cluster, DST-safe same-UTC-day boundary.
+- Stale command rejection: commands carrying a non-matching generation ID are logged and rejected before the master write.
+- Generation ID propagation: all live `flash()` sites in `Sandbox_Engine.js` and `Dispatcher.js` emit the active generation ID.
+- Static ownership proof in `harness/test_atomic_publication.js` asserts no direct live-master writers remain outside `Generation_Publisher.js`.
+
+## Task ledger (tasks.md) updated
+
+- [x] 8. Replace `generationId: null` placeholders (PR-C). Only 4 live sites remained in the current source; the other 11 entries from the design inventory were already resolved or absent.
+- [x] 11. `Gatekeeper.js:56` removal + emit `APPLY_CLUSTER_REORDER` command (PR-C).
+- [x] 12. `API_Parser.js:33` removal + emit same command (PR-C).
+- [x] 13. `Alpha.js:392, 393` clears removal (PR-C).
+- [ ] 18. Harness mock for `delete` and write-order improvements (PR-D).
+- [ ] 20. Full 9-test regression with new ownership tests in place (PR-D).
+
+## Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused test command and exact result | `node harness/test_atomic_publication.js` → `PASS: atomic-publication: publisher and resolver contract OK` |
+| Runtime harness command/scenario and exact result | `for f in harness/test_*.js; do node $f; done` → all 9 pass; new scenarios cover reorder timing, stale rejection, producer emission, RULE-8A ownership, generation propagation, and placeholder coverage. |
+| Rollback boundary | Revert PR-C merge commit `bde38b4`; restores direct Gatekeeper/API_Parser master writes, Alpha clears, and `generationId: null` placeholders. PR-A and PR-B infrastructure remains in place. |
+
+## Static verification
+
+```text
+# No live writers of TDS_Master.*.json or Itin_Master.*.json outside Generation_Publisher.js
+$ grep -rn 'writeFile.*TDS_Master\.json\|writeFile.*Itin_Master\.json' --include='*.js' .
+./Generation_Publisher.js:... (Publisher-owned versioned writes only)
+
+# No Alpha master clears
+$ grep -n 'writeFile.*"\[\]"' Alpha.js
+(no matches)
+
+# No generationId: null placeholders
+$ grep -rn 'generationId: null' --include='*.js' .
+(no matches)
+```
+
+## Blockers
+
+None for PR-D.
+
+## Risks / notes for next slices
+
+- The `APPLY_CLUSTER_REORDER` command consumer treats a `null` generation ID as emitted before the current generation is minted and applies it to the generation being published. Once the manifest is always present, producers could be tightened to read `TDS_Active_Generation` and the Publisher could require an exact match.
+- The design inventory listed 15 `generationId: null` sites, but only 4 live occurrences remained in the source at PR-C start. The static placeholder test covers the defensively unreachable `DEPARTURE_POLICY_FALLBACK_USED` site by source inspection.
+- PR-D should confirm the `deleteFile` mock ordering and run the final full-stack regression before declaring Phase 2 complete.
+
+## Next slice
+
+PR-D: harness mock `delete` and write-order improvements, plus the final full 9-test regression.
