@@ -319,9 +319,11 @@ function testCutoverProof() {
 function testReorderTiming() {
   const expectedGen = 'gen:' + nowSec + ':ab12';
   const files = prior();
+  // Commands emitted before generation minting carry a null generationId;
+  // the Publisher applies them to the generation being published.
   files[DATA + 'TDS_Reorder_Commands.json'] = JSON.stringify([{
     type: 'APPLY_CLUSTER_REORDER',
-    generationId: expectedGen,
+    generationId: null,
     clusterId: 'cluster-1',
     orderedEventIds: ['e3', 'e1', 'e2'],
     source: 'test',
@@ -370,6 +372,54 @@ function testStaleReorderRejection() {
   assert(log, 'stale reorder command should be logged as rejected');
 }
 
+function testGatekeeperEmitsCommand() {
+  const GATEKEEPER = path.resolve(__dirname, '..', 'Gatekeeper.js');
+  const activeGen = 'gen:1700000000:ab12';
+  const files = {};
+  files[DATA + 'TDS_Reorder_Commands.json'] = '[]';
+  const cluster = { waypoints: [{ id: 'wp1', dropinOrder: 2 }, { id: 'wp2', dropinOrder: 1 }], destination: { id: 'dest1', coords: '52.0,-2.0' } };
+  const { sandbox, store } = createSandbox({
+    locals: { par1: JSON.stringify(cluster), par11: '', par12: '', par13: '', par14: '' },
+    globals: { User_Loc: '51.9,-2.1', TDS_Active_Generation: activeGen },
+    files: files,
+    nowMs: nowSec * 1000
+  });
+  runScript(GATEKEEPER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  const queue = JSON.parse(store.files[DATA + 'TDS_Reorder_Commands.json'] || '[]');
+  assert.strictEqual(queue.length, 1, 'Gatekeeper should emit one reorder command');
+  assert.strictEqual(queue[0].type, 'APPLY_CLUSTER_REORDER');
+  assert.deepStrictEqual(queue[0].orderedEventIds, ['wp2', 'wp1']);
+  assert.strictEqual(queue[0].generationId, activeGen);
+  const directMasterWrite = store.writeLog.some(function (w) { return w.path === DATA + 'TDS_Master.json'; });
+  assert(!directMasterWrite, 'Gatekeeper must not write TDS_Master.json');
+}
+
+function testApiParserEmitsCommand() {
+  const API_PARSER = path.resolve(__dirname, '..', 'API_Parser.js');
+  const activeGen = 'gen:1700000000:ab12';
+  const cluster = { waypoints: [{ id: 'wp1' }, { id: 'wp2' }], destination: { id: 'dest1' } };
+  const payload = { routes: [{ optimizedIntermediateWaypointIndex: [1, 0] }] };
+  const files = {};
+  files[DATA + 'TDS_Reorder_Commands.json'] = '[]';
+  files[DATA + 'temp_payload.json'] = JSON.stringify(payload);
+  const { sandbox, store } = createSandbox({
+    locals: { api_route_mode: 'CLUSTER', par1: JSON.stringify(cluster), par11: '', par12: '', par13: '', par14: '' },
+    globals: { User_Loc: '51.9,-2.1', TDS_Active_Generation: activeGen },
+    files: files,
+    nowMs: nowSec * 1000
+  });
+  runScript(API_PARSER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  const queue = JSON.parse(store.files[DATA + 'TDS_Reorder_Commands.json'] || '[]');
+  assert.strictEqual(queue.length, 1, 'API_Parser should emit one reorder command');
+  assert.strictEqual(queue[0].type, 'APPLY_CLUSTER_REORDER');
+  assert.deepStrictEqual(queue[0].orderedEventIds, ['wp2', 'wp1']);
+  assert.strictEqual(queue[0].generationId, activeGen);
+  const directMasterWrite = store.writeLog.some(function (w) { return w.path === DATA + 'TDS_Master.json'; });
+  assert(!directMasterWrite, 'API_Parser must not write TDS_Master.json');
+}
+
 try {
   testResolver();
   testId();
@@ -384,6 +434,8 @@ try {
   testCutoverProof();
   testReorderTiming();
   testStaleReorderRejection();
+  testGatekeeperEmitsCommand();
+  testApiParserEmitsCommand();
   console.log('PASS: atomic-publication: publisher and resolver contract OK');
 } catch (e) {
   fail(e.message);
