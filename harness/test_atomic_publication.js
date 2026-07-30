@@ -582,6 +582,63 @@ function testReadBackRejectsTornWrite() {
   assert.strictEqual(r.sandbox.global('TDS_Active_Generation'), '', 'active generation must be cleared on torn write failure');
 }
 
+function testCompilerRejectsZeroDurationLeg() {
+  const COMPILER = path.resolve(__dirname, '..', 'Compiler.js');
+  const futureEventStart = nowSec + 3600;
+  const masterJson = JSON.stringify([{
+    id: 'zero_abc123',
+    start: futureEventStart,
+    end: futureEventStart + 3600,
+    duration: 3600,
+    title: 'Zero Event',
+    desc: '',
+    loc: 'Work',
+    coords: '52.1,-2.2'
+  }]);
+  const locals = {
+    block_step1: 'EVENT',
+    block_step2: 'Zero Event',
+    block_step3: '52.1,-2.2',
+    block_step4: 'DRIVE',
+    block_step5: String(futureEventStart),
+    block_step7: 'false',
+    block_step8: 'DEPART',
+    block_step9: String(futureEventStart),
+    block_step10: 'zero_abc123',
+    block_step14: '',
+    block_step15: '',
+    block_step16: '',
+    block_step19: 'JIT',
+    api_duration_secs: '0',
+    api_distance_miles: '0',
+    api_transit_steps: '',
+    virtual_time: String(nowSec - 60)
+  };
+  const globals = {
+    User_At_Base: 'true',
+    User_Loc: '51.9,-2.1',
+    Arrival_Buffer_Mins: '5',
+    Departure_Buffer_Mins: '5'
+  };
+  const files = {
+    [DATA + 'TDS_Master.json']: masterJson,
+    [DATA + 'Itin_Master.json']: '[]',
+    [DATA + 'TDS_Overrides.json']: '{}'
+  };
+  const { sandbox, store } = createSandbox({ locals: locals, globals: globals, files: files, nowMs: nowSec * 1000 });
+  runScript(COMPILER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+
+  const m = manifest(store);
+  assert(m && m.state === 'committed', 'Compiler should still publish a generation');
+  assert.strictEqual(m.itineraryCount, 0, 'zero-duration travel leg must not be published');
+  const itin = JSON.parse(store.files[m.itineraryPath]);
+  assert.strictEqual(itin.length, 0, 'published itinerary must be empty');
+  const flash = store.flashLog.find(function (f) { return f.indexOf('ZERO_DURATION_LEG_REJECTED') !== -1; });
+  assert(flash, 'Compiler should log ZERO_DURATION_LEG_REJECTED');
+  assert.strictEqual(JSON.parse(flash).tripId, 'zero_abc123');
+}
+
 function testEndToEndFlow() {
   // Full live flow: Alpha ingests calendar events, Finaliser stages them,
   // Compiler assembles the leg, Publisher commits the generation, and
@@ -710,6 +767,7 @@ try {
   testRetention();
   testMigration();
   testCompilerCutover();
+  testCompilerRejectsZeroDurationLeg();
   testFinaliserCutover();
   testReaderFallback();
   testEmptyFallback();
