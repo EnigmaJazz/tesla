@@ -682,6 +682,51 @@ function testCompilerRejectsZeroDurationLeg() {
   assert.strictEqual(JSON.parse(flash).tripId, 'zero_abc123');
 }
 
+function testPublisherConsidersRetentionHistory() {
+  let files = {};
+  const ids = [];
+  // Publish PHASE2_RETENTION generations to fill the history window.
+  for (let i = 0; i < 5; i++) {
+    const r = runPub(files, { events: [{ n: i }], master: [{ n: i }], itinerary: [{ n: i }] }, {}, function () { return i / 0x10000; });
+    assert.match(r.result, ID_RE);
+    ids.push(r.result);
+    files = r.store.files;
+  }
+  const retainedId = ids[0]; // gen:1700000000:0000
+  // Force the first mint attempt to collide with the retained ID, then choose a fresh suffix.
+  let attempts = 0;
+  const r = runPub(files, { events: [{ n: 5 }], master: [{ n: 5 }], itinerary: [{ n: 5 }] }, {}, function () {
+    attempts++;
+    return attempts === 1 ? 0 / 0x10000 : 5 / 0x10000;
+  });
+  assert.strictEqual(r.result, 'gen:' + nowSec + ':0005', 'publisher must skip a retained generation id and mint a fresh one');
+  const m = manifest(r.store);
+  assert(m && m.state === 'committed', 'manifest must be committed after resolving the collision');
+}
+
+function testPublisherPreservesGenIdOnFailure() {
+  const priorFiles = prior();
+  const expectedGen = 'gen:' + nowSec + ':ab12';
+  // Force a known ID, then make the manifest write torn so publish fails inside the try.
+  const r = runPub(priorFiles, { events: [{ id: 'e1' }], master: [{ id: 'l1' }], itinerary: [{ tripId: 't1' }] }, { tornWrites: ['TDS_Run_Manifest.json'] }, function () { return 0xab12 / 0x10000; });
+  assert(r.result.indexOf('ERROR:') === 0, 'torn manifest write should fail publish');
+  const rawManifest = r.store.files[MANIFEST];
+  assert(rawManifest && rawManifest.indexOf('"generationId":"' + expectedGen + '"') !== -1, 'failed manifest must preserve the minted generationId');
+
+  // A subsequent successful publish must mint a new ID, not reuse the failed one.
+  const m = readJsonFromStore(r.store, MANIFEST) || {};
+  const files = {};
+  files[MANIFEST] = JSON.stringify(m);
+  const r2 = runPub(files, { events: [{ id: 'e2' }], master: [{ id: 'l2' }], itinerary: [{ tripId: 't2' }] }, {}, function () { return 0xab13 / 0x10000; });
+  assert.strictEqual(r2.result, 'gen:' + nowSec + ':ab13', 'next success must mint a new generationId');
+}
+
+function readJsonFromStore(store, path) {
+  const raw = store.files[path];
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (e) { return null; }
+}
+
 function testEndToEndFlow() {
   // Full live flow: Alpha ingests calendar events, Finaliser stages them,
   // Compiler assembles the leg, Publisher commits the generation, and
@@ -829,6 +874,8 @@ try {
   testManifestLastWriteOrder();
   testPruneDeletesOldGenerations();
   testReadBackRejectsTornWrite();
+  testPublisherConsidersRetentionHistory();
+  testPublisherPreservesGenIdOnFailure();
   testEndToEndFlow();
   console.log('PASS: atomic-publication: publisher and resolver contract OK');
 } catch (e) {

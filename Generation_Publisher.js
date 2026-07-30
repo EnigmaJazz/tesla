@@ -130,7 +130,13 @@ function writeWithReadback(path, content, genId) {
 }
 function used(id) {
   const m = readJson(PHASE2_MANIFEST_PATH);
-  return m && (m.generationId === id || m.activeGeneration === id || m.previousGeneration === id);
+  if (!m) return false;
+  if (m.generationId === id || m.activeGeneration === id || m.previousGeneration === id) return true;
+  const history = m.generationHistory;
+  if (Array.isArray(history)) {
+    for (let i = 0; i < history.length; i++) if (history[i] === id) return true;
+  }
+  return false;
 }
 function mintId() {
   for (let i = 0; i < ID_COLLISION_RETRY_MAX; i++) {
@@ -159,12 +165,13 @@ function manifest(genId, previous, counts, state, history, activeOverride) {
 }
 function publish(candidate) {
   let previousId = null;
+  let genId = null;
   try {
     if (!candidate || !Array.isArray(candidate.events) || !Array.isArray(candidate.master) || !Array.isArray(candidate.itinerary)) {
       logEvent("error", "GENERATION_VALIDATION_FAILED", null, { reason: "candidate invalid" });
       throw new Error("PUBLISH_CANDIDATE_INVALID");
     }
-    const genId = mintId();
+    genId = mintId();
     const prior = readJson(PHASE2_MANIFEST_PATH);
     previousId = prior && prior.state === "committed" ? prior.activeGeneration || prior.generationId : null;
     const history = prior && Array.isArray(prior.generationHistory) ? prior.generationHistory.slice() : [];
@@ -184,7 +191,7 @@ function publish(candidate) {
     setGlobal("TDS_Active_Generation", "");
     logEvent("error", "GENERATION_VALIDATION_FAILED", null, { reason: e.message });
     try {
-      writeWithReadback(PHASE2_MANIFEST_PATH, JSON.stringify(manifest(null, previousId, { events: 0, master: 0, itinerary: 0 }, "failed", [], previousId)), null);
+      writeWithReadback(PHASE2_MANIFEST_PATH, JSON.stringify(manifest(genId, previousId, { events: 0, master: 0, itinerary: 0 }, "failed", [], previousId)), null);
     } catch (mErr) {}
     throw e;
   }
