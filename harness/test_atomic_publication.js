@@ -420,6 +420,110 @@ function testApiParserEmitsCommand() {
   assert(!directMasterWrite, 'API_Parser must not write TDS_Master.json');
 }
 
+function testRule8aOwnership() {
+  const fs = require('node:fs');
+  const directWriteRe = /writeFile\s*\(\s*["']Tasker\/Tesla\/Data\/(TDS_Master\.json|Itin_Master\.json)["']\s*,/;
+  const alphaClearRe = /writeFile\s*\(\s*["']Tasker\/Tesla\/Data\/TDS_Master\.json["']\s*,\s*"\[\]"/;
+  const alphaItinClearRe = /writeFile\s*\(\s*["']Tasker\/Tesla\/Data\/Itin_Master\.json["']\s*,\s*"\[\]"/;
+  const gatekeeperSource = fs.readFileSync(path.resolve(__dirname, '..', 'Gatekeeper.js'), 'utf8');
+  const apiParserSource = fs.readFileSync(path.resolve(__dirname, '..', 'API_Parser.js'), 'utf8');
+  const alphaSource = fs.readFileSync(path.resolve(__dirname, '..', 'Alpha.js'), 'utf8');
+  assert(!directWriteRe.test(gatekeeperSource), 'Gatekeeper.js must not write TDS_Master.json or Itin_Master.json');
+  assert(!directWriteRe.test(apiParserSource), 'API_Parser.js must not write TDS_Master.json or Itin_Master.json');
+  assert(!alphaClearRe.test(alphaSource), 'Alpha.js must not clear TDS_Master.json');
+  assert(!alphaItinClearRe.test(alphaSource), 'Alpha.js must not clear Itin_Master.json');
+}
+
+function testGenerationPropagation() {
+  const activeGen = 'gen:1700000000:ab12';
+  const files = {};
+  files[MANIFEST] = JSON.stringify({ schemaVersion: 1, activeGeneration: activeGen, previousGeneration: null, publishedAt: nowSec, writer: 'Generation Publisher', eventsPath: DATA + 'TDS_Events.gen_1700000000_ab12.json', masterPath: DATA + 'TDS_Master.gen_1700000000_ab12.json', itineraryPath: DATA + 'Itin_Master.gen_1700000000_ab12.json', eventCount: 0, legCount: 0, itineraryCount: 0, generationHistory: [activeGen], state: 'committed' });
+  files[DATA + 'TDS_Master.gen_1700000000_ab12.json'] = '[]';
+  files[DATA + 'Itin_Master.gen_1700000000_ab12.json'] = '[]';
+  files[DATA + 'TDS_Events.gen_1700000000_ab12.json'] = '[]';
+
+  const DISPATCHER = path.resolve(__dirname, '..', 'Dispatcher.js');
+  const { sandbox, store } = createSandbox({ files: files, globals: { Current_Status: 'Idle', TDS_Active_Generation: activeGen }, nowMs: nowSec * 1000 });
+  runScript(DISPATCHER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  const idleFlash = store.flashLog.find(function (f) { return f.indexOf('IDLE_SYNC_ENGAGED') !== -1; });
+  assert(idleFlash, 'expected IDLE_SYNC_ENGAGED flash');
+  assert.strictEqual(JSON.parse(idleFlash).generationId, activeGen, 'Dispatcher idle flash must propagate active generation');
+}
+
+function testPlaceholderSandboxLiveBase() {
+  const activeGen = 'gen:1700000000:ab12';
+  const itinJson = JSON.stringify([{ tripId: 'stale_away', targetEventId: 'e1', mode: 'DRIVE', pitstopState: 'handled', departUnix: nowSec - 3600, arriveUnix: nowSec - 1800 }]);
+  const masterJson = JSON.stringify([{ id: 'e1', start: nowSec + 3600, end: nowSec + 7200, duration: 3600, title: 'Future', loc: 'Work', coords: '52.0,-2.0' }]);
+  const baseGeocodes = [nowSec.toString(), (nowSec + 86400).toString(), '51.9,-2.1', '0', 'Home', '', 'home_base'].join('~');
+  const files = {
+    [DATA + 'Itin_Master.json']: itinJson,
+    [DATA + 'TDS_Master.json']: masterJson,
+    [DATA + 'TDS_Base_Geocodes.txt']: baseGeocodes,
+    [DATA + 'TDS_Overrides.json']: '{}',
+    [DATA + 'Temp_Route_Cache.txt']: '',
+    [DATA + 'RouteCache.txt']: ''
+  };
+  const globals = {
+    User_At_Base: 'true',
+    Base_Arrival_Unix: nowSec.toString(),
+    User_Loc: '51.9,-2.1',
+    Home_Coords: '51.9,-2.1',
+    Current_Status: '',
+    Arrival_Buffer_Mins: '5',
+    Departure_Buffer_Mins: '5',
+    Max_Walk_Meters: '8046',
+    Daily_Walk_Meters: '0',
+    Live_Traffic_Threshold: '7200',
+    Car_Connected: 'false',
+    TDS_Active_Generation: activeGen
+  };
+  const locals = { idx: '1', vcar_loc: '51.9,-2.1', virtual_time: String(nowSec), virtual_loc: '51.9,-2.1' };
+  const SANDBOX = path.resolve(__dirname, '..', 'Sandbox_Engine.js');
+  const { sandbox, store } = createSandbox({ locals: locals, globals: globals, files: files, nowMs: nowSec * 1000 });
+  runScript(SANDBOX, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  const flash = store.flashLog.find(function (f) { return f.indexOf('LIVE_BASE_OVERRIDES_LEGACY_ORIGIN') !== -1; });
+  assert(flash, 'expected LIVE_BASE_OVERRIDES_LEGACY_ORIGIN flash');
+  assert.strictEqual(JSON.parse(flash).generationId, activeGen, 'Sandbox live-base flash must propagate active generation');
+}
+
+function testPlaceholderSandboxPolicyFallback() {
+  const fs = require('node:fs');
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'Sandbox_Engine.js'), 'utf8');
+  const idx = source.indexOf('DEPARTURE_POLICY_FALLBACK_USED');
+  assert(idx !== -1, 'Sandbox must contain DEPARTURE_POLICY_FALLBACK_USED log site');
+  const snippet = source.substring(Math.max(0, idx - 200), idx + 60);
+  assert(snippet.indexOf("generationId: global('TDS_Active_Generation') || null") !== -1, 'Sandbox DEPARTURE_POLICY_FALLBACK_USED must read global TDS_Active_Generation');
+}
+
+function testPlaceholderDispatcherStale() {
+  const activeGen = 'gen:1700000000:ab12';
+  const files = {};
+  files[MANIFEST] = JSON.stringify({ schemaVersion: 1, activeGeneration: activeGen, previousGeneration: null, publishedAt: nowSec, writer: 'Generation Publisher', eventsPath: DATA + 'TDS_Events.gen_1700000000_ab12.json', masterPath: DATA + 'TDS_Master.gen_1700000000_ab12.json', itineraryPath: DATA + 'Itin_Master.gen_1700000000_ab12.json', eventCount: 1, legCount: 1, itineraryCount: 1, generationHistory: [activeGen], state: 'committed' });
+  files[DATA + 'TDS_Master.gen_1700000000_ab12.json'] = JSON.stringify([{ id: 'stale', start: nowSec - 18000, end: nowSec - 14400 }]);
+  files[DATA + 'Itin_Master.gen_1700000000_ab12.json'] = JSON.stringify([{ tripId: 'stale', mode: 'DRIVE', departUnix: nowSec - 18000, arriveUnix: nowSec - 14400, targetTitle: 'Past', targetCoords: '52.0,-2.0' }]);
+  files[DATA + 'TDS_Events.gen_1700000000_ab12.json'] = JSON.stringify([{ id: 'stale' }]);
+  const DISPATCHER = path.resolve(__dirname, '..', 'Dispatcher.js');
+  const { sandbox, store } = createSandbox({ files: files, globals: { Current_Status: 'Idle', TDS_Active_Generation: activeGen }, nowMs: nowSec * 1000 });
+  runScript(DISPATCHER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  const flash = store.flashLog.find(function (f) { return f.indexOf('STALE_TRIP_REJECTED') !== -1; });
+  assert(flash, 'expected STALE_TRIP_REJECTED flash');
+  assert.strictEqual(JSON.parse(flash).generationId, activeGen, 'Dispatcher stale flash must propagate active generation');
+}
+
+function testPlaceholderDispatcherIdle() {
+  const activeGen = 'gen:1700000000:ab12';
+  const DISPATCHER = path.resolve(__dirname, '..', 'Dispatcher.js');
+  const { sandbox, store } = createSandbox({ files: {}, globals: { Current_Status: 'Idle', TDS_Active_Generation: activeGen }, nowMs: nowSec * 1000 });
+  runScript(DISPATCHER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  const flash = store.flashLog.find(function (f) { return f.indexOf('IDLE_SYNC_ENGAGED') !== -1; });
+  assert(flash, 'expected IDLE_SYNC_ENGAGED flash');
+  assert.strictEqual(JSON.parse(flash).generationId, activeGen, 'Dispatcher idle flash must propagate active generation');
+}
+
 try {
   testResolver();
   testId();
@@ -436,6 +540,12 @@ try {
   testStaleReorderRejection();
   testGatekeeperEmitsCommand();
   testApiParserEmitsCommand();
+  testRule8aOwnership();
+  testGenerationPropagation();
+  testPlaceholderSandboxLiveBase();
+  testPlaceholderSandboxPolicyFallback();
+  testPlaceholderDispatcherStale();
+  testPlaceholderDispatcherIdle();
   console.log('PASS: atomic-publication: publisher and resolver contract OK');
 } catch (e) {
   fail(e.message);
