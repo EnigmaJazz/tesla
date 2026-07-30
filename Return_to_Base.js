@@ -1,8 +1,9 @@
 // ==========================================
-// TDS RETURN TO BASE (Manual Injector v1.3)
-// Fully migrated to Tasker/Tesla/Data/ directory structure.
-// Engages TDS_Action_Lock to suppress Heartbeat during manual routing.
-// [V1.3] Vehicle proximity check for AUTO mode. Dynamically resolves TRANSIT/LIFT.
+// TDS RETURN TO BASE (Manual Injector v2.0)
+// Command adapter — stages a publish candidate in local('par1') and
+// clears the lateness halt. The next Tasker action runs
+// Generation_Publisher.js. This script does NOT write Itin_Master.json
+// or TDS_Master.json directly (RULE-8A).
 // ==========================================
 
 function getDist(lat1, lon1, lat2, lon2) {
@@ -13,6 +14,7 @@ function getDist(lat1, lon1, lat2, lon2) {
 }
 
 try {
+    let PHASE2_MANIFEST_PATH = "Tasker/Tesla/Data/TDS_Run_Manifest.json";
     let rCoords = global('TDS_Return_Coords');
     let rawMode = global('TDS_Return_Mode') || "DRIVE";
     let rName = global('TDS_Return_Name') || "Base";
@@ -24,10 +26,10 @@ try {
         let uP = uLoc.split(",");
         let cP = rCoords.split(",");
         let carP = cLoc.split(",");
-        
+
         let distM = getDist(parseFloat(uP[0]), parseFloat(uP[1]), parseFloat(cP[0]), parseFloat(cP[1]));
         let dCar = getDist(parseFloat(uP[0]), parseFloat(uP[1]), parseFloat(carP[0]), parseFloat(carP[1]));
-        
+
         let rMode = rawMode.toUpperCase();
         if (rMode === "AUTO") {
             if (distM < 1500) {
@@ -40,8 +42,8 @@ try {
                     let zones = cityZonesRaw.split("|");
                     for (let z = 0; z < zones.length; z++) {
                         let zC = zones[z].split(",");
-                        if (getDist(parseFloat(uP[0]), parseFloat(uP[1]), parseFloat(zC[0]), parseFloat(zC[1])) <= 5000) { 
-                            rMode = "TRANSIT"; break; 
+                        if (getDist(parseFloat(uP[0]), parseFloat(uP[1]), parseFloat(zC[0]), parseFloat(zC[1])) <= 5000) {
+                            rMode = "TRANSIT"; break;
                         }
                     }
                 }
@@ -49,18 +51,21 @@ try {
                 rMode = "DRIVE";
             }
         }
-        
+
         let speed = rMode === "DRIVE" ? 13.0 : (rMode === "TRANSIT" ? 8.0 : (rMode === "LIFT" ? 10.0 : 1.4));
         let durSec = Math.round(distM / speed);
         let distMiles = parseFloat((distM * 0.000621371).toFixed(1));
 
-        let itinFile = "Tasker/Tesla/Data/Itin_Master.json";
-        let lockFile = "Tasker/Tesla/Data/TDS_Action_Lock.json";
-        
-        let itinRaw = "";
-        try { itinRaw = readFile(itinFile) || "[]"; } catch(e) { itinRaw = "[]"; }
-        let itinerary = [];
-        try { itinerary = JSON.parse(itinRaw); } catch(e) {}
+        function readJson(path) {
+            let raw = readFile(path) || "";
+            if (!raw) return null;
+            try { return JSON.parse(raw); } catch (e) { return null; }
+        }
+
+        let m = readJson(PHASE2_MANIFEST_PATH);
+        let events = (m && m.state === "committed" && m.eventsPath) ? (readJson(m.eventsPath) || []) : [];
+        let master = (m && m.state === "committed" && m.masterPath) ? (readJson(m.masterPath) || []) : [];
+        let itinerary = (m && m.state === "committed" && m.itineraryPath) ? (readJson(m.itineraryPath) || []) : [];
 
         let returnLeg = {
             targetEventId: "MANUAL_RETURN",
@@ -78,21 +83,15 @@ try {
             transitStepsRaw: rMode === "DRIVE" ? "🚗 Route securely managed by vehicle onboard navigation" : ""
         };
 
-        itinerary.unshift(returnLeg);
-        writeFile(itinFile, JSON.stringify(itinerary), false);
-
-        let lockPayload = {
-            type: "MANUAL_ROUTING",
-            timestamp: nowSec,
-            eventId: "MANUAL_RETURN"
-        };
-        writeFile(lockFile, JSON.stringify(lockPayload), false);
+        let updated = itinerary.slice();
+        updated.unshift(returnLeg);
+        setLocal("par1", JSON.stringify({ events: events, master: master, itinerary: updated }));
 
         let modeDict = { "LIFT": "Lift", "WALK": "Walking", "TRANSIT": "Public Transport", "DRIVE": "Driving" };
         setGlobal('Current_Status', (modeDict[rMode] || "Traveling") + " (Heading Home)");
         setGlobal('TDS_Lateness_Halt', 'false'); // Clear any pending locks
-        
-        flash("Return to " + rName + " via " + modeDict[rMode] + " engaged.");
+
+        flash("Return to " + rName + " via " + modeDict[rMode] + " queued.");
     }
 } catch(e) {
     flash("Return to Base Error: " + e.message);
