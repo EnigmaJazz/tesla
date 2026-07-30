@@ -179,7 +179,7 @@ None for PR-D.
 
 ## Risks / notes for next slices
 
-- The `APPLY_CLUSTER_REORDER` command consumer treats a `null` generation ID as emitted before the current generation is minted and applies it to the generation being published. Once the manifest is always present, producers could be tightened to read `TDS_Active_Generation` and the Publisher could require an exact match.
+- The `APPLY_CLUSTER_REORDER` command consumer treats a `null` generation ID as emitted before the current generation is minted and applies it to the generation being published; this was fixed post-merge in PR #6 because the initial PR-C implementation rejected null as an "invalid generationId format". Once the manifest is always present, producers could be tightened to read `TDS_Active_Generation` and the Publisher could require an exact match.
 - The design inventory listed 15 `generationId: null` sites, but only 4 live occurrences remained in the source at PR-C start. The static placeholder test covers the defensively unreachable `DEPARTURE_POLICY_FALLBACK_USED` site by source inspection.
 - PR-D should confirm the `deleteFile` mock ordering and run the final full-stack regression before declaring Phase 2 complete.
 
