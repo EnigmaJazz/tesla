@@ -12,11 +12,42 @@ function getDist(lat1, lon1, lat2, lon2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+// Phase 2 reader cutover: discover the committed generation through the manifest.
+// Mirrors TDS_Helper.readActive; includes a legacy fallback while the migration
+// is in flight.
+function readJson(path) {
+    var raw = "";
+    try { raw = readFile(path) || ""; } catch(e) {}
+    if (!raw || raw.indexOf("%") === 0) return null;
+    try { return JSON.parse(raw); } catch(e) { return null; }
+}
+function pathFor(g, kind) {
+    return "Tasker/Tesla/Data/" + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
+}
+function readActiveGeneration(kind) {
+    var m = readJson("Tasker/Tesla/Data/TDS_Run_Manifest.json");
+    var key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
+    if (m && m.activeGeneration) {
+        var data = readJson(m[key] || pathFor(m.activeGeneration, kind));
+        if (data !== null) return data;
+    }
+    if (m && m.previousGeneration) {
+        var prev = readJson(pathFor(m.previousGeneration, kind));
+        if (prev !== null) return prev;
+    }
+    if (kind === "events" || kind === "master") {
+        var legacy = readJson("Tasker/Tesla/Data/TDS_Master.json");
+        if (legacy !== null) return legacy;
+    }
+    if (kind === "itinerary") {
+        var legacyItin = readJson("Tasker/Tesla/Data/Itin_Master.json");
+        if (legacyItin !== null) return legacyItin;
+    }
+    return [];
+}
+
 try {
-    var masterStr = "";
-    try { masterStr = readFile("Tasker/Tesla/Data/Itin_Master.json") || "[]"; } catch(e) { masterStr = "[]"; }
-    var master = [];
-    try { master = JSON.parse(masterStr); } catch(e) { master = []; }
+    var master = readActiveGeneration("itinerary");
 
     var total_legs = master.length;
     var lines = []; 

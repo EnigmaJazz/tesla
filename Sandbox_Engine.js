@@ -23,6 +23,40 @@ function getSafeId(eventObj) {
     return eventObj.id || "DEFAULT"; 
 }
 
+// Phase 2 reader cutover: discover the committed generation through the manifest.
+// Mirrors TDS_Helper.readActive; includes a legacy fallback while the migration
+// is in flight.
+function readJson(path) {
+    let raw = "";
+    try { raw = readFile(path) || ""; } catch(e) {}
+    if (!raw || raw.indexOf("%") === 0) return null;
+    try { return JSON.parse(raw); } catch(e) { return null; }
+}
+function pathFor(g, kind) {
+    return "Tasker/Tesla/Data/" + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
+}
+function readActiveGeneration(kind) {
+    let m = readJson("Tasker/Tesla/Data/TDS_Run_Manifest.json");
+    let key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
+    if (m && m.activeGeneration) {
+        let data = readJson(m[key] || pathFor(m.activeGeneration, kind));
+        if (data !== null) return data;
+    }
+    if (m && m.previousGeneration) {
+        let prev = readJson(pathFor(m.previousGeneration, kind));
+        if (prev !== null) return prev;
+    }
+    if (kind === "events" || kind === "master") {
+        let legacy = readJson("Tasker/Tesla/Data/TDS_Master.json");
+        if (legacy !== null) return legacy;
+    }
+    if (kind === "itinerary") {
+        let legacyItin = readJson("Tasker/Tesla/Data/Itin_Master.json");
+        if (legacyItin !== null) return legacyItin;
+    }
+    return [];
+}
+
 function getTrimmedEnd(evId, rawEnd, start, trimRaw) {
     let e = rawEnd || (start + 3600);
     if (trimRaw && trimRaw.indexOf(evId) !== -1) {
@@ -260,9 +294,7 @@ try {
     setGlobal('TDS_Lateness_Halt', 'false');
 
     let idx = parseInt(local('idx'), 10) || 1; 
-    let rawMaster = readFile("Tasker/Tesla/Data/TDS_Master.json") || "[]";
-    if (rawMaster.indexOf("%") === 0) rawMaster = "[]";
-    let master = JSON.parse(rawMaster);
+    let master = readActiveGeneration("master");
     GLOBAL_MASTER_ARR = master;
 
     if (idx > master.length) { 
@@ -358,9 +390,7 @@ try {
                 }
 
                 let pitStr = ""; 
-                let oldItinRaw = readFile("Tasker/Tesla/Data/Itin_Master.json") || "[]";
-                if (oldItinRaw.indexOf("%") === 0) oldItinRaw = "[]";
-                let oldItin = []; try { oldItin = JSON.parse(oldItinRaw); } catch(e){}
+                let oldItin = readActiveGeneration("itinerary");
                 if (oldItin.length > 0) {
                     let aLeg = oldItin[0];
                     if (aLeg.pitstopState === 'true' || aLeg.pitstopState === 'forced' || aLeg.pitstopState === 'handled') {
@@ -476,9 +506,7 @@ try {
         }
 
         let simAtBase = false;
-        let oldItinRaw = readFile("Tasker/Tesla/Data/Itin_Master.json") || "[]";
-        if (oldItinRaw.indexOf("%") === 0) oldItinRaw = "[]";
-        let oldItin = []; try { oldItin = JSON.parse(oldItinRaw); } catch(e){}
+        let oldItin = readActiveGeneration("itinerary");
 
         const liveAtBase = (global('User_At_Base') === "true");
         const currentStatus = (global('Current_Status') || "").trim();
