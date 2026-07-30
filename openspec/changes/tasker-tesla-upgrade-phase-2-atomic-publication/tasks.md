@@ -45,7 +45,7 @@
 ## 8. Replace all 15 placeholders
 **Files:** `Compiler.js`, `API_Parser.js`, `Sandbox_Engine.js`, `ID_Parser.js`, `Dispatcher.js`, `Override_Handler.js`  
 **Spec requirements:** Generation ID Propagation, LOG-17. **Estimate:** ~30 lines. **Depends on:** 6.  
-**Change:** [ ] Replace `generationId: null` at Compiler:50; API Parser:99,139; Sandbox:281,462,533,1027,1041,1361; ID Parser:37; Dispatcher:123,139,156,348; Override Handler:36 with `global('TDS_Active_Generation')`.  
+**Change:** [x] Replace `generationId: null` at Compiler:50; API Parser:99,139; Sandbox:281,462,533,1027,1041,1361; ID Parser:37; Dispatcher:123,139,156,348; Override Handler:36 with `global('TDS_Active_Generation')`.  
 **Acceptance:** all 15 logs carry the active ID. **Verification:** placeholder inventory test.
 
 ## 9. Cut over readers
