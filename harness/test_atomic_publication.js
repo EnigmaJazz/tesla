@@ -156,6 +156,166 @@ function testMigration() {
   assert.strictEqual(m.eventCount, 0); assert.strictEqual(m.legCount, 1); assert.strictEqual(m.itineraryCount, 1);
 }
 
+function readViaResolver(store, kind) {
+  return JSON.parse(runHelper(store.files, kind));
+}
+
+function testCompilerCutover() {
+  const COMPILER = path.resolve(__dirname, '..', 'Compiler.js');
+  const futureEventStart = nowSec + 3600;
+  const durationSecs = 1800;
+  const masterJson = JSON.stringify([
+    {
+      id: 'abc123_kx8f00',
+      start: futureEventStart,
+      end: futureEventStart + 3600,
+      duration: 3600,
+      title: 'Future Event',
+      desc: '',
+      loc: 'Work',
+      coords: '52.1,-2.2'
+    }
+  ]);
+  const locals = {
+    block_step1: 'EVENT',
+    block_step2: 'Future Event',
+    block_step3: '52.1,-2.2',
+    block_step4: 'DRIVE',
+    block_step5: String(futureEventStart),
+    block_step7: 'false',
+    block_step8: 'DEPART',
+    block_step9: String(futureEventStart),
+    block_step10: 'abc123_kx8f00',
+    block_step14: '',
+    block_step15: '',
+    block_step16: '',
+    block_step19: 'JIT',
+    api_duration_secs: String(durationSecs),
+    api_distance_miles: '15',
+    api_transit_steps: '',
+    virtual_time: String(nowSec - 60)
+  };
+  const globals = {
+    User_At_Base: 'true',
+    User_Loc: '51.9,-2.1',
+    Arrival_Buffer_Mins: '5',
+    Departure_Buffer_Mins: '5'
+  };
+  const files = {
+    [DATA + 'TDS_Master.json']: masterJson,
+    [DATA + 'Itin_Master.json']: '[]',
+    [DATA + 'TDS_Overrides.json']: '{}'
+  };
+  const { sandbox, store } = createSandbox({ locals: locals, globals: globals, files: files, nowMs: nowSec * 1000 });
+  runScript(COMPILER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+
+  const m = manifest(store);
+  assert(m && m.state === 'committed', 'Compiler should publish a committed generation');
+  assert.strictEqual(m.eventCount, 1, 'Compiler published event count');
+  assert.strictEqual(m.itineraryCount, 1, 'Compiler published itinerary count');
+  const itin = JSON.parse(store.files[m.itineraryPath]);
+  assert(itin.length === 1, 'Compiler published one leg');
+  assert.strictEqual(itin[0].departurePolicy, 'JIT');
+  assert.strictEqual(store.files[DATA + 'Itin_Master.json'], '[]', 'Compiler should not write live Itin_Master.json');
+}
+
+function testFinaliserCutover() {
+  const FINALISER = path.resolve(__dirname, '..', 'Finaliser.js');
+  const tempEvents = [
+    {
+      id: 'ev1_abc123',
+      start: nowSec + 3600,
+      end: nowSec + 7200,
+      title: 'Work',
+      loc: 'Work',
+      coords: '52.1,-2.2'
+    }
+  ];
+  const locals = {
+    tds_temp_json: JSON.stringify(tempEvents)
+  };
+  const globals = {
+    User_Loc: '51.9,-2.1',
+    User_At_Base: 'true'
+  };
+  const files = {
+    [DATA + 'Itin_Master.json']: '[]',
+    [DATA + 'TDS_Overrides.json']: '{}'
+  };
+  const { sandbox, store } = createSandbox({ locals: locals, globals: globals, files: files, nowMs: nowSec * 1000 });
+  runScript(FINALISER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+
+  const m = manifest(store);
+  assert(m && m.state === 'committed', 'Finaliser should publish a committed generation');
+  assert.strictEqual(m.eventCount, 1, 'Finaliser published event count');
+  const events = JSON.parse(store.files[m.eventsPath]);
+  assert.strictEqual(events[0].id, 'ev1_abc123');
+  assert.strictEqual(store.files[DATA + 'TDS_Master.json'], undefined, 'Finaliser should not write live TDS_Master.json');
+}
+
+function testReaderFallback() {
+  const id = 'gen:1700000000:cd34';
+  const prevId = 'gen:1700000000:ab12';
+  const files = {};
+  files[MANIFEST] = JSON.stringify({
+    schemaVersion: 1,
+    activeGeneration: id,
+    previousGeneration: prevId,
+    publishedAt: nowSec,
+    writer: 'Generation Publisher',
+    eventsPath: DATA + 'TDS_Events.gen_1700000000_cd34.json',
+    masterPath: DATA + 'TDS_Master.gen_1700000000_cd34.json',
+    itineraryPath: DATA + 'Itin_Master.gen_1700000000_cd34.json',
+    eventCount: 1,
+    legCount: 1,
+    itineraryCount: 1,
+    generationHistory: [prevId, id],
+    state: 'committed'
+  });
+  files[DATA + 'TDS_Events.gen_1700000000_cd34.json'] = 'CORRUPT';
+  files[DATA + 'TDS_Master.gen_1700000000_cd34.json'] = 'CORRUPT';
+  files[DATA + 'Itin_Master.gen_1700000000_cd34.json'] = 'CORRUPT';
+  files[DATA + 'TDS_Events.gen_1700000000_ab12.json'] = JSON.stringify([{ id: 'prior' }]);
+  files[DATA + 'TDS_Master.gen_1700000000_ab12.json'] = JSON.stringify([{ id: 'prior' }]);
+  files[DATA + 'Itin_Master.gen_1700000000_ab12.json'] = JSON.stringify([{
+    tripId: 'prior_trip',
+    mode: 'DRIVE',
+    departUnix: nowSec + 3600,
+    arriveUnix: nowSec + 5400,
+    targetTitle: 'Work',
+    targetCoords: '52.1,-2.2'
+  }]);
+
+  const DISPATCHER = path.resolve(__dirname, '..', 'Dispatcher.js');
+  const { sandbox, store } = createSandbox({ files: files, globals: { Current_Status: 'Idle' }, nowMs: nowSec * 1000 });
+  runScript(DISPATCHER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  assert.strictEqual(sandbox.local('itin_mode1'), 'DRIVE', 'Dispatcher should fall back to the prior generation when the active generation is unreadable');
+  const idleFlash = store.flashLog.find(function (f) { return f.indexOf('IDLE_SYNC_ENGAGED') !== -1; });
+  assert(!idleFlash, 'Dispatcher should not idle-sync when the prior generation has an actionable trip');
+}
+
+function testEmptyFallback() {
+  const DISPATCHER = path.resolve(__dirname, '..', 'Dispatcher.js');
+  const { sandbox, store } = createSandbox({ files: {}, globals: { Current_Status: 'Idle' }, nowMs: nowSec * 1000 });
+  runScript(DISPATCHER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  assert.strictEqual(sandbox.local('itin_mode1'), 'NONE', 'Dispatcher should see NONE with no manifest');
+  const flash = store.flashLog.find(function (f) { return f.indexOf('IDLE_SYNC_ENGAGED') !== -1; });
+  assert(flash, 'Dispatcher should idle sync with no manifest');
+}
+
+function testCutoverProof() {
+  const fs = require('node:fs');
+  const compilerSource = fs.readFileSync(path.resolve(__dirname, '..', 'Compiler.js'), 'utf8');
+  const finaliserSource = fs.readFileSync(path.resolve(__dirname, '..', 'Finaliser.js'), 'utf8');
+  const directWriteRe = /writeFile\s*\(\s*["']Tasker\/Tesla\/Data\/(TDS_Master\.json|Itin_Master\.json)["']\s*,/;
+  assert(!directWriteRe.test(compilerSource), 'Compiler.js must not contain direct writeFile to TDS_Master.json or Itin_Master.json');
+  assert(!directWriteRe.test(finaliserSource), 'Finaliser.js must not contain direct writeFile to TDS_Master.json or Itin_Master.json');
+}
+
 try {
   testResolver();
   testId();
@@ -163,6 +323,11 @@ try {
   testFailures();
   testRetention();
   testMigration();
+  testCompilerCutover();
+  testFinaliserCutover();
+  testReaderFallback();
+  testEmptyFallback();
+  testCutoverProof();
   console.log('PASS: atomic-publication: publisher and resolver contract OK');
 } catch (e) {
   fail(e.message);
