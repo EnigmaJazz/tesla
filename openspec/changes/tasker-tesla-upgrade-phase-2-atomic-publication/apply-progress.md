@@ -191,14 +191,14 @@ PR-D: harness mock `delete` and write-order improvements, plus the final full 9-
 
 PR-D merged successfully. It is the final slice of the chained stack: `harness/mock_tasker.js` now exposes explicit `writeOrder`/`deleteOrder` arrays and documents its existing torn-write read-back capability; `Compiler.js` reads the committed generation's master/itinerary before falling back to legacy files; and `harness/test_atomic_publication.js` closes the regression with manifest-last write order, retention delete order, torn read-back, and a full Alpha → Finaliser → Compiler → Publisher → Dispatcher/Dashboard/Sandbox end-to-end flow.
 
-- **PR:** [#4](https://github.com/EnigmaJazz/tesla/pull/4)
+- **PR:** [#9](https://github.com/EnigmaJazz/tesla/pull/9)
 - **Branch:** `phase-2-pr-d`
-- **Merge SHA:** `TBD`
+- **Merge SHA:** `54ea177`
 - **Commits:**
-  - `TBD` `test(atomic-publication): mock extensions, Compiler cutover, and end-to-end regression for Phase 2`
-  - `TBD` `docs(apply): update apply-progress and tasks with PR-D (final slice)`
+  - `058652f` `test(atomic-publication): mock extensions, Compiler cutover, and end-to-end regression for Phase 2`
+  - `176747a` `docs(apply): update apply-progress and tasks with PR-D (final slice)`
 - **Diff (code/test slice):** 3 files changed, 239 insertions(+), 18 deletions(-) (under 400-line budget).
-- **Diff (total PR-D delta including docs):** 5 files changed, ~300 insertions(+), ~18 deletions(-).
+- **Diff (total PR-D delta including docs):** 5 files changed, 329 insertions(+), 18 deletions(-).
 - **Tests:** All 9 harness tests pass (`harness/test_*.js`).
 - **GGA pre-commit:** bypassed with `--no-verify` per project convention; manual review noted 0 blockers.
 
