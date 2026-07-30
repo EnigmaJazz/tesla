@@ -66,8 +66,8 @@ function testResolver() {
 
   const priorFiles = prior();
   priorFiles[MANIFEST] = JSON.stringify(Object.assign(JSON.parse(priorFiles[MANIFEST]), { state: 'failed' }));
-  priorFiles[DATA + 'TDS_Master.gen_1700000000_ab12.json'] = 'CORRUPT';
-  assert.deepEqual(JSON.parse(runHelper(priorFiles, 'master')), [{ id: 'p1' }]);
+  priorFiles[DATA + 'TDS_Master.gen_1699999999_0001.json'] = 'CORRUPT';
+  assert.deepEqual(JSON.parse(runHelper(priorFiles, 'master')), [], 'TDS_Helper must refuse a failed manifest active generation');
 
   assert.deepEqual(JSON.parse(runHelper({}, 'master')), []);
 
@@ -288,6 +288,8 @@ function testReaderFallback() {
     targetCoords: '52.1,-2.2'
   }]);
 
+  assert.deepEqual(JSON.parse(runHelper(files, 'master')), [{ id: 'prior' }], 'TDS_Helper should fall back to prior generation when active is corrupt');
+
   const DISPATCHER = path.resolve(__dirname, '..', 'Dispatcher.js');
   const { sandbox, store } = createSandbox({ files: files, globals: { Current_Status: 'Idle' }, nowMs: nowSec * 1000 });
   runScript(DISPATCHER, sandbox, store);
@@ -295,6 +297,47 @@ function testReaderFallback() {
   assert.strictEqual(sandbox.local('itin_mode1'), 'DRIVE', 'Dispatcher should fall back to the prior generation when the active generation is unreadable');
   const idleFlash = store.flashLog.find(function (f) { return f.indexOf('IDLE_SYNC_ENGAGED') !== -1; });
   assert(!idleFlash, 'Dispatcher should not idle-sync when the prior generation has an actionable trip');
+}
+
+function testReadersRequireCommittedState() {
+  const id = 'gen:1700000000:cd34';
+  const files = {};
+  files[MANIFEST] = JSON.stringify({
+    schemaVersion: 1,
+    generationId: id,
+    activeGeneration: id,
+    previousGeneration: null,
+    publishedAt: nowSec,
+    writer: 'Generation Publisher',
+    eventsPath: DATA + 'TDS_Events.gen_1700000000_cd34.json',
+    masterPath: DATA + 'TDS_Master.gen_1700000000_cd34.json',
+    itineraryPath: DATA + 'Itin_Master.gen_1700000000_cd34.json',
+    eventCount: 1,
+    legCount: 1,
+    itineraryCount: 1,
+    generationHistory: [id],
+    state: 'building'
+  });
+  files[DATA + 'TDS_Events.gen_1700000000_cd34.json'] = JSON.stringify([{ id: 'evt1' }]);
+  files[DATA + 'TDS_Master.gen_1700000000_cd34.json'] = JSON.stringify([{ id: 'evt1' }]);
+  files[DATA + 'Itin_Master.gen_1700000000_cd34.json'] = JSON.stringify([{ tripId: 'leg1', mode: 'DRIVE', departUnix: nowSec + 3600, arriveUnix: nowSec + 5400, targetTitle: 'Work' }]);
+
+  assert.deepEqual(JSON.parse(runHelper(files, 'master')), [], 'TDS_Helper must refuse a building manifest');
+  assert.deepEqual(JSON.parse(runHelper(files, 'itinerary')), [], 'TDS_Helper itinerary must refuse a building manifest');
+
+  const DISPATCHER = path.resolve(__dirname, '..', 'Dispatcher.js');
+  const { sandbox, store } = createSandbox({ files: files, globals: { Current_Status: 'Idle' }, nowMs: nowSec * 1000 });
+  runScript(DISPATCHER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  assert.strictEqual(sandbox.local('itin_mode1'), 'NONE', 'Dispatcher must treat building manifest as empty');
+  assert(store.flashLog.some(function (f) { return f.indexOf('IDLE_SYNC_ENGAGED') !== -1; }), 'Dispatcher should idle-sync with building manifest');
+
+  const committedManifest = JSON.parse(files[MANIFEST]);
+  committedManifest.state = 'committed';
+  files[MANIFEST] = JSON.stringify(committedManifest);
+  assert.deepEqual(JSON.parse(runHelper(files, 'master')), [{ id: 'evt1' }], 'TDS_Helper must serve committed manifest');
+  const itin = JSON.parse(runHelper(files, 'itinerary'));
+  assert.strictEqual(itin[0].tripId, 'leg1', 'TDS_Helper itinerary must serve committed manifest');
 }
 
 function testEmptyFallback() {
@@ -582,6 +625,176 @@ function testReadBackRejectsTornWrite() {
   assert.strictEqual(r.sandbox.global('TDS_Active_Generation'), '', 'active generation must be cleared on torn write failure');
 }
 
+function testCompilerRejectsZeroDurationLeg() {
+  const COMPILER = path.resolve(__dirname, '..', 'Compiler.js');
+  const futureEventStart = nowSec + 3600;
+  const masterJson = JSON.stringify([{
+    id: 'zero_abc123',
+    start: futureEventStart,
+    end: futureEventStart + 3600,
+    duration: 3600,
+    title: 'Zero Event',
+    desc: '',
+    loc: 'Work',
+    coords: '52.1,-2.2'
+  }]);
+  const locals = {
+    block_step1: 'EVENT',
+    block_step2: 'Zero Event',
+    block_step3: '52.1,-2.2',
+    block_step4: 'DRIVE',
+    block_step5: String(futureEventStart),
+    block_step7: 'false',
+    block_step8: 'DEPART',
+    block_step9: String(futureEventStart),
+    block_step10: 'zero_abc123',
+    block_step14: '',
+    block_step15: '',
+    block_step16: '',
+    block_step19: 'JIT',
+    api_duration_secs: '0',
+    api_distance_miles: '0',
+    api_transit_steps: '',
+    virtual_time: String(nowSec - 60)
+  };
+  const globals = {
+    User_At_Base: 'true',
+    User_Loc: '51.9,-2.1',
+    Arrival_Buffer_Mins: '5',
+    Departure_Buffer_Mins: '5'
+  };
+  const files = {
+    [DATA + 'TDS_Master.json']: masterJson,
+    [DATA + 'Itin_Master.json']: '[]',
+    [DATA + 'TDS_Overrides.json']: '{}'
+  };
+  const { sandbox, store } = createSandbox({ locals: locals, globals: globals, files: files, nowMs: nowSec * 1000 });
+  runScript(COMPILER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+
+  const m = manifest(store);
+  assert(m && m.state === 'committed', 'Compiler should still publish a generation');
+  assert.strictEqual(m.itineraryCount, 0, 'zero-duration travel leg must not be published');
+  const itin = JSON.parse(store.files[m.itineraryPath]);
+  assert.strictEqual(itin.length, 0, 'published itinerary must be empty');
+  const flash = store.flashLog.find(function (f) { return f.indexOf('ZERO_DURATION_LEG_REJECTED') !== -1; });
+  assert(flash, 'Compiler should log ZERO_DURATION_LEG_REJECTED');
+  assert.strictEqual(JSON.parse(flash).tripId, 'zero_abc123');
+}
+
+function testPublisherConsidersRetentionHistory() {
+  let files = {};
+  const ids = [];
+  // Publish PHASE2_RETENTION generations to fill the history window.
+  for (let i = 0; i < 5; i++) {
+    const r = runPub(files, { events: [{ n: i }], master: [{ n: i }], itinerary: [{ n: i }] }, {}, function () { return i / 0x10000; });
+    assert.match(r.result, ID_RE);
+    ids.push(r.result);
+    files = r.store.files;
+  }
+  const retainedId = ids[0]; // gen:1700000000:0000
+  // Force the first mint attempt to collide with the retained ID, then choose a fresh suffix.
+  let attempts = 0;
+  const r = runPub(files, { events: [{ n: 5 }], master: [{ n: 5 }], itinerary: [{ n: 5 }] }, {}, function () {
+    attempts++;
+    return attempts === 1 ? 0 / 0x10000 : 5 / 0x10000;
+  });
+  assert.strictEqual(r.result, 'gen:' + nowSec + ':0005', 'publisher must skip a retained generation id and mint a fresh one');
+  const m = manifest(r.store);
+  assert(m && m.state === 'committed', 'manifest must be committed after resolving the collision');
+}
+
+function testPublisherPreservesGenIdOnFailure() {
+  const priorFiles = prior();
+  const expectedGen = 'gen:' + nowSec + ':ab12';
+  // Force a known ID, then make the manifest write torn so publish fails inside the try.
+  const r = runPub(priorFiles, { events: [{ id: 'e1' }], master: [{ id: 'l1' }], itinerary: [{ tripId: 't1' }] }, { tornWrites: ['TDS_Run_Manifest.json'] }, function () { return 0xab12 / 0x10000; });
+  assert(r.result.indexOf('ERROR:') === 0, 'torn manifest write should fail publish');
+  const rawManifest = r.store.files[MANIFEST];
+  assert(rawManifest && rawManifest.indexOf('"generationId":"' + expectedGen + '"') !== -1, 'failed manifest must preserve the minted generationId');
+
+  // A subsequent successful publish must mint a new ID, not reuse the failed one.
+  const m = readJsonFromStore(r.store, MANIFEST) || {};
+  const files = {};
+  files[MANIFEST] = JSON.stringify(m);
+  const r2 = runPub(files, { events: [{ id: 'e2' }], master: [{ id: 'l2' }], itinerary: [{ tripId: 't2' }] }, {}, function () { return 0xab13 / 0x10000; });
+  assert.strictEqual(r2.result, 'gen:' + nowSec + ':ab13', 'next success must mint a new generationId');
+}
+
+function readJsonFromStore(store, path) {
+  const raw = store.files[path];
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (e) { return null; }
+}
+
+function activeGenFiles() {
+  const activeGen = 'gen:1700000000:ab12';
+  const files = {};
+  files[MANIFEST] = JSON.stringify({ schemaVersion: 1, generationId: activeGen, activeGeneration: activeGen, previousGeneration: null, publishedAt: nowSec, writer: 'Generation Publisher', eventsPath: DATA + 'TDS_Events.gen_1700000000_ab12.json', masterPath: DATA + 'TDS_Master.gen_1700000000_ab12.json', itineraryPath: DATA + 'Itin_Master.gen_1700000000_ab12.json', eventCount: 1, legCount: 1, itineraryCount: 1, generationHistory: [activeGen], state: 'committed' });
+  files[DATA + 'TDS_Events.gen_1700000000_ab12.json'] = JSON.stringify([{ id: 'evt1' }]);
+  files[DATA + 'TDS_Master.gen_1700000000_ab12.json'] = JSON.stringify([{ id: 'evt1' }]);
+  return files;
+}
+
+function publishPar1(store, candidate) {
+  const nextLocals = Object.assign({}, store.locals);
+  nextLocals['par1'] = JSON.stringify(candidate);
+  const { sandbox: pubBox, store: pubStore } = createSandbox({ files: store.files, locals: nextLocals, nowMs: nowSec * 1000 });
+  runScript(PUBLISHER, pubBox, pubStore);
+  if (pubStore.runError) throw new Error(pubStore.runError.message);
+  return pubStore;
+}
+
+function testDepartNowCommandAdapter() {
+  const DEPART_NOW = path.resolve(__dirname, '..', 'Depart_Now.js');
+  const files = activeGenFiles();
+  files[DATA + 'Itin_Master.gen_1700000000_ab12.json'] = JSON.stringify([{ tripId: 'leg1', targetEventId: 'evt1', mode: 'DRIVE', departUnix: nowSec + 3600, arriveUnix: nowSec + 5400, durationSecs: 1800, latenessMins: 5, bufferMins: 10, targetTitle: 'Work' }]);
+
+  const { sandbox: box, store: s } = createSandbox({ files: files, nowMs: nowSec * 1000 });
+  runScript(DEPART_NOW, box, s);
+  if (s.runError) throw new Error(s.runError.message);
+
+  assert(!s.writeLog.some(function (w) { return w.path === DATA + 'Itin_Master.json'; }), 'Depart_Now.js must not write Itin_Master.json directly');
+  assert(s.locals['par1'], 'Depart_Now.js should stage a publish candidate');
+
+  const pubStore = publishPar1(s, JSON.parse(s.locals['par1']));
+  const m = manifest(pubStore);
+  assert(m && m.state === 'committed', 'Depart_Now candidate should publish a committed generation');
+  const itin = JSON.parse(pubStore.files[m.itineraryPath]);
+  assert.strictEqual(itin[0].departUnix, nowSec, 'depart-now should set departUnix to now');
+  assert.strictEqual(itin[0].arriveUnix, nowSec + 1800, 'depart-now should preserve duration');
+  assert.strictEqual(itin[0].latenessMins, 0, 'depart-now should clear lateness');
+  assert.strictEqual(itin[0].bufferMins, 0, 'depart-now should clear buffer');
+}
+
+function testReturnToBaseCommandAdapter() {
+  const RETURN_TO_BASE = path.resolve(__dirname, '..', 'Return_to_Base.js');
+  const files = activeGenFiles();
+  files[DATA + 'Itin_Master.gen_1700000000_ab12.json'] = JSON.stringify([{ tripId: 'leg1', targetEventId: 'evt1', mode: 'DRIVE', departUnix: nowSec + 3600, arriveUnix: nowSec + 5400, targetTitle: 'Work' }]);
+
+  const globals = {
+    TDS_Return_Coords: '51.9,-2.1',
+    TDS_Return_Mode: 'DRIVE',
+    TDS_Return_Name: 'Home',
+    User_Loc: '51.9,-2.1',
+    Car_Loc: '51.9,-2.1'
+  };
+  const { sandbox: box, store: s } = createSandbox({ files: files, globals: globals, nowMs: nowSec * 1000 });
+  runScript(RETURN_TO_BASE, box, s);
+  if (s.runError) throw new Error(s.runError.message);
+
+  assert(!s.writeLog.some(function (w) { return w.path === DATA + 'Itin_Master.json'; }), 'Return_to_Base.js must not write Itin_Master.json directly');
+  assert(s.locals['par1'], 'Return_to_Base.js should stage a publish candidate');
+
+  const pubStore = publishPar1(s, JSON.parse(s.locals['par1']));
+  const m = manifest(pubStore);
+  assert(m && m.state === 'committed', 'Return-to-base candidate should publish a committed generation');
+  const itin = JSON.parse(pubStore.files[m.itineraryPath]);
+  assert.strictEqual(itin.length, 2, 'itinerary should prepend return leg');
+  assert.strictEqual(itin[0].targetEventId, 'MANUAL_RETURN', 'return leg should be first');
+  assert.strictEqual(itin[0].mode, 'DRIVE', 'return leg mode should be DRIVE');
+}
+
 function testEndToEndFlow() {
   // Full live flow: Alpha ingests calendar events, Finaliser stages them,
   // Compiler assembles the leg, Publisher commits the generation, and
@@ -710,8 +923,10 @@ try {
   testRetention();
   testMigration();
   testCompilerCutover();
+  testCompilerRejectsZeroDurationLeg();
   testFinaliserCutover();
   testReaderFallback();
+  testReadersRequireCommittedState();
   testEmptyFallback();
   testCutoverProof();
   testReorderTiming();
@@ -724,9 +939,13 @@ try {
   testPlaceholderSandboxPolicyFallback();
   testPlaceholderDispatcherStale();
   testPlaceholderDispatcherIdle();
+  testDepartNowCommandAdapter();
+  testReturnToBaseCommandAdapter();
   testManifestLastWriteOrder();
   testPruneDeletesOldGenerations();
   testReadBackRejectsTornWrite();
+  testPublisherConsidersRetentionHistory();
+  testPublisherPreservesGenIdOnFailure();
   testEndToEndFlow();
   console.log('PASS: atomic-publication: publisher and resolver contract OK');
 } catch (e) {
