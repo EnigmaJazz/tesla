@@ -9,6 +9,10 @@
 
 const SECONDS_PER_DAY = 86400;
 
+// Phase 2: travel leg types whose route duration must be positive before
+// publication. Zero-duration synthetic or placeholder legs are rejected.
+const TRAVEL_API_TYPES = { DEPART: true, ARRIVE: true, ACTIVE_TRAVEL: true };
+
 // INV-0.2: DST-safe day-boundary comparison. Both unixSec values are in UTC.
 function isSameUTCDay(unixSecA, unixSecB) {
     const dA = new Date(unixSecA * 1000);
@@ -69,7 +73,7 @@ function pathFor(g, kind) {
 function readActiveGeneration(kind) {
     const m = readJson("Tasker/Tesla/Data/TDS_Run_Manifest.json");
     const key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
-    if (m && m.activeGeneration) {
+    if (m && m.state === "committed" && m.activeGeneration) {
         const data = readJson(m[key] || pathFor(m.activeGeneration, kind));
         if (data !== null) return data;
     }
@@ -399,13 +403,26 @@ try {
                     }
                 }
 
-                setLocal('depart_changed', departChanged); 
-                setLocal('depart_diff_mins', departDiffMins.toString());
-                setLocal('api_conflict', apiConflictStr); 
-                setLocal('live_late_mins', liveLateMins.toString());
-            }
+            setLocal('depart_changed', departChanged); 
+            setLocal('depart_diff_mins', departDiffMins.toString());
+            setLocal('api_conflict', apiConflictStr); 
+            setLocal('live_late_mins', liveLateMins.toString());
+        }
 
-            if (leg.apiType === "ACTIVE_TRAVEL" || leg.durationSecs <= 0) {
+        if (TRAVEL_API_TYPES[leg.apiType] && leg.durationSecs <= 0) {
+            flash(JSON.stringify({
+                timestamp: nowSec,
+                generationId: global('TDS_Active_Generation') || null,
+                component: "Compiler",
+                severity: "WARN",
+                code: "ZERO_DURATION_LEG_REJECTED",
+                tripId: leg.targetEventId || null,
+                details: { apiType: leg.apiType, durationSecs: leg.durationSecs, targetTitle: leg.targetTitle }
+            }));
+            continue;
+        }
+
+        if (leg.apiType === "ACTIVE_TRAVEL" || leg.durationSecs <= 0) {
                 outTitles.push("SKIP_CALENDAR");
 
                 // V24.17 update:
