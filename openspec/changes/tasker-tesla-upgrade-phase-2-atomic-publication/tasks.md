@@ -39,7 +39,7 @@
 ## 7. Remove unauthorized writers and stage
 **Files:** `Gatekeeper.js`, `API_Parser.js`, `Alpha.js`, `Compiler.js`, `Finaliser.js`  
 **Spec requirements:** RULE-8A, CLUSTER-12, SCRIPT-15. **Estimate:** ~110 lines. **Depends on:** 4,6.  
-**Change:** [ ] Replace Gatekeeper:56 and API_Parser:33 with `APPLY_CLUSTER_REORDER` queue commands; remove Alpha:392–393 clears; make Compiler/Finaliser stage candidates and hand off publication.  
+**Change:** [x] Compiler/Finaliser stage candidates and hand off publication (PR-B). Gatekeeper:56 and API_Parser:33 `APPLY_CLUSTER_REORDER` + Alpha:392–393 clear removal deferred to PR-C.  
 **Acceptance:** only Publisher writes versioned resources. **Verification:** ownership/order assertions and reorder timing test.
 
 ## 8. Replace all 15 placeholders
@@ -51,7 +51,7 @@
 ## 9. Cut over readers
 **Files:** `Dispatcher.js`, `Dashboard.js`, `Sandbox_Engine.js`  
 **Spec requirements:** Discovery, PUB-7, SCRIPT-15. **Estimate:** ~75 lines. **Depends on:** 6,7.  
-**Change:** [ ] Read manifest-declared resources through `TDS_Helper`; use empty fallback, and Dispatcher idle sync when no readable generation.  
+**Change:** [x] Read manifest-declared resources through `TDS_Helper` in Dispatcher, Dashboard, and Sandbox_Engine; use empty fallback, and Dispatcher idle sync when no readable generation.  
 **Acceptance:** no legacy direct read remains in these paths. **Verification:** reader cutover and idle-fallback tests.
 
 ## 10. Full verification
