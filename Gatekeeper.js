@@ -32,6 +32,26 @@
     }
 
     // [SURGICAL UPGRADE: In-Place Sorting]
+    function emitReorderCommand(orderedIdsStr, source) {
+        const queuePath = "Tasker/Tesla/Data/TDS_Reorder_Commands.json";
+        let queue = [];
+        try {
+            const raw = readFile(queuePath) || "[]";
+            queue = JSON.parse(raw);
+            if (!Array.isArray(queue)) queue = [];
+        } catch (e) { queue = []; }
+        const orderedIds = orderedIdsStr.split(",").filter(function (id) { return id; });
+        if (orderedIds.length === 0) return;
+        queue.push({
+            type: "APPLY_CLUSTER_REORDER",
+            generationId: global('TDS_Active_Generation') || null,
+            clusterId: source + "-cluster",
+            orderedEventIds: orderedIds,
+            source: source,
+            emittedAt: Math.floor(Date.now() / 1000)
+        });
+        writeFile(queuePath, JSON.stringify(queue), false);
+    }
     function sortMasterJson(orderedIdsStr) {
         let orderedIds = orderedIdsStr.split(",");
         let masterRaw = readFile("Tasker/Tesla/Data/TDS_Master.json") || "[]";
@@ -53,7 +73,9 @@
             }
         }
 
-        writeFile("Tasker/Tesla/Data/TDS_Master.json", JSON.stringify(masterArr), false);
+        // Phase 2 RULE-8A: do not write the live master directly.
+        // Emit a typed reorder command for the Generation Publisher to apply.
+        emitReorderCommand(orderedIdsStr, 'Gatekeeper');
     }
 
     try {
