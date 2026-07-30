@@ -66,8 +66,8 @@ function testResolver() {
 
   const priorFiles = prior();
   priorFiles[MANIFEST] = JSON.stringify(Object.assign(JSON.parse(priorFiles[MANIFEST]), { state: 'failed' }));
-  priorFiles[DATA + 'TDS_Master.gen_1700000000_ab12.json'] = 'CORRUPT';
-  assert.deepEqual(JSON.parse(runHelper(priorFiles, 'master')), [{ id: 'p1' }]);
+  priorFiles[DATA + 'TDS_Master.gen_1699999999_0001.json'] = 'CORRUPT';
+  assert.deepEqual(JSON.parse(runHelper(priorFiles, 'master')), [], 'TDS_Helper must refuse a failed manifest active generation');
 
   assert.deepEqual(JSON.parse(runHelper({}, 'master')), []);
 
@@ -288,6 +288,8 @@ function testReaderFallback() {
     targetCoords: '52.1,-2.2'
   }]);
 
+  assert.deepEqual(JSON.parse(runHelper(files, 'master')), [{ id: 'prior' }], 'TDS_Helper should fall back to prior generation when active is corrupt');
+
   const DISPATCHER = path.resolve(__dirname, '..', 'Dispatcher.js');
   const { sandbox, store } = createSandbox({ files: files, globals: { Current_Status: 'Idle' }, nowMs: nowSec * 1000 });
   runScript(DISPATCHER, sandbox, store);
@@ -295,6 +297,47 @@ function testReaderFallback() {
   assert.strictEqual(sandbox.local('itin_mode1'), 'DRIVE', 'Dispatcher should fall back to the prior generation when the active generation is unreadable');
   const idleFlash = store.flashLog.find(function (f) { return f.indexOf('IDLE_SYNC_ENGAGED') !== -1; });
   assert(!idleFlash, 'Dispatcher should not idle-sync when the prior generation has an actionable trip');
+}
+
+function testReadersRequireCommittedState() {
+  const id = 'gen:1700000000:cd34';
+  const files = {};
+  files[MANIFEST] = JSON.stringify({
+    schemaVersion: 1,
+    generationId: id,
+    activeGeneration: id,
+    previousGeneration: null,
+    publishedAt: nowSec,
+    writer: 'Generation Publisher',
+    eventsPath: DATA + 'TDS_Events.gen_1700000000_cd34.json',
+    masterPath: DATA + 'TDS_Master.gen_1700000000_cd34.json',
+    itineraryPath: DATA + 'Itin_Master.gen_1700000000_cd34.json',
+    eventCount: 1,
+    legCount: 1,
+    itineraryCount: 1,
+    generationHistory: [id],
+    state: 'building'
+  });
+  files[DATA + 'TDS_Events.gen_1700000000_cd34.json'] = JSON.stringify([{ id: 'evt1' }]);
+  files[DATA + 'TDS_Master.gen_1700000000_cd34.json'] = JSON.stringify([{ id: 'evt1' }]);
+  files[DATA + 'Itin_Master.gen_1700000000_cd34.json'] = JSON.stringify([{ tripId: 'leg1', mode: 'DRIVE', departUnix: nowSec + 3600, arriveUnix: nowSec + 5400, targetTitle: 'Work' }]);
+
+  assert.deepEqual(JSON.parse(runHelper(files, 'master')), [], 'TDS_Helper must refuse a building manifest');
+  assert.deepEqual(JSON.parse(runHelper(files, 'itinerary')), [], 'TDS_Helper itinerary must refuse a building manifest');
+
+  const DISPATCHER = path.resolve(__dirname, '..', 'Dispatcher.js');
+  const { sandbox, store } = createSandbox({ files: files, globals: { Current_Status: 'Idle' }, nowMs: nowSec * 1000 });
+  runScript(DISPATCHER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  assert.strictEqual(sandbox.local('itin_mode1'), 'NONE', 'Dispatcher must treat building manifest as empty');
+  assert(store.flashLog.some(function (f) { return f.indexOf('IDLE_SYNC_ENGAGED') !== -1; }), 'Dispatcher should idle-sync with building manifest');
+
+  const committedManifest = JSON.parse(files[MANIFEST]);
+  committedManifest.state = 'committed';
+  files[MANIFEST] = JSON.stringify(committedManifest);
+  assert.deepEqual(JSON.parse(runHelper(files, 'master')), [{ id: 'evt1' }], 'TDS_Helper must serve committed manifest');
+  const itin = JSON.parse(runHelper(files, 'itinerary'));
+  assert.strictEqual(itin[0].tripId, 'leg1', 'TDS_Helper itinerary must serve committed manifest');
 }
 
 function testEmptyFallback() {
@@ -770,6 +813,7 @@ try {
   testCompilerRejectsZeroDurationLeg();
   testFinaliserCutover();
   testReaderFallback();
+  testReadersRequireCommittedState();
   testEmptyFallback();
   testCutoverProof();
   testReorderTiming();

@@ -18,7 +18,7 @@ function readJson(path) {
 function readActive(kind) {
   const m = readJson(PHASE2_MANIFEST_PATH);
   const key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
-  if (m && m.activeGeneration) {
+  if (m && m.state === "committed" && m.activeGeneration) {
     const data = readJson(m[key] || pathFor(m.activeGeneration, kind));
     if (data !== null) return data;
   }
