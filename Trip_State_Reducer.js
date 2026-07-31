@@ -120,14 +120,86 @@ function validatePolicy(payload) {
   return { valid: true };
 }
 function stubApply(state, payload, context) { return state; }
+function applyCompleteStop(state, payload) {
+  const next = JSON.parse(JSON.stringify(state));
+  const tripId = payload.tripId;
+  const stopId = payload.stopId;
+  if (!next.trips[tripId]) {
+    next.trips[tripId] = {
+      tripId: tripId,
+      lifecycleState: 'IN_PROGRESS',
+      completedStops: [stopId],
+      lastActivityUnix: payload.at,
+      createdAt: nowSec()
+    };
+  } else {
+    const tr = next.trips[tripId];
+    tr.completedStops = tr.completedStops || [];
+    if (tr.completedStops.indexOf(stopId) === -1) {
+      tr.completedStops.push(stopId);
+    }
+    tr.lastActivityUnix = payload.at;
+  }
+  next.completedStops = next.completedStops || {};
+  const prior = next.completedStops[stopId];
+  if (prior && prior.completedUnix === payload.at) {
+    return state;
+  }
+  next.completedStops[stopId] = {
+    stopId: stopId,
+    tripId: tripId,
+    completedUnix: payload.at,
+    generationId: payload.generationId
+  };
+  next.revision = state.revision + 1;
+  return next;
+}
+function applyCompleteDropin(state, payload) {
+  const next = JSON.parse(JSON.stringify(state));
+  const tripId = payload.tripId;
+  const dropinId = payload.dropinId;
+  if (!next.trips[tripId]) {
+    next.trips[tripId] = {
+      tripId: tripId,
+      lifecycleState: 'COMPLETED',
+      completedDropins: [dropinId],
+      lastActivityUnix: payload.at,
+      createdAt: nowSec()
+    };
+  } else {
+    const tr = next.trips[tripId];
+    tr.completedDropins = tr.completedDropins || [];
+    if (tr.completedDropins.indexOf(dropinId) === -1) {
+      tr.completedDropins.push(dropinId);
+    }
+    tr.lastActivityUnix = payload.at;
+    if (tr.lifecycleState === 'IN_PROGRESS' || tr.lifecycleState === 'PLANNED') {
+      tr.lifecycleState = 'COMPLETED';
+    }
+  }
+  next.completedDropins = next.completedDropins || {};
+  const prior = next.completedDropins[dropinId];
+  if (prior && prior.completedUnix === payload.at) {
+    return state;
+  }
+  next.completedDropins[dropinId] = {
+    dropinId: dropinId,
+    tripId: tripId,
+    completedUnix: payload.at,
+    generationId: payload.generationId
+  };
+  next.revision = state.revision + 1;
+  return next;
+}
 var COMMANDS = [
   { name: "SET_OVERRIDE", validate: function(p) { return validateFields(p, [{name:"key",type:"string",required:true},{name:"value",type:"any",required:true}]); }, apply: stubApply },
   { name: "REMOVE_OVERRIDE", validate: function(p) { return validateFields(p, [{name:"key",type:"string",required:true}]); }, apply: stubApply },
   { name: "DEPART_NOW", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
   { name: "RETURN_TO_BASE", validate: function(p) { const base = validateFields(p, [{name:"actionId",type:"string",required:true},{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); if (!base.valid) return base; return validatePolicy(p); }, apply: stubApply },
-  { name: "COMPLETE_STOP", validate: function(p) { return validateFields(p, [{name:"stopId",type:"string",required:true},{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
+  { name: "COMPLETE_STOP", validate: function(p) { return validateFields(p, [{name:"stopId",type:"string",required:true},{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: applyCompleteStop },
   { name: "START_UNPLANNED_STOP", validate: function(p) { return validateFields(p, [{name:"stopId",type:"string",required:true},{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
   { name: "END_UNPLANNED_STOP", validate: function(p) { return validateFields(p, [{name:"stopId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
+  { name: "COMPLETE_DROPIN", validate: function(p) { return validateFields(p, [{name:"dropinId",type:"string",required:true},{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: applyCompleteDropin },
   { name: "CANCEL_ACTION", validate: function(p) { return validateFields(p, [{name:"actionId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
   { name: "RESET_ACTIONS", validate: function(p) { return validateFields(p, [{name:"actionId",type:"string",required:false},{name:"at",type:"number",required:true}]); }, apply: stubApply },
   { name: "OBSERVE_DEPARTURE", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
