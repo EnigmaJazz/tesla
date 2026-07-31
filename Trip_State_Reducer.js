@@ -52,7 +52,7 @@ function readJson(path) {
 function writeWithReadback(path, content, identity) {
   writeFile(path, content);
   if (readFile(path) !== content) {
-    logEvent("error", "EVT-GENERATION_VALIDATION_FAILED", null, { reason: "read-back mismatch", path: path, writer: identity });
+    logEvent("error", "GENERATION_VALIDATION_FAILED", null, { reason: "read-back mismatch", path: path, writer: identity });
     throw new Error("READ_BACK_MISMATCH: " + path);
   }
 }
@@ -89,7 +89,7 @@ function loadState() {
   const raw = readJson(PHASE3_STATE_PATH);
   if (!raw) return initialState();
   if (raw.schemaVersion !== PHASE3_SCHEMA_VERSION) {
-    logEvent("error", "EVT-GENERATION_VALIDATION_FAILED", null, { reason: "unsupported schema version", schemaVersion: raw.schemaVersion });
+    logEvent("error", "GENERATION_VALIDATION_FAILED", null, { reason: "unsupported schema version", schemaVersion: raw.schemaVersion });
     return initialState();
   }
   return raw;
@@ -131,9 +131,10 @@ var COMMANDS = [
   { name: "CANCEL_ACTION", validate: function(p) { return validateFields(p, [{name:"actionId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
   { name: "RESET_ACTIONS", validate: function(p) { return validateFields(p, [{name:"actionId",type:"string",required:false},{name:"at",type:"number",required:true}]); }, apply: stubApply },
   { name: "OBSERVE_DEPARTURE", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
-  { name: "OBSERVE_ARRIVAL", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true},{name:"accuracyM",type:"number",required:true}]); }, apply: stubApply },
+  { name: "OBSERVE_ARRIVAL", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true},{name:"accuracyM",type:"number",required:true}]); }, apply: applyObserveArrival },
   { name: "COMPLETE_TRIP", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
-  { name: "EXPIRE_TRIP", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply }
+  { name: "EXPIRE_TRIP", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
+  { name: "OBSERVE_LIVE_BASE", validate: function(p) { return validateFields(p, [{name:"at",type:"number",required:false}]); }, apply: applyObserveLiveBase }
 ];
 function parseCommand(name, payload, context) {
   if (typeof name !== "string" || !name) return { valid: false, reason: "missing command name" };
@@ -161,8 +162,52 @@ function commit(oldRaw, newState) {
     return { ok: false, reason: e.message };
   }
 }
+// Phase 3 PR-B: projection of state-backed globals. PR-D will project
+// User_At_Base and Base_Arrival_Unix here. For now, this is a no-op.
 function project(sideEffects) {
-  // PR-A: no global projection. Future PRs will project state-backed globals here.
+  // No-op until PR-D introduces state-backed global projection.
+}
+
+// Phase 3 PR-B: apply functions for OBSERVE_ARRIVAL and OBSERVE_LIVE_BASE.
+// Each apply function is a pure reducer: it returns a NEW state object and
+// does not mutate the input. The commit() function handles write + read-back.
+function applyObserveArrival(state, payload) {
+  const next = JSON.parse(JSON.stringify(state));
+  const tripId = payload.tripId;
+  if (next.trips[tripId]) {
+    next.trips[tripId].observedArrivalUnix = payload.at;
+    next.trips[tripId].observedArrivalAccuracyM = payload.accuracyM;
+    if (next.trips[tripId].lifecycleState === 'IN_PROGRESS') {
+      next.trips[tripId].lifecycleState = 'ARRIVED';
+    }
+  } else {
+    next.trips[tripId] = {
+      tripId: tripId,
+      lifecycleState: 'COMPLETED',
+      observedArrivalUnix: payload.at,
+      observedArrivalAccuracyM: payload.accuracyM,
+      createdAt: nowSec()
+    };
+  }
+  next.revision = state.revision + 1;
+  return next;
+}
+
+function applyObserveLiveBase(state, payload) {
+  const next = JSON.parse(JSON.stringify(state));
+  const wasAtBase = next.userAtBase === true;
+  next.currentOrigin = 'LIVE_BASE';
+  next.userAtBase = true;
+  next.baseArrivalUnix = payload.at || nowSec();
+  if (!wasAtBase) {
+    logEvent('info', 'LIVE_BASE_OVERRIDES_LEGACY_ORIGIN', null, {
+      generationId: payload.generationId,
+      previousOrigin: 'PLANNED',
+      baseArrivalUnix: next.baseArrivalUnix
+    });
+  }
+  next.revision = state.revision + 1;
+  return next;
 }
 function reduce(command, payload, context) {
   const parsed = parseCommand(command, payload, context);
@@ -197,7 +242,7 @@ try { context = CONTEXT_RAW ? JSON.parse(CONTEXT_RAW) : {}; } catch (e) {
 if (!COMMAND) {
   setLocal("return_value", "ERROR: missing command");
 } else if (payload === null) {
-  logEvent("error", "EVT-GENERATION_VALIDATION_FAILED", null, { reason: "invalid JSON payload" });
+    logEvent("error", "GENERATION_VALIDATION_FAILED", null, { reason: "invalid JSON payload" });
   setLocal("return_value", "ERROR: invalid JSON payload");
 } else {
   try { setLocal("return_value", reduce(COMMAND, payload, context)); } catch (e) { setLocal("return_value", "ERROR: " + e.message); }
