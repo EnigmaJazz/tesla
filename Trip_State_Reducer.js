@@ -202,7 +202,7 @@ var COMMANDS = [
   { name: "COMPLETE_DROPIN", validate: function(p) { return validateFields(p, [{name:"dropinId",type:"string",required:true},{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: applyCompleteDropin },
   { name: "CANCEL_ACTION", validate: function(p) { return validateFields(p, [{name:"actionId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
   { name: "RESET_ACTIONS", validate: function(p) { return validateFields(p, [{name:"actionId",type:"string",required:false},{name:"at",type:"number",required:true}]); }, apply: stubApply },
-  { name: "OBSERVE_DEPARTURE", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
+  { name: "OBSERVE_DEPARTURE", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true},{name:"planningDay",type:"string",required:false}]); }, apply: applyObserveDeparture },
   { name: "OBSERVE_ARRIVAL", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true},{name:"accuracyM",type:"number",required:true}]); }, apply: applyObserveArrival },
   { name: "COMPLETE_TRIP", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
   { name: "EXPIRE_TRIP", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
@@ -265,6 +265,42 @@ function applyObserveArrival(state, payload) {
   return next;
 }
 
+function applyObserveDeparture(state, payload) {
+  const next = JSON.parse(JSON.stringify(state));
+  const tripId = payload.tripId;
+  const at = payload.at;
+  // PR-D: idempotent. If a prior observation exists for this trip with the
+  // same departUnix, do not bump revision. Different departUnix would indicate
+  // a real second departure (re-observed) and bumps revision.
+  if (!next.trips[tripId]) {
+    next.trips[tripId] = {
+      tripId: tripId,
+      lifecycleState: 'PLANNED',
+      departures: [],
+      completedStops: [],
+      completedDropins: []
+    };
+  }
+  const tr = next.trips[tripId];
+  tr.departures = tr.departures || [];
+  const prior = tr.departures[tr.departures.length - 1];
+  if (prior && prior.at === at) {
+    return state;
+  }
+  tr.departures.push({ at: at, planningDay: payload.planningDay || null });
+  tr.lastActivityUnix = at;
+  if (tr.lifecycleState === 'PLANNED') {
+    tr.lifecycleState = 'IN_PROGRESS';
+  }
+  // PR-D: planningDay stored as-is from Finaliser. No timezone conversion.
+  // DST safety relies on Finaliser passing a validated label.
+  if (payload.planningDay) {
+    tr.currentPlanningDay = payload.planningDay;
+  }
+  next.revision = state.revision + 1;
+  next.currentPlanningDay = payload.planningDay || next.currentPlanningDay;
+  return next;
+}
 function applyObserveLiveBase(state, payload) {
   const next = JSON.parse(JSON.stringify(state));
   const wasAtBase = next.userAtBase === true;
