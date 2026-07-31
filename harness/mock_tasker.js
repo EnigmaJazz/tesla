@@ -20,6 +20,8 @@ const path = require('node:path');
 const { runScript } = require('./runner');
 
 const PUBLISHER_PATH = path.resolve(__dirname, '..', 'Generation_Publisher.js');
+const REDUCER_PATH = path.resolve(__dirname, '..', 'Trip_State_Reducer.js');
+const PHASE3_STATE_PATH = "Tasker/Tesla/Data/TDS_Trip_State.json";
 
 function createSandbox(options) {
   options = options || {};
@@ -58,6 +60,16 @@ function createSandbox(options) {
     return local('return_value');
   }
 
+  function reducer(command, payload, context) {
+    setLocal('par1', command);
+    setLocal('par2', JSON.stringify(payload));
+    if (context !== undefined) setLocal('par3', JSON.stringify(context));
+    sandbox.__currentScriptPath = REDUCER_PATH;
+    runScript(REDUCER_PATH, sandbox, store);
+    sandbox.__currentScriptPath = '';
+    return local('return_value');
+  }
+
   function local(key) {
     return Object.prototype.hasOwnProperty.call(liveLocals, key) ? liveLocals[key] : "";
   }
@@ -80,6 +92,9 @@ function createSandbox(options) {
     return false;
   }
   function writeFile(path, content) {
+    if (path === PHASE3_STATE_PATH && sandbox.__currentScriptPath !== REDUCER_PATH) {
+      throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
+    }
     if (matchesAny(path, writeThrows)) throw new Error("injected write failure: " + path);
     const s = stringify(content);
     const written = matchesAny(path, tornWrites) ? s.slice(0, Math.max(0, s.length - 4)) : s;
@@ -137,7 +152,9 @@ function createSandbox(options) {
     Array: Array,
     String: String,
     Boolean: Boolean,
-    publish: publish
+    __currentScriptPath: '',
+    publish: publish,
+    reducer: reducer
   };
 
   const store = {
