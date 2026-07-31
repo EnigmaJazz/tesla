@@ -207,3 +207,23 @@ PR-E: Active-generation reader convergence. Goal: canonical readActiveGeneration
 ### Next recommended step
 
 PR-F: Reconciliation and manual-action hardening. ~390 lines, 6 files.
+
+## PR-F (reconciliation and manifest alignment) — MERGED
+
+- Merge SHA: d9a81aa
+- Commit SHA: d5cb92c
+- Branch: phase-3-pr-f (deleted)
+- PR: #18
+- Diff: 227 lines across 3 files
+  - Trip_State_Reducer.js: +30 -4 (applyReconcile function + RECONCILE_GENERATION command registration)
+  - Generation_Publisher.js: +14 (post-commit reducer reconciliation call)
+  - harness/test_reconcile.js: +187 new (6 test scenarios)
+- Test count: 16/16 passing
+- Spec addressed: R-TRIP-12 (reconciliation) partial
+- Lessons learned:
+  - The reducer/generation-publisher const/var conflict lesson: top-level `const` declarations in Trip_State_Reducer.js conflict when both scripts are loaded in the same vm context. Fixed by renaming conflicting identifiers with TRIP_ prefix.
+  - Harness logEvent entries are stored as JSON strings in store.flashLog. Test helpers must JSON.parse each entry before inspecting code or details.
+  - apply functions return 'OK' on success (not null). Tests must use 'OK' literal.
+  - Test 4 (rejection preserves state) required a preceding successful reconcile to establish a baseline for comparison; without it, the test couldn't detect a corrupt state.
+
+## PR-F status: MERGED. Phase 3 chain complete (PR-A → PR-F).
