@@ -124,3 +124,17 @@
 ### Next recommended step
 
 - Apply PR-D (Departure memory migration: Depart_Memory OVR, day boundary, Base_Arrival_Unix).
+
+## PR-D: Departure observation and day-boundary (2026-07-30)
+
+- **PR:** #16 (merged)
+- **Merge SHA:** 1c841ce
+- **Feature commit:** e8c2e9a
+- **Files touched:** 2 (Trip_State_Reducer.js, harness/test_departure_day.js)
+- **Lines added:** 226
+- **Tests:** 9 new in harness/test_departure_day.js
+- **Baseline tests:** 14/14 passing
+- **Spec requirements:** R-TRIP-6 (partial), R-TRIP-7.4 (partial)
+- **Architecture notes:** OBSERVE_DEPARTURE reducer apply function with idempotency, planning-day preservation (no timezone conversion), late-departure handling. Day-boundary and DST safety are achieved by preserving Finaliser-validated planningDay labels.
+- **Lessons:** Test assertions for reducer return values should be `strictEqual(r, 'OK', ...)` not `assert.equal(r, null, ...)`. The harness shim returns `local('return_value')` which is `'OK'` on success and `'ERROR:...'` on failure. (PR-C also used `assert.equal(r, null, ...)` and it passed because the assertion was inside the test that exits 0 on success; this is fragile and should be normalized across the chain.)
+- **Next:** PR-E (active-generation reader convergence)
