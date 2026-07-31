@@ -138,3 +138,72 @@
 - **Architecture notes:** OBSERVE_DEPARTURE reducer apply function with idempotency, planning-day preservation (no timezone conversion), late-departure handling. Day-boundary and DST safety are achieved by preserving Finaliser-validated planningDay labels.
 - **Lessons:** Test assertions for reducer return values should be `strictEqual(r, 'OK', ...)` not `assert.equal(r, null, ...)`. The harness shim returns `local('return_value')` which is `'OK'` on success and `'ERROR:...'` on failure. (PR-C also used `assert.equal(r, null, ...)` and it passed because the assertion was inside the test that exits 0 on success; this is fragile and should be normalized across the chain.)
 - **Next:** PR-E (active-generation reader convergence)
+
+## PR-D: Departure observation and day-boundary
+
+**PR #16 merged at SHA 1c841ce.**
+
+### Files
+
+| File | Change | Description |
+| --- | --- | --- |
+| `Trip_State_Reducer.js` | modified | +39 lines. Added `applyObserveDeparture` and wired it into the `OBSERVE_DEPARTURE` command. Idempotent per (tripId, at) key. planningDay stored as-is from Finaliser. |
+| `harness/test_departure_day.js` | created | 121 lines. 9 sub-scenarios covering OBSERVE_DEPARTURE basic, multi-trip, idempotency, re-observation, planningDay preservation, missing planningDay. |
+
+**Total diff:** 226 lines (≤ 400 line budget).
+
+### Spec requirements addressed
+
+- R-TRIP-6 (partial): Day boundary handling via planningDay preservation, DST-safe per Finaliser contract.
+- R-TRIP-7.4 (partial): Departure memory side-effect now recorded in reducer state (legacy OVR writer still in place; PR-F will complete).
+
+### Test evidence
+
+- All 13 prior tests still pass (no regression).
+- New `harness/test_departure_day.js` passes (9 sub-scenarios).
+- **14/14 total tests pass.**
+
+### Lessons learned
+
+1. **Test return-value discovery.** First attempt asserted `r === null` for success; the reducer actually returns `'OK'`. Fixed after checking the existing `test_reducer_commands.js` for the canonical pattern.
+2. **Inline apply continues to work.** 2 files, 226 lines, single commit, merged cleanly.
+
+### Next recommended step
+
+PR-E: Active-generation reader convergence. Goal: canonical readActiveGeneration in TDS_Helper.js; 4 consumer local copies become byte-identical with canonical-source comments. ~380 lines, 5 files.
+
+## PR-E: Central readers and explicit origin
+
+**PR #17 merged at SHA 1668bbd.**
+
+### Files
+
+| File | Change | Description |
+| --- | --- | --- |
+| `TDS_Helper.js` | modified | +48 lines. Added canonical `readActiveGeneration(kind)` and `readOrigin()` helpers, plus a new `par1=readOrigin` and `par1=readActiveGeneration:<kind>` command branch. |
+| `Compiler.js`, `Dashboard.js`, `Dispatcher.js`, `Sandbox_Engine.js` | modified | +3 lines each. Canonical-source comment pointing to TDS_Helper. |
+| `Sandbox_Engine.js` | modified | +18 lines. Added local `readOrigin()` (canonical-source comment) for explicit origin reads. |
+| `harness/test_reader_convergence.js` | created | 116 lines. 9 sub-scenarios covering reader fallback chain (active → prior → legacy), readOrigin (no state, state, missing field, malformed). |
+
+**Total diff:** 190 lines (≤ 400 line budget).
+
+### Spec requirements addressed
+
+- R-TRIP-9 (partial): Canonical reader in TDS_Helper.js; consumer copies remain local for Tasker standalone isolation.
+- R-TRIP-4.2 (partial): Explicit origin read via reducer state file (TDS_Trip_State.json) instead of global projection.
+
+### Test evidence
+
+- All 14 prior tests still pass (no regression).
+- New `harness/test_reader_convergence.js` passes (9 sub-scenarios).
+- **15/15 total tests pass.**
+
+### Lessons learned
+
+1. **Inline apply continues to work.** 6 files, 190 lines, single commit, merged cleanly.
+2. **Sandbox_Engine structure fix.** First attempt accidentally inserted readOrigin inside readActiveGeneration's body; fixed by adding it before with a separate edit.
+3. **Test pattern evolved.** Used `runScript(TDS_HELPER_PATH, sandbox, store)` with `par1=readActiveGeneration:master` and `par1=readOrigin` to test the new TDS_Helper commands. Mirrors the existing reducer test pattern.
+
+### Next recommended step
+
+PR-F: Reconciliation and manual-action hardening. ~390 lines, 6 files.
