@@ -185,6 +185,20 @@ function publish(candidate) {
     writeWithReadback(itnPath, JSON.stringify(candidate.itinerary), genId);
     writeWithReadback(PHASE2_MANIFEST_PATH, JSON.stringify(manifest(genId, previousId, counts, "committed", history)), genId);
     setGlobal("TDS_Active_Generation", genId);
+    // Phase 3 PR-F: reconcile reducer state with the new active generation.
+    // The manifest is authoritative; the reducer aligns its currentGeneration
+    // and lastReconciledGeneration to genId.
+    if (typeof reducer === "function") {
+      try {
+        reducer("RECONCILE_GENERATION", { activeGeneration: genId, manifestSchemaVersion: 2 });
+      } catch (reconcileErr) {
+        logEvent("warn", "RECONCILE_GENERATION", null, { reason: reconcileErr.message, generation: genId });
+      }
+    } else {
+      // Real Tasker: stage the command for the next action to run the reducer.
+      setLocal("par1", "RECONCILE_GENERATION");
+      setLocal("par2", JSON.stringify({ activeGeneration: genId, manifestSchemaVersion: 2 }));
+    }
     prune();
     return genId;
   } catch (e) {

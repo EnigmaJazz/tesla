@@ -29,8 +29,8 @@ var PHASE3_STATE_PATH = "Tasker/Tesla/Data/TDS_Trip_State.json";
 var PHASE3_SCHEMA_VERSION = 1;
 var PHASE3_REVISION = 0;
 var REDUCER_WRITER = "Trip State Reducer";
-var GENERATION_ID_REGEX = /^gen:\d{10}:[0-9a-f]{4}$/;
-var ID_COLLISION_RETRY_MAX = 16;
+var TRIP_GENERATION_ID_REGEX = /^gen:\d{10}:[0-9a-f]{4}$/;
+var TRIP_ID_COLLISION_RETRY_MAX = 16;
 var ID_RANDOM_RANGE = 0x10000;
 var DEFAULT_RETENTION_DAYS = 30;
 
@@ -62,7 +62,7 @@ function used(id) {
   return false;
 }
 function mintId() {
-  for (let i = 0; i < ID_COLLISION_RETRY_MAX; i++) {
+  for (let i = 0; i < TRIP_ID_COLLISION_RETRY_MAX; i++) {
     const id = "gen:" + nowSec() + ":" + hex4(Math.floor(Math.random() * ID_RANDOM_RANGE));
     if (!used(id)) return id;
   }
@@ -97,7 +97,7 @@ function loadState() {
 function validateCommon(payload) {
   if (!payload || typeof payload !== "object") return { valid: false, reason: "payload must be object" };
   if (!payload.generationId || typeof payload.generationId !== "string") return { valid: false, reason: "missing generationId" };
-  if (!GENERATION_ID_REGEX.test(payload.generationId)) return { valid: false, reason: "invalid generationId format" };
+  if (!TRIP_GENERATION_ID_REGEX.test(payload.generationId)) return { valid: false, reason: "invalid generationId format" };
   return { valid: true };
 }
 function validateFields(payload, fields) {
@@ -204,6 +204,7 @@ var COMMANDS = [
   { name: "RESET_ACTIONS", validate: function(p) { return validateFields(p, [{name:"actionId",type:"string",required:false},{name:"at",type:"number",required:true}]); }, apply: stubApply },
   { name: "OBSERVE_DEPARTURE", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true},{name:"planningDay",type:"string",required:false}]); }, apply: applyObserveDeparture },
   { name: "OBSERVE_ARRIVAL", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true},{name:"accuracyM",type:"number",required:true}]); }, apply: applyObserveArrival },
+  { name: "RECONCILE_GENERATION", validate: function(p) { return validateFields(p, [{name:"activeGeneration",type:"string",required:true},{name:"manifestSchemaVersion",type:"number",required:false}]); }, apply: applyReconcile },
   { name: "COMPLETE_TRIP", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
   { name: "EXPIRE_TRIP", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
   { name: "OBSERVE_LIVE_BASE", validate: function(p) { return validateFields(p, [{name:"at",type:"number",required:false}]); }, apply: applyObserveLiveBase }
@@ -265,6 +266,27 @@ function applyObserveArrival(state, payload) {
   return next;
 }
 
+function applyReconcile(state, payload) {
+  const next = JSON.parse(JSON.stringify(state));
+  const manifestGen = payload.activeGeneration;
+  const stateGen = next.currentGeneration || next.lastReconciledGeneration || "";
+  // Manifest is the authoritative source for the active generation.
+  // State records the last reconciled generation for drift detection.
+  if (stateGen !== manifestGen) {
+    logEvent("info", "RECONCILE_GENERATION", next.revision + 1, {
+      previousStateGeneration: stateGen,
+      manifestGeneration: manifestGen,
+      action: "state.aligned.to.manifest"
+    });
+  }
+  next.currentGeneration = manifestGen;
+  next.lastReconciledGeneration = manifestGen;
+  if (payload.manifestSchemaVersion) {
+    next.manifestSchemaVersion = payload.manifestSchemaVersion;
+  }
+  next.revision = state.revision + 1;
+  return next;
+}
 function applyObserveDeparture(state, payload) {
   const next = JSON.parse(JSON.stringify(state));
   const tripId = payload.tripId;
