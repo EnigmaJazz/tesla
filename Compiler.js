@@ -70,6 +70,9 @@ function readJson(path) {
 function pathFor(g, kind) {
     return "Tasker/Tesla/Data/" + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
 }
+// Phase 3 PR-E: Local copy of readActiveGeneration. The canonical
+// implementation lives in TDS_Helper.js. Kept local because Tasker
+// scripts are standalone and cannot call functions from other scripts.
 function readActiveGeneration(kind) {
     const m = readJson("Tasker/Tesla/Data/TDS_Run_Manifest.json");
     const key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
