@@ -41,6 +41,24 @@ try {
                 // Write the updated inventory back to disk
                 OVR['Completed_Stops'] = currentStops;
                 writeFile(ovrFile, JSON.stringify(OVR), false);
+                // Phase 3 PR-C: stage COMPLETE_STOP for the Trip State Reducer.
+                // The legacy Completed_Stops OVR write above remains as a read-side
+                // shim for components that have not yet been migrated to state.completedStops.
+                let stopId = newStopEntry;
+                let tripId = evId.substring(0, evId.lastIndexOf("_"));
+                setLocal("par1", "COMPLETE_STOP");
+                setLocal("par2", JSON.stringify({
+                    generationId: global("TDS_Active_Generation") || "gen:0:0000",
+                    stopId: stopId,
+                    tripId: tripId,
+                    at: Math.floor(Date.now() / 1000)
+                }));
+                if (typeof reducer === "function") {
+                    let r = reducer("COMPLETE_STOP", JSON.parse(local("par2")));
+                    if (typeof r === "string" && r.indexOf("OK") !== 0) {
+                        flash("Reducer rejected COMPLETE_STOP: " + r);
+                    }
+                }
                 flash(cleanStop + "m stop marked as completed.");
             } else {
                 flash("Error: Selected stop didn't contain a valid number.");

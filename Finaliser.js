@@ -118,6 +118,23 @@ try {
                     if (completed.indexOf(ev.id) === -1) {
                         completed.push(ev.id);
                         stateChanged = true;
+                        // Phase 3 PR-C: stage COMPLETE_DROPIN for the Trip State Reducer.
+                        // The legacy Completed_Dropins OVR write below remains as a
+                        // read-side shim for components that have not yet been migrated
+                        // to state.completedDropins.
+                        setLocal("par1", "COMPLETE_DROPIN");
+                        setLocal("par2", JSON.stringify({
+                            generationId: global("TDS_Active_Generation") || "gen:0:0000",
+                            dropinId: ev.id,
+                            tripId: ev.id,
+                            at: nowSec
+                        }));
+                        if (typeof reducer === "function") {
+                            let r = reducer("COMPLETE_DROPIN", JSON.parse(local("par2")));
+                            if (typeof r === "string" && r.indexOf("OK") !== 0) {
+                                flash("Reducer rejected COMPLETE_DROPIN: " + r);
+                            }
+                        }
                     }
                 }
             }
