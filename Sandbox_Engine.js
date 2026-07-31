@@ -385,6 +385,19 @@ try {
                 let prevAtBase = (global('User_At_Base') === "true");
                 if (currentlyAtBase && !prevAtBase) {
                     setGlobal('User_At_Base', "true"); setGlobal('Base_Arrival_Unix', nowSec.toString());
+                    // Phase 3 PR-B: stage OBSERVE_LIVE_BASE to the reducer. The reducer
+                    // is the sole writer of TDS_Trip_State.json and tracks currentOrigin.
+                    // The legacy User_At_Base global remains as a compatibility shim for
+                    // components that have not yet been migrated to the reducer-managed
+                    // currentOrigin projection. PR-D will remove the legacy write.
+                    setLocal('par1', 'OBSERVE_LIVE_BASE');
+                    setLocal('par2', JSON.stringify({
+                        generationId: global('TDS_Active_Generation') || "gen:0:0000",
+                        at: nowSec
+                    }));
+                    if (typeof reducer === 'function') {
+                        reducer('OBSERVE_LIVE_BASE', { generationId: global('TDS_Active_Generation') || "gen:0:0000", at: nowSec });
+                    }
                 } else if (!currentlyAtBase && prevAtBase) {
                     setGlobal('User_At_Base', "false");
                 }

@@ -43,6 +43,20 @@ function publishCandidate(candidate) {
     return null;
 }
 
+// Phase 3 PR-B: stage an OBSERVE_ARRIVAL reducer command. The Trip State
+// Reducer is the sole writer of TDS_Trip_State.json; arrival observations
+// now flow through it. In Tasker the next action reads local('par1') and
+// runs the reducer; in the test harness a sandbox.reducer callback is
+// available, so use it when present.
+function observeArrival(payload) {
+    setLocal('par1', 'OBSERVE_ARRIVAL');
+    setLocal('par2', JSON.stringify(payload));
+    if (typeof reducer === 'function') {
+        return reducer('OBSERVE_ARRIVAL', payload);
+    }
+    return null;
+}
+
 try {
     let tempRaw = local('tds_temp_json') || "[]";
     if (tempRaw.indexOf("%") === 0) tempRaw = "[]";
@@ -107,11 +121,20 @@ try {
                     }
                 }
             }
-            
+
             if (!isNaN(dCurr) && dCurr <= 200) {
                 if (arrivalMemRaw.indexOf(ev.id + "~") === -1) {
                     arrivalMemRaw += (arrivalMemRaw.length > 0 ? "," : "") + ev.id + "~" + nowSec;
                     stateChanged = true;
+                    // Phase 3 PR-B: record arrival observation in reducer-managed state.
+                    // The legacy Arrival_Memory override remains as a read-side fallback
+                    // for components that have not yet been migrated to state.trips[].
+                    observeArrival({
+                        generationId: global('TDS_Active_Generation') || "gen:0:0000",
+                        tripId: ev.id,
+                        at: nowSec,
+                        accuracyM: 150
+                    });
                 }
             }
         }
