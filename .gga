@@ -2,6 +2,7 @@
 # https://github.com/your-org/gga
 
 # AI Provider (required)
+#
 # Options: claude, gemini, codex, opencode, cursor[:model], kilo[:model], kiro, ollama:<model>, lmstudio[:model], github:<model>, minimax[:model]
 # Examples:
 #   PROVIDER="claude"
@@ -22,8 +23,7 @@
 #   PROVIDER="github:deepseek-r1"
 #   PROVIDER="minimax"
 #   PROVIDER="minimax:MiniMax-M3"
-PROVIDER="opencode"
-
+PROVIDER="opencode:opencode-go-pool/deepseek-v4-pro"
 
 # File patterns to include in review (comma-separated)
 # Default: * (all files)
