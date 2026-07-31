@@ -35,6 +35,24 @@ function readJson(path) {
 function pathFor(g, kind) {
     return "Tasker/Tesla/Data/" + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
 }
+// Phase 3 PR-E: Local copy of readOrigin. The canonical implementation
+// lives in TDS_Helper.js. Reads currentOrigin from the reducer state
+// file (TDS_Trip_State.json) instead of inferring from location/event
+// context. This is the explicit-origin pattern that AGENTS.md requires.
+function readOrigin() {
+  const raw = readFile("Tasker/Tesla/Data/TDS_Trip_State.json") || "";
+  if (!raw) return "PLANNED";
+  try {
+    const s = JSON.parse(raw);
+    return s.currentOrigin || "PLANNED";
+  } catch (e) {
+    return "PLANNED";
+  }
+}
+
+// Phase 3 PR-E: Local copy of readActiveGeneration. The canonical
+// implementation lives in TDS_Helper.js. Kept local because Tasker
+// scripts are standalone and cannot call functions from other scripts.
 function readActiveGeneration(kind) {
     let m = readJson("Tasker/Tesla/Data/TDS_Run_Manifest.json");
     let key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
