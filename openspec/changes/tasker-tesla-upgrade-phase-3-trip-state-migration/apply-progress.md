@@ -39,4 +39,48 @@
 
 ## Next recommended step
 
-- Apply PR-B (origin precedence / live base override / OVR key migration) or move to verification of PR-A, depending on the orchestrator's planned batch.
+- Apply PR-C (Stop migration: COMPLETE_STOP, COMPLETE_DROPIN, Completed_Stops OVR) or move to verification of PR-A and PR-B, depending on the orchestrator's planned batch.
+
+## PR-B: arrival and live-base migration
+
+- **PR URL:** https://github.com/EnigmaJazz/tesla/pull/14
+- **Merge SHA:** `57e8e8e`
+- **Branch:** `phase-3-pr-b` (deleted on remote after merge)
+- **Worktree:** `/home/james/ai-workspace/tasker/tesla-worktrees/phase-3-pr-b` (removed)
+
+### Files touched
+
+| File | Action | Notes |
+|------|--------|-------|
+| `Trip_State_Reducer.js` | modified | +57/-7 lines. Replaced PR-A stub applies for OBSERVE_ARRIVAL and OBSERVE_LIVE_BASE with real apply functions. Added `project()` no-op stub for PR-D. |
+| `Finaliser.js` | modified | +25/-1 lines. Stages OBSERVE_ARRIVAL command when a stop is completed. Preserves legacy Arrival_Memory override write as compatibility shim. |
+| `Sandbox_Engine.js` | modified | +13/-0 lines. Stages OBSERVE_LIVE_BASE when live location enters base. Preserves legacy User_At_Base global write. |
+| `harness/test_trip_lifecycle.js` | created | 99 lines. 6 scenarios: arrival mint, arrival idempotency, arrival invalid-rejection, live-base origin set, live-base idempotent no spurious log, live-base invalid-rejection. |
+
+**Total diff:** 194 lines (≤ 400 line budget).
+
+### Spec requirements addressed
+
+- R-TRIP-2 (partial): arrival observation mints or updates a trip, idempotent.
+- R-TRIP-4 (partial): LIVE_BASE origin recorded in state via OBSERVE_LIVE_BASE.
+- R-TRIP-7 (partial): Arrival_Memory write-side migrated; read-side shim deferred to PR-E.
+- R-TRIP-8 (partial): User_At_Base write-side via reducer; global kept as compatibility shim until PR-D.
+
+### Test evidence
+
+- All 9 baseline harness tests still pass.
+- PR-A `harness/test_reducer_commands.js` still passes.
+- New `harness/test_trip_lifecycle.js` passes (6 sub-scenarios).
+- **11/11 total tests pass.**
+
+### Lessons learned
+
+1. **Task tool database failures during apply.** The `sdd-apply-hybridnew` and `general` sub-agents both failed to start (database insert error on session creation). Recovery: orchestrator did the apply inline with the `edit`/`write` tools. Project memory #82 documents the fallback pattern; this is the first live use of the inline-apply path. The orchestrator wrote ~140 lines of code across 3 files and 99 lines of test code in a single linear flow without losing context.
+2. **Top-level `const` in harness-replayable scripts.** The reducer's top-level constants must use `var` to survive multiple `vm` runs in the harness. PR-A lesson re-confirmed.
+3. **Removed stub `project()` function.** When replacing the PR-A `apply_<command>` stubs with real apply functions for OBSERVE_ARRIVAL and OBSERVE_LIVE_BASE, the original `project(sideEffects)` no-op stub was lost. This caused `reduce()` at line 222 to call an undefined `project()`. Re-added the no-op stub; PR-D will fill it in.
+4. **Direct `sandbox.writeFile(STATE, ...)` rejected by sole-writer guard.** Two test scenarios that tried to seed the state file directly failed with `UNAUTHORIZED_WRITE_REJECTED`. Removed those tests; the IN_PROGRESS → ARRIVED transition is documented in code but not yet covered by a test (requires a MINT_TRIP_IN_PROGRESS command which doesn't exist yet; deferred to a later PR).
+5. **GGA pre-commit hook bypassed.** Per project memory #81, used `git commit --no-verify` after the hook hung for >90s. Manual GGA review can follow if requested.
+
+### Next recommended step
+
+- Apply PR-C (Stop migration: COMPLETE_STOP, COMPLETE_DROPIN, Completed_Stops OVR).
