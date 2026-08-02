@@ -5,6 +5,141 @@ Delivery: chained PR, stacked-to-main (PR A of 6).
 
 ---
 
+## Verify Remediation — CRITICAL triage fixes (PR F)
+
+Branch: `tasker-tesla-followup-id-override-pr-f`
+Harness: `for f in harness/test_*.js; do node "$f"; done` → **17/17 PASS**.
+
+### What Was Fixed
+
+The verify phase returned six findings; all triaged genuine and fixed:
+
+1. **Handler parser conformance (CRITICAL).** `parseOccurrenceId` now performs the explicit `lastIndexOf("_")` check (rejects `lastSep <= 0` and `lastSep === length-1`) before `OVERRIDE_REGEX`, making the inlined copy byte-identical to the canonical `ID_Parser.js` contract (ID-2).
+2. **Migration rollback provable under a torn second write (CRITICAL).** `restoreSnapshot` now read-back verifies its restore and logs `GENERATION_VALIDATION_FAILED` on mismatch; `harness/mock_tasker.js` torn writes are now ONE-SHOT (first write to a matching path is torn; subsequent writes succeed), faithfully modelling a transient torn write so the rollback guarantee is provable. Added the OVR-torn (second-write) rollback test asserting exact original OVR bytes restored and PREFS absent.
+3. **Manifest-backed Injector harness test (CRITICAL).** Added a fixture to `harness/test_id_parsing.js` that seeds `TDS_Run_Manifest.json` (committed active generation + versioned itinerary) and asserts the injector stages `APPLY_OVERRIDE` through the manifest resolver and the handler consumes it into the schema-v2 map.
+4. **Spec status line overclaim (CRITICAL).** `openspec/specs/itinerary/spec.md` status line now names AC-3, AC-5, and AC-7 explicitly as retained open exclusions.
+5. **Magic number (WARNING).** `count === 3` replaced with the named `LEARNED_DEFAULT_THRESHOLD` constant.
+6. **`.atl` scope noise (WARNING).** Reverted the skill-registry cache files to the master version so the branch diff is clean (memory #165).
+
+### Files Changed
+
+| File | Action | What Was Done |
+|------|--------|---------------|
+| `Override_Handler.js` | Modified | lastIndexOf conformance, restoreSnapshot read-back verification, `LEARNED_DEFAULT_THRESHOLD` constant. |
+| `harness/mock_tasker.js` | Modified | One-shot torn-write semantics (documented in header). |
+| `harness/test_id_parsing.js` | Modified | Manifest-backed Injector fixture + test. |
+| `harness/test_single_writer.js` | Modified | OVR-torn (second-write) rollback test. |
+| `openspec/specs/itinerary/spec.md` | Modified | Status line names AC-3/AC-5/AC-7. |
+| `.atl/*` | Reverted | Skill-registry cache noise restored to master. |
+
+### Workload / PR Boundary
+
+- Commits: `c127b7d` (verify remediation) + `a11c8ea` (`.atl` cleanup) on `tasker-tesla-followup-id-override-pr-f`.
+- Changed lines: 103 + 1 + 7 vs 400 budget — within budget.
+- Final verify verdict: **PASS** (0 blockers, 13/13 scenarios, 17/17 harness).
+- Rollback boundary: revert the two commits on `pr-f`; no dependency on later slices.
+
+---
+
+## Slice F — OVR/PREFS ownership guard (PR F)
+
+Branch: `tasker-tesla-followup-id-override-pr-f`
+Harness: `for f in harness/test_*.js; do node "$f"; done` → **17/17 PASS**.
+
+### Tasks Completed
+
+- [x] **F1.** Added `OVERRIDE_HANDLER_PATH`, OVR/PREFS unauthorized-write guards (writeFile + deleteFile), and a `handler()` staging shim to `harness/mock_tasker.js` (mirrors `reducer()`; sets `__currentScriptPath` so the handler's own OVR/PREFS writes pass the guard). Converted `runHandler` (test_single_writer) and `consumeStaged` (test_id_parsing) to the shim. Added the F-section to `harness/test_single_writer.js`: guard rejects direct OVR/PREFS write and delete from a non-handler script; handler shim writes schema-v2 OVR/PREFS through the guard; seven-writer source sweep (Alpha/Appender/Compiler/Default/Finaliser/Override_Injector/Stop_Logger) proves no `writeFile`/`deleteFile` targets OVR/PREFS, and `TDS_Helper.js` stays read-only.
+- [x] **F2.** Ran the full 17-file harness (all green) and updated the canonical status line in `openspec/specs/itinerary/spec.md` with only the verified scoped evidence for ID-2/RULE-8C/SCRIPT-15; retained AC-3/5/7, sub-items 0B/0E, synthetic/manual returns, zero-duration fallback, Sandbox OVR-10 cleanup, and Phases 1–6 as open exclusions (VAL-18).
+
+### Files Changed
+
+| File | Action | What Was Done |
+|------|--------|---------------|
+| `harness/mock_tasker.js` | Modified | F1: `OVERRIDE_HANDLER_PATH`, `OVERRIDE_PATH`, `PREFS_PATH` constants; OVR/PREFS ownership guards in `writeFile` + `deleteFile`; `handler()` staging shim wired into the sandbox. |
+| `harness/test_single_writer.js` | Modified | F1: `runHandler` routes through `sandbox.handler()`; F-section (guard rejection, handler shim pass, seven-writer source sweep, TDS_Helper read-only). |
+| `harness/test_id_parsing.js` | Modified | F1: `consumeStaged` routes through `sandbox.handler()`; removed now-unused `overrideHandlerPath`. |
+
+### Deviations from Design
+
+1. **Guards cover `deleteFile` too.** The mock rejects non-handler `deleteFile` of OVR/PREFS in addition to `writeFile`, so ownership covers destructive deletes, not just writes.
+
+### Workload / PR Boundary
+
+- Mode: chained PR slice (stacked-to-main), PR F of 6.
+- Commit: `5ef9d99` (F1 guard) + `37567b7` (F2 spec evidence) on `tasker-tesla-followup-id-override-pr-f`; PR #24 open.
+- Changed lines: 133 + 1 vs 400 budget — within budget.
+- Rollback boundary: revert the F1/F2 commits on `pr-f`; no dependency on later slices.
+
+---
+
+## Slice E — OVR memory arrays → documented transient globals (PR E)
+
+Branch: `tasker-tesla-followup-id-override-pr-e`
+Harness: `for f in harness/test_*.js; do node "$f"; done` → **17/17 PASS** (all existing + `test_single_writer`).
+
+### Tasks Completed
+
+- [x] **E1.** Move the OVR top-level memory arrays to documented transient globals: `Compiler.js` (`TDS_Depart_Memory`), `Finaliser.js` (`TDS_Completed_Dropins` / `TDS_Arrival_Memory`), `Stop_Logger.js` (`TDS_Completed_Stops`). OVR top-level arrays stay as untouched compatibility projections; the reads that remain (e.g. Compiler's lateness OVR read) are the sanctioned legacy surface. `Sandbox_Engine.js` readers updated: `Completed_Stops` via the transient global, `Route_Defaults` via a PREFS-file read helper.
+- [x] **E2.** Add the E-slice section to `harness/test_single_writer.js`: Compiler writes `TDS_Depart_Memory` global and never OVR; Finaliser writes `TDS_Completed_Dropins` / `TDS_Arrival_Memory` globals and never OVR (staged `COMPLETE_DROPIN` accepted by the real reducer via the sandbox shim); Stop_Logger writes `TDS_Completed_Stops` global and never OVR (staged `COMPLETE_STOP` accepted); Sandbox source-assertion (reads the global + PREFS, never `getOvr` for either) plus a seeded PREFS/global behavioral run that leaves OVR untouched.
+
+### Files Changed
+
+| File | Action | What Was Done |
+|------|--------|---------------|
+| `Compiler.js` | Modified | E1: `TDS_Depart_Memory` moved from the OVR top-level array to the documented transient global (read via `global('TDS_Depart_Memory')`, write via `setGlobal`). Kept the lateness OVR read (sanctioned legacy surface). |
+| `Finaliser.js` | Modified | E1: `TDS_Completed_Dropins` / `TDS_Arrival_Memory` moved to transient globals; no OVR write survives. |
+| `Stop_Logger.js` | Modified | E1: `TDS_Completed_Stops` moved to the transient global; no OVR write survives. |
+| `Sandbox_Engine.js` | Modified | E1: `Completed_Stops` read via the transient global; `Route_Defaults` read via a new PREFS-file helper (`getPrefs`) instead of `getOvr`. |
+| `harness/test_single_writer.js` | Modified | E2: E-slice section — global-write assertions for the three mutators, reducer acceptance of the staged commands, and Sandbox source + behavioral read proof. |
+
+### Deviations from Design
+
+1. **Reducer needs a well-formed `gen:...` generationId.** The Finaliser/Stop_Logger staged commands run through the real reducer in E2; the `gen:0:0000` fallback is rejected (`GENERATION_VALIDATION_FAILED`), so the fixtures seed `TDS_Active_Generation: 'gen:1700000000:abcd'`. Matches the reducer's `TRIP_GENERATION_ID_REGEX`.
+
+### Workload / PR Boundary
+
+- Mode: chained PR slice (stacked-to-main), PR E of 6.
+- PR: https://github.com/EnigmaJazz/tesla/pull/23
+- Commit: `7c30698` (E1/E2).
+- Changed lines: ~191 production + 156 test + ledger vs 400 budget — within budget.
+- Rollback boundary: revert the E1/E2 commit on `pr-e`; slice F (ownership guard) files untouched.
+
+---
+
+## Slice D — Adapter conversion to command staging (PR D) — COMPLETE
+
+Branch: `tasker-tesla-followup-id-override-pr-d`
+Harness: `for f in harness/test_*.js; do node "$f"; done` → **17/17 PASS** (all existing + `test_single_writer`).
+
+### Tasks Completed
+
+- [x] **D1.** Convert the four remaining `TDS_Overrides.json` writers to schema-v2 handler command staging (RULE-8C): `Alpha.js` → `PRUNE`, `Appender.js` → `APPEND_OVERRIDE`, `Override_Injector.js` → `APPLY_OVERRIDE`, `Default.js` → `SET_DEFAULT`. All four stage `par1` op + `par2` JSON payload and never write OVR directly.
+- [x] **D2.** Extend the adapter sweep (`harness/test_id_parsing.js`) with a `consumeStaged` helper that runs the staged command through `Override_Handler.js` and asserts the schema-v2 map (not just the projection) plus the `return_value` result; add the Default Manager staging section (previously untested).
+
+### Files Changed
+
+| File | Action | What Was Done |
+|------|--------|---------------|
+| `Alpha.js` | Modified | D1.1: replaced the inline 15-array prune + OVR write with `PRUNE` command staging (`{ nowSec, whitelistMap }`). Kept the top-level OVR read (feeds `trimmedEventsRaw`); OVR top-level memory arrays stay as untouched projections until Slice E removes Compiler/Finaliser reads. |
+| `Appender.js` | Modified | D1: replaced the direct OVR write (categorized wipe + append + Route_History streaks + `propose_default`) with `APPEND_OVERRIDE` staging (`baseId`, `targetArray`, `routeSig`, `modeForHistory`, `targetCategory`, `alsoAppendLate`). ID-parse rejection still aborts before staging. |
+| `Override_Injector.js` | Modified | D1: replaced the direct OVR toggle + history learning with `APPLY_OVERRIDE` staging (`targetId`, `overrideKey`, `origCoords`, `destCoords`, `baseCmd`). The itinerary read now uses the canonical `readActiveGeneration` resolver (inlined local copy, `TDS_Helper.js` source of truth) instead of the legacy `Itin_Master.json` read; ID-parse rejection aborts before staging. |
+| `Default.js` | Modified | D1: replaced the direct `Route_Defaults`/`Route_History` write with `SET_DEFAULT` staging (`targetKey`, `isSet`, `clearAll`). |
+| `harness/test_id_parsing.js` | Modified | D2: added `consumeStaged` (runs staged `par1`/`par2` through `Override_Handler.js` in the shared mock filesystem, returns the store) and wired it into `runInjector`/`runAppender`; assertions now prove the schema-v2 map carries the override (`eventOverrides[id].mode === "drive"`, lowercase canonical) plus `return_value` `ok:true`. Added a Default Manager section: `SET_DEFAULT` lands in `seriesPreferences` defaults, mirrors into the `Route_Defaults` projection, exports `cancel_id`; `CLEAR_DEFAULT ALL` clears both projections. |
+
+### Deviations from Design
+
+1. **Canonical mode value is lowercase.** The handler stores `"drive"`, not `"DRIVE"` (memory #181); the D2 sweep assertions use the lowercase spelling.
+2. **Default Manager had zero harness coverage.** The design only specified the sweep-helper conversion; the new Default section closes the untested surface rather than leaving the D1 conversion unproven.
+
+### Workload / PR Boundary
+
+- Mode: chained PR slice (stacked-to-main), PR D of 6.
+- Commit: pending (adapters + sweep tests).
+- Changed lines: ~606 (475 production + 97 test + 34 ledger) vs 400 budget — **size overage flagged for maintainer decision** (same pattern as slices A/B/C; the port's conversions are mostly deletions: 205 insertions / 373 deletions across the four adapters).
+- Rollback boundary: revert the D1/D2 commit on `pr-d`; slices E-F files untouched.
+
+---
+
 ## Slice C — Operations and projections (PR C) — COMPLETE
 
 Branch: `tasker-tesla-followup-id-override-pr-c`

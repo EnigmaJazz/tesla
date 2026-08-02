@@ -314,7 +314,10 @@ try {
             OVR = JSON.parse(ovrRaw); 
         } catch(e) {}
 
-        let depMemRaw = OVR['Depart_Memory'] || "";
+        // E1 (RULE-8C): Depart_Memory is documented transient global state,
+        // not an OVR top-level array. Compiler reads/writes TDS_Depart_Memory;
+        // OVR access above remains read-only for Ignored_Lateness.
+        let depMemRaw = global('TDS_Depart_Memory') || "";
         
         let newDepMem = [];
 
@@ -477,11 +480,7 @@ try {
             });
         }
         
-        OVR['Depart_Memory'] = newDepMem.join(",");
-
-        try { 
-            writeFile("Tasker/Tesla/Data/TDS_Overrides.json", JSON.stringify(OVR), false); 
-        } catch(e) {}
+        setGlobal('TDS_Depart_Memory', newDepMem.join(","));
 
         publishCandidate({ events: masterArr, master: masterArr, itinerary: itinerary });
 
