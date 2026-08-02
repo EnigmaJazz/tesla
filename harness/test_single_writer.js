@@ -31,7 +31,6 @@ const { runScript } = require('./runner');
 const nowSec = 1700000000;
 const OVR_FILE = "Tasker/Tesla/Data/TDS_Overrides.json";
 const PREFS_FILE = "Tasker/Tesla/Data/TDS_Routine_Preferences.json";
-const HANDLER_PATH = path.resolve(__dirname, '..', 'Override_Handler.js');
 
 // Base-36 occurrence IDs (suffix = base-36 Unix seconds).
 const ID_RECENT = "abc123_s44tm8";      // now - 1h  → inside 24h retention
@@ -50,15 +49,15 @@ function fail(msg) {
 }
 
 function runHandler(files, op, payload, failureOpts, globals) {
-  const locals = { par1: op, par2: JSON.stringify(payload) };
   const { sandbox, store } = createSandbox({
-    locals: locals,
     files: files,
     globals: globals || {},
     nowMs: nowSec * 1000,
     failures: failureOpts || {}
   });
-  runScript(HANDLER_PATH, sandbox, store);
+  // F1: run through the mock handler() shim so __currentScriptPath identifies
+  // the Override Handler and its OVR/PREFS writes pass the ownership guard.
+  sandbox.handler(op, payload);
   return { sandbox: sandbox, store: store, result: sandbox.local('return_value') };
 }
 
@@ -198,6 +197,29 @@ try {
     'no partial authoritative state: PREFS must not contain migrated Route_Defaults after failure');
 } catch (e) {
   fail('torn-write rollback section threw: ' + (e && e.message ? e.message : e));
+}
+
+// ---------- Torn-write rollback: second write (OVR) torn ----------
+// The torn-write fault is one-shot: PREFS migrates cleanly, the OVR commit is
+// torn and rejected by read-back, and the rollback must restore exact original
+// OVR bytes while PREFS stays absent.
+try {
+  const files = legacyFiles();
+  const r = runHandler(files, "PRUNE", { nowSec: nowSec, whitelistMap: {} }, {
+    tornWrites: [OVR_FILE]
+  });
+  assert(r.result.indexOf('ERROR') !== -1 || (function () { try { return JSON.parse(r.result).ok === false; } catch (e) { return false; } })(),
+    'torn OVR write must surface as an ERROR result, got: ' + r.result);
+
+  const ovrAfter = ovrOf(r.store);
+  assert.equal(ovrAfter["Route_Defaults"], "routeA^MODE=1,routeB^MODE=2", 'OVR-torn rollback must restore original Route_Defaults bytes');
+  assert.equal(ovrAfter["Route_History"], "routeA^3", 'OVR-torn rollback must restore original Route_History bytes');
+  assert.equal(ovrAfter["Forced_Drives"], ID_RECENT, 'OVR-torn rollback must restore original non-preference projections');
+  const prefsAfter = prefsOf(r.store);
+  assert(prefsAfter === null || !Object.prototype.hasOwnProperty.call(prefsAfter, "Route_Defaults"),
+    'no partial authoritative state: PREFS must not contain migrated Route_Defaults after OVR-torn failure');
+} catch (e) {
+  fail('torn-OVR rollback section threw: ' + (e && e.message ? e.message : e));
 }
 
 // ---------- APPLY_OVERRIDE ----------
@@ -421,6 +443,236 @@ try {
   assert.equal(mapKeys.indexOf(ID_DECOY) !== -1 && projKeys.indexOf(ID_DECOY) !== -1, true, 'ID_DECOY present in map and projections');
 } catch (e) {
   fail('projection sync section threw: ' + (e && e.message ? e.message : e));
+}
+
+// ---------- Slice E: OVR top-level memory arrays -> documented transient globals ----------
+// E1 moved the memory arrays (TDS_Depart_Memory / TDS_Completed_Dropins /
+// TDS_Arrival_Memory / TDS_Completed_Stops) off TDS_Overrides.json into
+// transient globals, and Sandbox_Engine reads Route_Defaults from the PREFS
+// file. These tests prove the mutators write globals (never OVR), that their
+// staged reducer commands are accepted, and that Sandbox reads the new homes.
+
+const fs = require('node:fs');
+const DATA = "Tasker/Tesla/Data/";
+const COMPILER_PATH = path.resolve(__dirname, '..', 'Compiler.js');
+const FINALISER_PATH = path.resolve(__dirname, '..', 'Finaliser.js');
+const STOP_LOGGER_PATH = path.resolve(__dirname, '..', 'Stop_Logger.js');
+const SANDBOX_PATH = path.resolve(__dirname, '..', 'Sandbox_Engine.js');
+
+function runScriptFile(scriptPath, opts) {
+  const { sandbox, store } = createSandbox(opts);
+  runScript(scriptPath, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  return store;
+}
+
+// E2-1: Compiler writes Depart_Memory to the transient global, never OVR.
+try {
+  const futureEventStart = nowSec + 3600;
+  const masterJson = JSON.stringify([
+    {
+      id: 'abc123_kx8f00',
+      start: futureEventStart,
+      end: futureEventStart + 3600,
+      duration: 3600,
+      title: 'Future Event',
+      desc: '',
+      loc: 'Work',
+      coords: '52.1,-2.2'
+    }
+  ]);
+  const locals = {
+    block_step1: 'EVENT',
+    block_step2: 'Future Event',
+    block_step3: '52.1,-2.2',
+    block_step4: 'DRIVE',
+    block_step5: String(futureEventStart),
+    block_step7: 'false',
+    block_step8: 'DEPART',
+    block_step9: String(futureEventStart),
+    block_step10: 'abc123_kx8f00',
+    block_step14: '',
+    block_step15: '',
+    block_step16: '',
+    block_step19: 'JIT',
+    api_duration_secs: '1800',
+    api_distance_miles: '15',
+    api_transit_steps: '',
+    virtual_time: String(nowSec - 60)
+  };
+  const globals = {
+    User_At_Base: 'true',
+    User_Loc: '51.9,-2.1',
+    Arrival_Buffer_Mins: '5',
+    Departure_Buffer_Mins: '5'
+  };
+  const files = {
+    [DATA + 'TDS_Master.json']: masterJson,
+    [DATA + 'Itin_Master.json']: '[]',
+    [OVR_FILE]: '{}'
+  };
+  const store = runScriptFile(COMPILER_PATH, { locals: locals, globals: globals, files: files, nowMs: nowSec * 1000 });
+  assert(store.globals['TDS_Depart_Memory'] !== undefined, 'Compiler must write TDS_Depart_Memory global');
+  assert(store.globals['TDS_Depart_Memory'].indexOf('abc123_kx8f00') !== -1, 'Depart_Memory global must hold the planned departure');
+  assert.strictEqual(store.files[OVR_FILE], '{}', 'Compiler must not write TDS_Overrides.json');
+} catch (e) {
+  fail('E2 Compiler global write: ' + (e && e.message ? e.message : e));
+}
+
+// E2-2: Finaliser writes Completed_Dropins / Arrival_Memory to globals, never OVR,
+// and its staged COMPLETE_DROPIN is accepted by the reducer.
+try {
+  const dropinId = 'abc123_s44tm8';
+  const tempEvents = [
+    {
+      id: dropinId,
+      start: nowSec - 3600,
+      end: nowSec + 3600,
+      title: 'Dropin',
+      loc: 'Near',
+      coords: '52.1,-2.2',
+      isDropin: true
+    }
+  ];
+  const locals = { tds_temp_json: JSON.stringify(tempEvents) };
+  const globals = {
+    User_Loc: '51.9,-2.1',
+    User_At_Base: 'true',
+    TDS_Previous_Loc: '52.1,-2.2',
+    TDS_Active_Generation: 'gen:1700000000:abcd'
+  };
+  const files = {
+    [DATA + 'Itin_Master.json']: '[]',
+    [OVR_FILE]: '{}'
+  };
+  const store = runScriptFile(FINALISER_PATH, { locals: locals, globals: globals, files: files, nowMs: nowSec * 1000 });
+  assert(store.globals['TDS_Completed_Dropins'] !== undefined, 'Finaliser must write TDS_Completed_Dropins global');
+  assert(store.globals['TDS_Completed_Dropins'].indexOf(dropinId) !== -1, 'Completed_Dropins global must hold the dropin id');
+  assert.strictEqual(store.files[OVR_FILE], '{}', 'Finaliser must not write TDS_Overrides.json');
+  const rejected = store.flashLog.find(function (f) { return f.indexOf('Reducer rejected COMPLETE_DROPIN') !== -1; });
+  assert(!rejected, 'Finaliser COMPLETE_DROPIN must be accepted by the reducer');
+} catch (e) {
+  fail('E2 Finaliser global write: ' + (e && e.message ? e.message : e));
+}
+
+// E2-3: Stop_Logger writes Completed_Stops to the transient global, never OVR,
+// and its staged COMPLETE_STOP is accepted by the reducer.
+try {
+  const locals = { active_target_id: ID_RECENT, ld_selected: '5m' };
+  const store = runScriptFile(STOP_LOGGER_PATH, { locals: locals, globals: { TDS_Active_Generation: 'gen:1700000000:abcd' }, files: {}, nowMs: nowSec * 1000 });
+  assert(store.globals['TDS_Completed_Stops'] !== undefined, 'Stop_Logger must write TDS_Completed_Stops global');
+  assert(store.globals['TDS_Completed_Stops'].indexOf(ID_RECENT + '_5') !== -1, 'Completed_Stops global must hold <id>_5 entry');
+  assert(store.files[OVR_FILE] === undefined, 'Stop_Logger must not create TDS_Overrides.json');
+  const rejected = store.flashLog.find(function (f) { return f.indexOf('Reducer rejected COMPLETE_STOP') !== -1; });
+  assert(!rejected, 'Stop_Logger COMPLETE_STOP must be accepted by the reducer');
+  const done = store.flashLog.find(function (f) { return f.indexOf('5m stop marked as completed') !== -1; });
+  assert(done, 'Stop_Logger must flash the completion message');
+} catch (e) {
+  fail('E2 Stop_Logger global write: ' + (e && e.message ? e.message : e));
+}
+
+// E2-4: Sandbox reads Completed_Stops from the transient global and
+// Route_Defaults from the PREFS file — never from OVR.
+try {
+  const sandboxSource = fs.readFileSync(SANDBOX_PATH, 'utf8');
+  assert(sandboxSource.indexOf("global('TDS_Completed_Stops')") !== -1, 'Sandbox must read Completed_Stops from the transient global');
+  assert(sandboxSource.indexOf("getPrefs('Route_Defaults')") !== -1, 'Sandbox must read Route_Defaults from PREFS');
+  assert(sandboxSource.indexOf("getOvr('Completed_Stops')") === -1, 'Sandbox must not read Completed_Stops from OVR');
+  assert(sandboxSource.indexOf("getOvr('Route_Defaults')") === -1, 'Sandbox must not read Route_Defaults from OVR');
+
+  // Behavioral: a seeded PREFS file + Completed_Stops global must flow into a
+  // Sandbox run without a crash, and OVR must stay untouched.
+  const prefsJson = JSON.stringify({ schemaVersion: 2, seriesPreferences: {}, Route_Defaults: 'home^DRIVE' });
+  const files = {
+    [DATA + 'Itin_Master.json']: '[]',
+    [DATA + 'TDS_Master.json']: '[]',
+    [PREFS_FILE]: prefsJson,
+    [OVR_FILE]: '{}'
+  };
+  const globals = {
+    User_At_Base: 'true',
+    User_Loc: '51.9,-2.1',
+    Current_Status: 'Idle',
+    TDS_Completed_Stops: ID_RECENT + '_5'
+  };
+  const store = runScriptFile(SANDBOX_PATH, { locals: { idx: '1', virtual_time: String(nowSec), virtual_loc: '51.9,-2.1' }, globals: globals, files: files, nowMs: nowSec * 1000 });
+  assert.strictEqual(store.files[OVR_FILE], '{}', 'Sandbox must not write TDS_Overrides.json');
+} catch (e) {
+  fail('E2 Sandbox PREFS/Completed Stops reads: ' + (e && e.message ? e.message : e));
+}
+
+// ---------- Slice F (RULE-8C): OVR/PREFS single-writer ownership guard ----------
+// F1 enabled the mock ownership guard: only the Override Handler (running via
+// the handler() shim, which sets __currentScriptPath) may write or delete
+// TDS_Overrides.json / TDS_Routine_Preferences.json. These tests prove the
+// guard rejects direct writes, that the handler shim still passes, and that
+// none of the seven former writers retains a direct OVR/PREFS write path.
+
+const ALPHA_PATH = path.resolve(__dirname, '..', 'Alpha.js');
+const APPENDER_PATH = path.resolve(__dirname, '..', 'Appender.js');
+const INJECTOR_PATH = path.resolve(__dirname, '..', 'Override_Injector.js');
+const DEFAULT_PATH = path.resolve(__dirname, '..', 'Default.js');
+const TDS_HELPER_PATH = path.resolve(__dirname, '..', 'TDS_Helper.js');
+
+// F1-1: the guard rejects a direct OVR/PREFS write from a non-handler script.
+try {
+  const { sandbox, store } = createSandbox({ files: {}, nowMs: nowSec * 1000 });
+  let rejected = false;
+  try { sandbox.writeFile(OVR_FILE, '{}'); } catch (e) {
+    rejected = String(e && e.message || e).indexOf('UNAUTHORIZED_WRITE_REJECTED') !== -1;
+  }
+  assert(rejected, 'direct OVR write must be rejected');
+  rejected = false;
+  try { sandbox.writeFile(PREFS_FILE, '{}'); } catch (e) {
+    rejected = String(e && e.message || e).indexOf('UNAUTHORIZED_WRITE_REJECTED') !== -1;
+  }
+  assert(rejected, 'direct PREFS write must be rejected');
+  rejected = false;
+  try { sandbox.deleteFile(OVR_FILE); } catch (e) {
+    rejected = String(e && e.message || e).indexOf('UNAUTHORIZED_WRITE_REJECTED') !== -1;
+  }
+  assert(rejected, 'direct OVR delete must be rejected');
+} catch (e) {
+  fail('F1 guard rejects direct writes: ' + (e && e.message ? e.message : e));
+}
+
+// F1-2: the handler() shim passes the guard — handler OVR/PREFS writes land.
+try {
+  const r = runHandler({}, 'APPLY_OVERRIDE', { targetId: ID_RECENT, overrideKey: 'Forced_Drives' });
+  const ovr = readJsonStore(r.store, OVR_FILE);
+  assert(ovr && ovr.schemaVersion === 2, 'handler shim must write schema-v2 OVR');
+  assert(ovr.eventOverrides[ID_RECENT], 'handler APPLY_OVERRIDE must land in eventOverrides');
+  const r2 = runHandler({}, 'SET_DEFAULT', { targetKey: 'series_x^52.1,-2.2^51.9,-2.1^drive', isSet: true });
+  const prefs = readJsonStore(r2.store, PREFS_FILE);
+  assert(prefs && prefs.seriesPreferences['series_x'], 'handler shim must write PREFS');
+} catch (e) {
+  fail('F1 handler shim passes guard: ' + (e && e.message ? e.message : e));
+}
+
+// F1-3: seven-writer source sweep — no former writer retains an OVR/PREFS
+// writeFile/deleteFile call; TDS_Helper stays read-only.
+try {
+  const formerWriters = [
+    ['Alpha', ALPHA_PATH],
+    ['Appender', APPENDER_PATH],
+    ['Compiler', COMPILER_PATH],
+    ['Default', DEFAULT_PATH],
+    ['Finaliser', FINALISER_PATH],
+    ['Override_Injector', INJECTOR_PATH],
+    ['Stop_Logger', STOP_LOGGER_PATH]
+  ];
+  formerWriters.forEach(function (entry) {
+    const name = entry[0];
+    const src = fs.readFileSync(entry[1], 'utf8');
+    assert(src.indexOf('writeFile("Tasker/Tesla/Data/TDS_Overrides.json"') === -1, name + ' must not writeFile TDS_Overrides.json');
+    assert(src.indexOf('writeFile("Tasker/Tesla/Data/TDS_Routine_Preferences.json"') === -1, name + ' must not writeFile TDS_Routine_Preferences.json');
+    assert(src.indexOf('deleteFile("Tasker/Tesla/Data/TDS_Overrides.json"') === -1, name + ' must not deleteFile TDS_Overrides.json');
+  });
+  const helperSrc = fs.readFileSync(TDS_HELPER_PATH, 'utf8');
+  assert(helperSrc.indexOf('writeFile(') === -1, 'TDS_Helper must stay read-only (no writeFile)');
+  assert(helperSrc.indexOf('deleteFile(') === -1, 'TDS_Helper must stay read-only (no deleteFile)');
+} catch (e) {
+  fail('F1 seven-writer source sweep: ' + (e && e.message ? e.message : e));
 }
 
 if (failures > 0) {

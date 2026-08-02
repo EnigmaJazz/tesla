@@ -62,10 +62,8 @@ try {
     let fetchStartMs = forceMs(global('TIMEMS')); 
     let cutoffMs     = fetchStartMs + 691200000;  
 
-    let filePath = "Tasker/Tesla/Data/TDS_Overrides.json";
-    let ovrRaw = readFile(filePath) || "{}";
     let mem = {};
-    try { mem = JSON.parse(ovrRaw); } catch(e) {}
+    try { mem = JSON.parse(readFile("Tasker/Tesla/Data/TDS_Overrides.json") || "{}"); } catch(e) {}
     let trimmedEventsRaw = mem['Trimmed_Events'] || "";
 
     let tempRaw = "";
@@ -377,57 +375,13 @@ try {
     let adHocRaw = global('AdHoc_Base') || "";
     if (adHocRaw.indexOf("%") !== 0 && adHocRaw.trim() !== "") baseStr = adHocRaw + (baseStr.length > 0 ? "|" + baseStr : "");
 
-    let arraysToPrune = [ 
-        "Skipped_Pitstops", "Skipped_Events", "Ignored_Lateness", "Forced_Pitstops", 
-        "Forced_Lifts", "Forced_Transit", "Forced_Walks", "Forced_Drives",
-        "Forced_Lift_Chains", "Forced_Drive_Chains", "Trimmed_Events", "Depart_Memory", "Ignored_Walks",
-        "Completed_Dropins", "Arrival_Memory" 
-    ];
-
-    for (let a = 0; a < arraysToPrune.length; a++) {
-        let arrName = arraysToPrune[a]; 
-        let rawData = mem[arrName] || "";
-        if (rawData.length < 2) continue;
-
-        let items = rawData.split(","); let keptItems = [];
-        for (let k = 0; k < items.length; k++) {
-            let item = items[k]; if (!item || item.trim() === "") continue;
-            let parts = item.split("~");
-            let baseKey = parts[0].trim();
-            
-            if (arrName === "Depart_Memory") {
-                let depUnix = parseInt(parts[1], 10);
-                if (!isNaN(depUnix) && depUnix > (nowSec - 14400)) keptItems.push(item);
-                continue;
-            }
-
-            if (whitelistMap[baseKey]) { keptItems.push(item); continue; }
-
-            let idParts = baseKey.split("_");
-            let eventStartUnix = 0;
-            
-            for (let p = idParts.length - 1; p >= 0; p--) {
-                let parsed = parseInt(idParts[p], 36);
-                if (!isNaN(parsed) && parsed > 1000000000 && parsed < 2500000000) {
-                    eventStartUnix = parsed;
-                    break;
-                }
-            }
-            
-            if (eventStartUnix > 0) {
-                let isFuture = eventStartUnix > (nowSec + 43200); 
-                let isPastActionArray = (arrName === "Completed_Dropins" || arrName === "Arrival_Memory");
-                
-                if (isFuture && isPastActionArray) continue; 
-                
-                if (eventStartUnix > (nowSec - 86400)) keptItems.push(item);
-                continue;
-            }
-        }
-        mem[arrName] = keptItems.join(",");
-    }
-    
-    writeFile(filePath, JSON.stringify(mem), false);
+    // D1 (RULE-8C): Alpha no longer writes TDS_Overrides.json — the Override
+    // Handler is the sole writer. Alpha stages a PRUNE command so the handler
+    // prunes eventOverrides and the global transient memories with today's
+    // whitelist. The OVR top-level memory arrays stay as untouched projections;
+    // Compiler/Finaliser still read them until Slice E removes those reads.
+    setLocal('par1', 'PRUNE');
+    setLocal('par2', JSON.stringify({ nowSec: nowSec, whitelistMap: whitelistMap }));
 
     setLocal('tds_temp_json', JSON.stringify(validEvents));
     setLocal('raw_base_data', baseStr);

@@ -14,8 +14,18 @@ let OVR = {};
 try { OVR = JSON.parse(ovrRaw); } catch(e) {}
 function getOvr(key) { return OVR[key] || ""; }
 
+// E1 (RULE-8C): Completed_Stops is documented transient global state.
+let completedStopsRaw = global('TDS_Completed_Stops') || "";
+
+// E1 (RULE-8C): preferences are read directly from the PREFS file —
+// Route_Defaults lives in TDS_Routine_Preferences.json, not OVR.
+let prefsRaw = "";
+try { prefsRaw = readFile("Tasker/Tesla/Data/TDS_Routine_Preferences.json") || "{}"; } catch(e) {}
+let PREFS = {};
+try { PREFS = JSON.parse(prefsRaw); } catch(e) {}
+function getPrefs(key) { return PREFS[key] || ""; }
+
 let trimmedEventsRaw = getOvr('Trimmed_Events');
-let completedStopsRaw = getOvr('Completed_Stops');
 let skippedEvents = getOvr('Skipped_Events'); 
 
 function getSafeId(eventObj) {
@@ -1071,7 +1081,7 @@ try {
             const coreId = parsedId.coreId;
             let routeSig = originLeg + "^" + evCoords;
             let routineKey = coreId + "^" + routeSig; 
-            let routeDefaults = getOvr('Route_Defaults');
+            let routeDefaults = getPrefs('Route_Defaults');
 
             if (routeDefaults.indexOf(routineKey + "^IGNORELATENESS~fixed") !== -1 && ignoredLateness.indexOf(evId) === -1) {
                 ignoredLateness += (ignoredLateness ? "," : "") + evId + "~fixed";
