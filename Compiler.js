@@ -469,6 +469,8 @@ try {
                 targetCoords: leg.targetCoords,
                 mode: leg.mode,
                 departurePolicy: leg.departurePolicy,
+                planningDay: leg.planningDay,
+                originSource: leg.originSource,
                 departUnix: leg.actualDeparture,
                 arriveUnix: leg.actualArrival,
                 durationSecs: leg.durationSecs,
