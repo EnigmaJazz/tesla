@@ -5,6 +5,36 @@ Delivery: chained PR, stacked-to-main (PR A of 6).
 
 ---
 
+## Slice F — OVR/PREFS ownership guard (PR F)
+
+Branch: `tasker-tesla-followup-id-override-pr-f`
+Harness: `for f in harness/test_*.js; do node "$f"; done` → **17/17 PASS**.
+
+### Tasks Completed
+
+- [x] **F1.** Added `OVERRIDE_HANDLER_PATH`, OVR/PREFS unauthorized-write guards (writeFile + deleteFile), and a `handler()` staging shim to `harness/mock_tasker.js` (mirrors `reducer()`; sets `__currentScriptPath` so the handler's own OVR/PREFS writes pass the guard). Converted `runHandler` (test_single_writer) and `consumeStaged` (test_id_parsing) to the shim. Added the F-section to `harness/test_single_writer.js`: guard rejects direct OVR/PREFS write and delete from a non-handler script; handler shim writes schema-v2 OVR/PREFS through the guard; seven-writer source sweep (Alpha/Appender/Compiler/Default/Finaliser/Override_Injector/Stop_Logger) proves no `writeFile`/`deleteFile` targets OVR/PREFS, and `TDS_Helper.js` stays read-only.
+
+### Files Changed
+
+| File | Action | What Was Done |
+|------|--------|---------------|
+| `harness/mock_tasker.js` | Modified | F1: `OVERRIDE_HANDLER_PATH`, `OVERRIDE_PATH`, `PREFS_PATH` constants; OVR/PREFS ownership guards in `writeFile` + `deleteFile`; `handler()` staging shim wired into the sandbox. |
+| `harness/test_single_writer.js` | Modified | F1: `runHandler` routes through `sandbox.handler()`; F-section (guard rejection, handler shim pass, seven-writer source sweep, TDS_Helper read-only). |
+| `harness/test_id_parsing.js` | Modified | F1: `consumeStaged` routes through `sandbox.handler()`; removed now-unused `overrideHandlerPath`. |
+
+### Deviations from Design
+
+1. **Guards cover `deleteFile` too.** The mock rejects non-handler `deleteFile` of OVR/PREFS in addition to `writeFile`, so ownership covers destructive deletes, not just writes.
+
+### Workload / PR Boundary
+
+- Mode: chained PR slice (stacked-to-main), PR F of 6.
+- Commit: (pending)
+- Changed lines: 103 (mock 24 + tests 87) vs 400 budget — within budget.
+- Rollback boundary: revert the F1 commit on `pr-f`; slice F2 (spec evidence) untouched.
+
+---
+
 ## Slice E — OVR memory arrays → documented transient globals (PR E)
 
 Branch: `tasker-tesla-followup-id-override-pr-e`

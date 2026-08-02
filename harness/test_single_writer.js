@@ -31,7 +31,6 @@ const { runScript } = require('./runner');
 const nowSec = 1700000000;
 const OVR_FILE = "Tasker/Tesla/Data/TDS_Overrides.json";
 const PREFS_FILE = "Tasker/Tesla/Data/TDS_Routine_Preferences.json";
-const HANDLER_PATH = path.resolve(__dirname, '..', 'Override_Handler.js');
 
 // Base-36 occurrence IDs (suffix = base-36 Unix seconds).
 const ID_RECENT = "abc123_s44tm8";      // now - 1h  → inside 24h retention
@@ -50,15 +49,15 @@ function fail(msg) {
 }
 
 function runHandler(files, op, payload, failureOpts, globals) {
-  const locals = { par1: op, par2: JSON.stringify(payload) };
   const { sandbox, store } = createSandbox({
-    locals: locals,
     files: files,
     globals: globals || {},
     nowMs: nowSec * 1000,
     failures: failureOpts || {}
   });
-  runScript(HANDLER_PATH, sandbox, store);
+  // F1: run through the mock handler() shim so __currentScriptPath identifies
+  // the Override Handler and its OVR/PREFS writes pass the ownership guard.
+  sandbox.handler(op, payload);
   return { sandbox: sandbox, store: store, result: sandbox.local('return_value') };
 }
 
@@ -577,6 +576,80 @@ try {
   assert.strictEqual(store.files[OVR_FILE], '{}', 'Sandbox must not write TDS_Overrides.json');
 } catch (e) {
   fail('E2 Sandbox PREFS/Completed Stops reads: ' + (e && e.message ? e.message : e));
+}
+
+// ---------- Slice F (RULE-8C): OVR/PREFS single-writer ownership guard ----------
+// F1 enabled the mock ownership guard: only the Override Handler (running via
+// the handler() shim, which sets __currentScriptPath) may write or delete
+// TDS_Overrides.json / TDS_Routine_Preferences.json. These tests prove the
+// guard rejects direct writes, that the handler shim still passes, and that
+// none of the seven former writers retains a direct OVR/PREFS write path.
+
+const ALPHA_PATH = path.resolve(__dirname, '..', 'Alpha.js');
+const APPENDER_PATH = path.resolve(__dirname, '..', 'Appender.js');
+const INJECTOR_PATH = path.resolve(__dirname, '..', 'Override_Injector.js');
+const DEFAULT_PATH = path.resolve(__dirname, '..', 'Default.js');
+const TDS_HELPER_PATH = path.resolve(__dirname, '..', 'TDS_Helper.js');
+
+// F1-1: the guard rejects a direct OVR/PREFS write from a non-handler script.
+try {
+  const { sandbox, store } = createSandbox({ files: {}, nowMs: nowSec * 1000 });
+  let rejected = false;
+  try { sandbox.writeFile(OVR_FILE, '{}'); } catch (e) {
+    rejected = String(e && e.message || e).indexOf('UNAUTHORIZED_WRITE_REJECTED') !== -1;
+  }
+  assert(rejected, 'direct OVR write must be rejected');
+  rejected = false;
+  try { sandbox.writeFile(PREFS_FILE, '{}'); } catch (e) {
+    rejected = String(e && e.message || e).indexOf('UNAUTHORIZED_WRITE_REJECTED') !== -1;
+  }
+  assert(rejected, 'direct PREFS write must be rejected');
+  rejected = false;
+  try { sandbox.deleteFile(OVR_FILE); } catch (e) {
+    rejected = String(e && e.message || e).indexOf('UNAUTHORIZED_WRITE_REJECTED') !== -1;
+  }
+  assert(rejected, 'direct OVR delete must be rejected');
+} catch (e) {
+  fail('F1 guard rejects direct writes: ' + (e && e.message ? e.message : e));
+}
+
+// F1-2: the handler() shim passes the guard — handler OVR/PREFS writes land.
+try {
+  const r = runHandler({}, 'APPLY_OVERRIDE', { targetId: ID_RECENT, overrideKey: 'Forced_Drives' });
+  const ovr = readJsonStore(r.store, OVR_FILE);
+  assert(ovr && ovr.schemaVersion === 2, 'handler shim must write schema-v2 OVR');
+  assert(ovr.eventOverrides[ID_RECENT], 'handler APPLY_OVERRIDE must land in eventOverrides');
+  const r2 = runHandler({}, 'SET_DEFAULT', { targetKey: 'series_x^52.1,-2.2^51.9,-2.1^drive', isSet: true });
+  const prefs = readJsonStore(r2.store, PREFS_FILE);
+  assert(prefs && prefs.seriesPreferences['series_x'], 'handler shim must write PREFS');
+} catch (e) {
+  fail('F1 handler shim passes guard: ' + (e && e.message ? e.message : e));
+}
+
+// F1-3: seven-writer source sweep — no former writer retains an OVR/PREFS
+// writeFile/deleteFile call; TDS_Helper stays read-only.
+try {
+  const formerWriters = [
+    ['Alpha', ALPHA_PATH],
+    ['Appender', APPENDER_PATH],
+    ['Compiler', COMPILER_PATH],
+    ['Default', DEFAULT_PATH],
+    ['Finaliser', FINALISER_PATH],
+    ['Override_Injector', INJECTOR_PATH],
+    ['Stop_Logger', STOP_LOGGER_PATH]
+  ];
+  formerWriters.forEach(function (entry) {
+    const name = entry[0];
+    const src = fs.readFileSync(entry[1], 'utf8');
+    assert(src.indexOf('writeFile("Tasker/Tesla/Data/TDS_Overrides.json"') === -1, name + ' must not writeFile TDS_Overrides.json');
+    assert(src.indexOf('writeFile("Tasker/Tesla/Data/TDS_Routine_Preferences.json"') === -1, name + ' must not writeFile TDS_Routine_Preferences.json');
+    assert(src.indexOf('deleteFile("Tasker/Tesla/Data/TDS_Overrides.json"') === -1, name + ' must not deleteFile TDS_Overrides.json');
+  });
+  const helperSrc = fs.readFileSync(TDS_HELPER_PATH, 'utf8');
+  assert(helperSrc.indexOf('writeFile(') === -1, 'TDS_Helper must stay read-only (no writeFile)');
+  assert(helperSrc.indexOf('deleteFile(') === -1, 'TDS_Helper must stay read-only (no deleteFile)');
+} catch (e) {
+  fail('F1 seven-writer source sweep: ' + (e && e.message ? e.message : e));
 }
 
 if (failures > 0) {
