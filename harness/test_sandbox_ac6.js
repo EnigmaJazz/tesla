@@ -36,7 +36,7 @@ const itinJson = JSON.stringify([
 
 const masterJson = JSON.stringify([
   {
-    id: "event_1",
+    id: "event_1_kx8f00",
     start: futureEventStart,
     end: futureEventStart + 3600,
     duration: 3600,
