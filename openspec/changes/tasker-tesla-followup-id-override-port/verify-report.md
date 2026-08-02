@@ -1,3 +1,17 @@
+```yaml
+schema: gentle-ai.verify-result/v1
+evidence_revision: sha256:ebb908faafa4a34038dfd1bf8d312d0ff5a4d62287c12b5083bfb3a7d35bd064
+verdict: pass
+blockers: 0
+critical_findings: 0
+requirements: 6/6
+scenarios: 13/13
+test_command: for f in harness/test_*.js; do node "$f"; done
+test_exit_code: 0
+build_command: node --check Override_Handler.js && node --check harness/mock_tasker.js && node --check harness/test_id_parsing.js && node --check harness/test_single_writer.js
+build_exit_code: 0
+```
+
 # Verify Report: Port ID Parsing and Override Ownership
 
 Change: `tasker-tesla-followup-id-override-port`
