@@ -5,6 +5,42 @@ Delivery: chained PR, stacked-to-main (PR A of 6).
 
 ---
 
+## Verify Remediation — CRITICAL triage fixes (PR F)
+
+Branch: `tasker-tesla-followup-id-override-pr-f`
+Harness: `for f in harness/test_*.js; do node "$f"; done` → **17/17 PASS**.
+
+### What Was Fixed
+
+The verify phase returned six findings; all triaged genuine and fixed:
+
+1. **Handler parser conformance (CRITICAL).** `parseOccurrenceId` now performs the explicit `lastIndexOf("_")` check (rejects `lastSep <= 0` and `lastSep === length-1`) before `OVERRIDE_REGEX`, making the inlined copy byte-identical to the canonical `ID_Parser.js` contract (ID-2).
+2. **Migration rollback provable under a torn second write (CRITICAL).** `restoreSnapshot` now read-back verifies its restore and logs `GENERATION_VALIDATION_FAILED` on mismatch; `harness/mock_tasker.js` torn writes are now ONE-SHOT (first write to a matching path is torn; subsequent writes succeed), faithfully modelling a transient torn write so the rollback guarantee is provable. Added the OVR-torn (second-write) rollback test asserting exact original OVR bytes restored and PREFS absent.
+3. **Manifest-backed Injector harness test (CRITICAL).** Added a fixture to `harness/test_id_parsing.js` that seeds `TDS_Run_Manifest.json` (committed active generation + versioned itinerary) and asserts the injector stages `APPLY_OVERRIDE` through the manifest resolver and the handler consumes it into the schema-v2 map.
+4. **Spec status line overclaim (CRITICAL).** `openspec/specs/itinerary/spec.md` status line now names AC-3, AC-5, and AC-7 explicitly as retained open exclusions.
+5. **Magic number (WARNING).** `count === 3` replaced with the named `LEARNED_DEFAULT_THRESHOLD` constant.
+6. **`.atl` scope noise (WARNING).** Reverted the skill-registry cache files to the master version so the branch diff is clean (memory #165).
+
+### Files Changed
+
+| File | Action | What Was Done |
+|------|--------|---------------|
+| `Override_Handler.js` | Modified | lastIndexOf conformance, restoreSnapshot read-back verification, `LEARNED_DEFAULT_THRESHOLD` constant. |
+| `harness/mock_tasker.js` | Modified | One-shot torn-write semantics (documented in header). |
+| `harness/test_id_parsing.js` | Modified | Manifest-backed Injector fixture + test. |
+| `harness/test_single_writer.js` | Modified | OVR-torn (second-write) rollback test. |
+| `openspec/specs/itinerary/spec.md` | Modified | Status line names AC-3/AC-5/AC-7. |
+| `.atl/*` | Reverted | Skill-registry cache noise restored to master. |
+
+### Workload / PR Boundary
+
+- Commits: `c127b7d` (verify remediation) + `a11c8ea` (`.atl` cleanup) on `tasker-tesla-followup-id-override-pr-f`.
+- Changed lines: 103 + 1 + 7 vs 400 budget — within budget.
+- Final verify verdict: **PASS** (0 blockers, 13/13 scenarios, 17/17 harness).
+- Rollback boundary: revert the two commits on `pr-f`; no dependency on later slices.
+
+---
+
 ## Slice F — OVR/PREFS ownership guard (PR F)
 
 Branch: `tasker-tesla-followup-id-override-pr-f`
