@@ -60,6 +60,8 @@ function runWithPolicy(policy) {
     block_step15: "",
     block_step16: "",
     block_step19: policy,
+    block_step20: "2026-10-24",
+    block_step21: "LIVE_BASE",
     api_duration_secs: String(durationSecs),
     api_distance_miles: "15",
     api_transit_steps: "",
@@ -132,6 +134,8 @@ try {
   const asapHead = asapItin[1];
   assert.equal(asapHead.departurePolicy, 'ASAP', 'ASAP: published leg should carry departurePolicy ASAP');
   assert.equal(asapHead.departUnix, expectedHardFloor, 'ASAP: departUnix should equal hardFloor');
+  assert.equal(asapHead.planningDay, '2026-10-24', 'ASAP: published leg should carry planningDay from block_step20');
+  assert.equal(asapHead.originSource, 'LIVE_BASE', 'ASAP: published leg should carry originSource from block_step21');
 
   // Sub-test: JIT.
   const jitStore = runWithPolicy("JIT");
