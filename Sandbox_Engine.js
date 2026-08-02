@@ -238,6 +238,14 @@ function getDayPrefix(targetUnixSecs, currentUnixSecs) {
     return (diffDays > 6) ? ("Next " + days[tDate.getDay()]) : days[tDate.getDay()];
 }
 
+function localPlanningDay(targetUnixSecs) {
+    let d = new Date(targetUnixSecs * 1000);
+    let y = d.getFullYear();
+    let m = ("0" + (d.getMonth() + 1)).slice(-2);
+    let day = ("0" + d.getDate()).slice(-2);
+    return y + "-" + m + "-" + day;
+}
+
 function snapCoords(rawCoords, masterArray, targetCoordsToIgnore) {
     if (!rawCoords || rawCoords === "0,0") return { coords: rawCoords, snapped: false };
     let parts = rawCoords.split(",");
@@ -536,7 +544,7 @@ try {
         // departurePolicy as the final | field. Pad missing columns, default
         // to ASAP with a structured fallback flash, and mirror the head policy
         // into block_step19 for the Compiler.
-        function enqueuePlannedRow(fields, policy) {
+        function enqueuePlannedRow(fields, policy, planningDay, originSource) {
             let effectivePolicy = (policy || "").toString().toUpperCase().trim();
             if (!effectivePolicy) {
                 flash(JSON.stringify({
@@ -552,8 +560,18 @@ try {
             }
             while (fields.length < 18) fields.push("");
             fields.push(effectivePolicy);
+            // Slice A: every published row carries the explicit local
+            // planning day (col 20) and the SCH-3 origin source (col 21).
+            // The head leg also publishes block_step20/21 for the Compiler.
+            // No silent inference from event-id suffixes.
+            fields.push(planningDay || chainPlanningDay || "");
+            fields.push(originSource || ((queue.length === 0) ? passOriginSource : "CONFIRMED_LAST_DESTINATION"));
             queue.push(fields.join("|"));
-            if (queue.length === 1) setLocal('block_step19', effectivePolicy);
+            if (queue.length === 1) {
+                setLocal('block_step19', effectivePolicy);
+                setLocal('block_step20', fields[19]);
+                setLocal('block_step21', fields[20]);
+            }
         }
         
         let skippedPitstops = getOvr('Skipped_Pitstops'); 
@@ -596,7 +614,7 @@ try {
 
         if (oldItin.length > 0) {
             let aLeg = oldItin[oldItin.length - 1];
-            const priorLegAtBase = (aLeg.mode === "EOD_RETURN" || aLeg.pitstopState === "end_of_day" || (aLeg.targetEventId || "").indexOf("_IN") !== -1) ? "true" : "false";
+            const priorLegAtBase = (aLeg.mode === "EOD_RETURN" || aLeg.pitstopState === "end_of_day") ? "true" : "false";
             if (activeInProgress) {
                 simAtBase = false;
             } else if (liveAtBase) {
@@ -618,6 +636,22 @@ try {
         } else {
             simAtBase = liveAtBase;
         }
+
+        // Slice A: explicit SCH-3 origin source for the head leg, derived
+        // from pass state only — never from event-id suffix inference.
+        let passOriginSource = "LEGACY_ITINERARY_FALLBACK";
+        if (activeInProgress) {
+            passOriginSource = "ACTIVE_PLANNED_TRIP";
+        } else if (liveAtBase) {
+            passOriginSource = "LIVE_BASE";
+        } else if (oldItin.length === 0) {
+            passOriginSource = "LIVE_LOCATION";
+        } else if (simAtBase) {
+            passOriginSource = "OVERNIGHT_BASE_RESET";
+        }
+        // Slice A: the chain's local planning day, seeded at the pass start
+        // and overridden by the head event's own local day at loop entry.
+        let chainPlanningDay = localPlanningDay(nowSec);
 
         // INV-0.3: a fresh pass with a stale away itinerary and live base must
         // plan from the actual base coords, not from the stale virtual origin.
@@ -825,12 +859,61 @@ try {
             let activeGeoLatch    = global('Active_Geo_Latch') || "";
             let isMeetingLatched  = (activeGeoLatch === "MEET~" + evId);
 
+            // Slice A (AC-3/AC-7): the chain terminates at the local
+            // planning-day boundary. The head leg is always planned, even
+            // when it lands on the next local day (DST-late events); any
+            // later event whose local day differs ends the chain with an EOD
+            // return so tomorrow's rows survive for the next pass. No
+            // cross-day chain propagation.
+            let evPlanningDay = localPlanningDay(evStart);
+            if (i === idx) {
+                chainPlanningDay = evPlanningDay;
+            } else if (chainPlanningDay !== evPlanningDay) {
+                let activeBase = getBase(state.time);
+                let distToBase = getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(activeBase.coords.split(",")[0]), parseFloat(activeBase.coords.split(",")[1]));
+                if (distToBase > 300) {
+                    let eodModeB = calcMode(state.loc, activeBase.coords, "", "", "").mode;
+                    let carDistB = getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(state.carLoc.split(",")[0]), parseFloat(state.carLoc.split(",")[1]));
+                    if (carDistB > 200 && eodModeB === "DRIVE") {
+                        let recModeB = getRecoveryMode(state.loc, state.carLoc, carDistB);
+                        let rTimeB = getCachedTime(state.loc, state.carLoc, recModeB, state.time) || Math.round(carDistB / getSpeed(recModeB));
+                        enqueuePlannedRow(["RECOVERY", "Car", state.carLoc, recModeB, state.time, (state.time + rTimeB), "false", "DEPART", state.time, "REC_BND_" + evId, state.carLoc, "0", "false", "none", "Vehicle Retrieval"], "ASAP", chainPlanningDay);
+                        state.time += rTimeB;
+                        state.loc = state.carLoc;
+                    }
+                    enqueuePlannedRow(["EOD_RETURN", activeBase.name, activeBase.coords, eodModeB, state.time, (state.time + 3600), "end_of_day", "DEPART", state.time, "EOD_BND_" + evId, activeBase.name, "0", "true", "none", "Return Journey"], "ASAP", chainPlanningDay);
+                    simAtBase = true;
+                    state.loc = activeBase.coords;
+                    if (eodModeB === "DRIVE") state.carLoc = activeBase.coords;
+                    flash(JSON.stringify({
+                        timestamp: nowSec,
+                        generationId: global('TDS_Active_Generation') || null,
+                        component: "Sandbox",
+                        severity: "INFO",
+                        code: "OVERNIGHT_BOUNDARY_CREATED",
+                        tripId: null,
+                        details: { boundaryDay: evPlanningDay, chainDay: chainPlanningDay, skipIdx: i }
+                    }));
+                }
+                flash(JSON.stringify({
+                    timestamp: nowSec,
+                    generationId: global('TDS_Active_Generation') || null,
+                    component: "Sandbox",
+                    severity: "INFO",
+                    code: "CROSS_DAY_CHAIN_REJECTED",
+                    tripId: evId,
+                    details: { boundaryDay: evPlanningDay, chainDay: chainPlanningDay, skipIdx: i }
+                }));
+                skipIdx = i;
+                break;
+            }
+
             if (evId.indexOf("_OUT") !== -1 && (distToEventDirect < 300 || isMeetingLatched)) {
                 let sDepMatch = evDesc.match(/(?:#dep:|#leave:)(\d+)/i);
                 let evDepBufSecs = (sDepMatch ? parseInt(sDepMatch[1], 10) : defDepMins) * 60;
                 state.time = Math.max(state.time, evEnd) + evDepBufSecs;
                 state.loc = evCoords;
-                if (evId.indexOf("_IN") !== -1) simAtBase = true; else simAtBase = false;
+                simAtBase = false;
                 skipIdx = i + 1;
                 continue;
             }
@@ -966,7 +1049,7 @@ try {
                 if (currentIgnoredPref === "fixed") state.time = Math.max(state.time, evEnd) + evDepBufSecs;
                 else state.time = Math.max(state.time, evStartTarget) + evArrBufSecs + (evEnd - evStart) + evDepBufSecs;
                 state.loc = evCoords; 
-                if (evId.indexOf("_IN") !== -1) simAtBase = true; else simAtBase = false;
+                simAtBase = false;
                 skipIdx = i + 1; continue;
             }
 
@@ -1386,7 +1469,7 @@ try {
             if (i === idx) state.isStableOrigin = false;
             state.loc = evCoords; state.time = trueDepartureTime;
             if (routeToEv.mode === "DRIVE") state.carLoc = evCoords;
-            if (evId.indexOf("_IN") !== -1) simAtBase = true; else simAtBase = false;
+            simAtBase = false;
             skipIdx = i + 1; 
         }
 
