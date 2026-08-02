@@ -13,6 +13,7 @@ Harness: `for f in harness/test_*.js; do node "$f"; done` → **17/17 PASS**.
 ### Tasks Completed
 
 - [x] **F1.** Added `OVERRIDE_HANDLER_PATH`, OVR/PREFS unauthorized-write guards (writeFile + deleteFile), and a `handler()` staging shim to `harness/mock_tasker.js` (mirrors `reducer()`; sets `__currentScriptPath` so the handler's own OVR/PREFS writes pass the guard). Converted `runHandler` (test_single_writer) and `consumeStaged` (test_id_parsing) to the shim. Added the F-section to `harness/test_single_writer.js`: guard rejects direct OVR/PREFS write and delete from a non-handler script; handler shim writes schema-v2 OVR/PREFS through the guard; seven-writer source sweep (Alpha/Appender/Compiler/Default/Finaliser/Override_Injector/Stop_Logger) proves no `writeFile`/`deleteFile` targets OVR/PREFS, and `TDS_Helper.js` stays read-only.
+- [x] **F2.** Ran the full 17-file harness (all green) and updated the canonical status line in `openspec/specs/itinerary/spec.md` with only the verified scoped evidence for ID-2/RULE-8C/SCRIPT-15; retained AC-3/5/7, sub-items 0B/0E, synthetic/manual returns, zero-duration fallback, Sandbox OVR-10 cleanup, and Phases 1–6 as open exclusions (VAL-18).
 
 ### Files Changed
 
@@ -29,9 +30,9 @@ Harness: `for f in harness/test_*.js; do node "$f"; done` → **17/17 PASS**.
 ### Workload / PR Boundary
 
 - Mode: chained PR slice (stacked-to-main), PR F of 6.
-- Commit: (pending)
-- Changed lines: 103 (mock 24 + tests 87) vs 400 budget — within budget.
-- Rollback boundary: revert the F1 commit on `pr-f`; slice F2 (spec evidence) untouched.
+- Commit: `5ef9d99` (F1 guard) + `37567b7` (F2 spec evidence) on `tasker-tesla-followup-id-override-pr-f`; PR #24 open.
+- Changed lines: 133 + 1 vs 400 budget — within budget.
+- Rollback boundary: revert the F1/F2 commits on `pr-f`; no dependency on later slices.
 
 ---
 
