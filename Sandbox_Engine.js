@@ -23,6 +23,47 @@ function getSafeId(eventObj) {
     return eventObj.id || "DEFAULT"; 
 }
 
+// [ID-2] Strict occurrence-ID parsing (inlined copy; canonical: ID_Parser.js).
+// Occurrence IDs are <coreId>_<base36StartUnix>; cores may contain underscores,
+// so the split uses lastIndexOf("_"). Malformed/out-of-range IDs flash
+// ID_PARSE_REJECTED and skip the rejected work (no apply).
+const ID_SUFFIX_MIN_UNIX = 1e9;
+const ID_SUFFIX_MAX_UNIX = 2.5e9;
+const ID_OCCURRENCE_REGEX = /^([0-9A-Za-z_]+)_([0-9A-Za-z]+)$/;
+
+function parseOccurrenceId(rawId, component) {
+    component = component || "ID_Parser";
+    if (typeof rawId !== "string" || rawId.length === 0) {
+        return rejectOccurrenceId(rawId, "empty_id", component);
+    }
+    const lastSep = rawId.lastIndexOf("_");
+    if (lastSep <= 0 || lastSep === rawId.length - 1) {
+        return rejectOccurrenceId(rawId, "malformed_format", component);
+    }
+    const match = ID_OCCURRENCE_REGEX.exec(rawId);
+    if (!match) {
+        return rejectOccurrenceId(rawId, "malformed_format", component);
+    }
+    const suffixNum = parseInt(match[2], 36);
+    if (isNaN(suffixNum) || suffixNum < ID_SUFFIX_MIN_UNIX || suffixNum >= ID_SUFFIX_MAX_UNIX) {
+        return rejectOccurrenceId(rawId, "invalid_suffix", component);
+    }
+    return { ok: true, coreId: match[1], instanceStartUnix: suffixNum, rawId: rawId };
+}
+
+function rejectOccurrenceId(rawId, reason, component) {
+    flash(JSON.stringify({
+        timestamp: Math.floor(Date.now() / 1000),
+        generationId: null,
+        component: component,
+        severity: "WARN",
+        code: "ID_PARSE_REJECTED",
+        tripId: null,
+        details: { rawId: rawId, reason: reason }
+    }));
+    return { ok: false, reason: reason };
+}
+
 // Phase 2 reader cutover: discover the committed generation through the manifest.
 // Mirrors TDS_Helper.readActive; includes a legacy fallback while the migration
 // is in flight.
@@ -1023,7 +1064,11 @@ try {
                 } else if (preGap >= totalDetour) pitstopState = "possible";
             }
 
-            let coreId = evId.split("_")[0]; 
+            // [ID-2] Strict occurrence-ID parsing (inlined copy; canonical: ID_Parser.js).
+            // Reject malformed/out-of-range IDs; rejected events are skipped.
+            const parsedId = parseOccurrenceId(evId, "Sandbox");
+            if (!parsedId.ok) continue;
+            const coreId = parsedId.coreId;
             let routeSig = originLeg + "^" + evCoords;
             let routineKey = coreId + "^" + routeSig; 
             let routeDefaults = getOvr('Route_Defaults');

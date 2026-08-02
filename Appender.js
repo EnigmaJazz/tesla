@@ -3,6 +3,48 @@
 // Fully migrated to Tasker/Tesla/Data/ directory structure.
 // Categorized wiping protects orthogonal overrides and history streaks.
 // ==========================================
+
+// [ID-2] Strict occurrence-ID parsing (inlined copy; canonical: ID_Parser.js).
+// Occurrence IDs are <coreId>_<base36StartUnix>; cores may contain underscores,
+// so the split uses lastIndexOf("_"). Malformed/out-of-range IDs flash
+// ID_PARSE_REJECTED and skip the rejected work (no apply).
+const ID_SUFFIX_MIN_UNIX = 1e9;
+const ID_SUFFIX_MAX_UNIX = 2.5e9;
+const ID_OCCURRENCE_REGEX = /^([0-9A-Za-z_]+)_([0-9A-Za-z]+)$/;
+
+function parseOccurrenceId(rawId, component) {
+    component = component || "ID_Parser";
+    if (typeof rawId !== "string" || rawId.length === 0) {
+        return rejectOccurrenceId(rawId, "empty_id", component);
+    }
+    const lastSep = rawId.lastIndexOf("_");
+    if (lastSep <= 0 || lastSep === rawId.length - 1) {
+        return rejectOccurrenceId(rawId, "malformed_format", component);
+    }
+    const match = ID_OCCURRENCE_REGEX.exec(rawId);
+    if (!match) {
+        return rejectOccurrenceId(rawId, "malformed_format", component);
+    }
+    const suffixNum = parseInt(match[2], 36);
+    if (isNaN(suffixNum) || suffixNum < ID_SUFFIX_MIN_UNIX || suffixNum >= ID_SUFFIX_MAX_UNIX) {
+        return rejectOccurrenceId(rawId, "invalid_suffix", component);
+    }
+    return { ok: true, coreId: match[1], instanceStartUnix: suffixNum, rawId: rawId };
+}
+
+function rejectOccurrenceId(rawId, reason, component) {
+    flash(JSON.stringify({
+        timestamp: Math.floor(Date.now() / 1000),
+        generationId: null,
+        component: component,
+        severity: "WARN",
+        code: "ID_PARSE_REJECTED",
+        tripId: null,
+        details: { rawId: rawId, reason: reason }
+    }));
+    return { ok: false, reason: reason };
+}
+
 try {
     var choice = local('final_return') || "";
     var parts = choice.split("|");
@@ -39,6 +81,11 @@ try {
         }
 
         if (targetArray !== "") {
+            // [ID-2] Reject malformed/out-of-range occurrence IDs before any mutation.
+            var parsedId = parseOccurrenceId(baseId, "Appender");
+            if (!parsedId.ok) throw new Error("ID_PARSE_REJECTED: " + baseId + " (" + parsedId.reason + ")");
+            var coreId = parsedId.coreId;
+
             // [SURGICAL UPGRADE: Categorized Event Wiping]
             var catMode = ["Forced_Lifts", "Forced_Transit", "Forced_Walks", "Forced_Drives", "Forced_Lift_Chains", "Forced_Drive_Chains"];
             var catPitstop = ["Skipped_Pitstops", "Forced_Pitstops"];
@@ -87,7 +134,7 @@ try {
                 else if (modeForHistory.indexOf("IGNOREWALK") !== -1) targetCategory = "WALK";
                 else if (modeForHistory.indexOf("SKIP") !== -1 || modeForHistory.indexOf("TRIM") !== -1) targetCategory = "STATE";
                 
-                var coreId = baseId.split("_")[0]; 
+                // coreId comes from the strict occurrence-ID parse above (lastIndexOf("_")).
                 var routineKey = coreId + "^" + routeSig;
                 var histKey = routineKey + "^" + modeForHistory;
                 
