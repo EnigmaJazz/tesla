@@ -1,6 +1,8 @@
 // ==========================================
 // AD-HOC STOP LOGGER (v2)
-// Appends [EventID]_[Duration] to Completed_Stops in TDS_Overrides
+// Appends [EventID]_[Duration] to TDS_Completed_Stops
+// (documented transient global; the Override Handler owns
+// TDS_Overrides.json — RULE-8C).
 // Bypasses JSON write if an "Extra" unplanned stop is selected.
 // ==========================================
 
@@ -22,11 +24,10 @@ try {
             let cleanStop = selStop.replace(/[^0-9]/g, ""); 
             
             if (cleanStop.length > 0) {
-                let ovrFile = "Tasker/Tesla/Data/TDS_Overrides.json";
-                let ovrRaw = readFile(ovrFile) || "{}";
-                let OVR = JSON.parse(ovrRaw);
-
-                let currentStops = OVR['Completed_Stops'] || "";
+                // E1 (RULE-8C): Completed_Stops is documented transient global
+                // state, not an OVR top-level array. Stop_Logger owns the
+                // TDS_Completed_Stops global; the reducer owns trip state.
+                let currentStops = global('TDS_Completed_Stops') || "";
                 let newStopEntry = evId + "_" + cleanStop;
 
                 // Append to the comma-separated inventory, preventing double-logging
@@ -38,12 +39,11 @@ try {
                     currentStops = newStopEntry;
                 }
 
-                // Write the updated inventory back to disk
-                OVR['Completed_Stops'] = currentStops;
-                writeFile(ovrFile, JSON.stringify(OVR), false);
+                // Write the updated inventory to the transient global
+                setGlobal('TDS_Completed_Stops', currentStops);
                 // Phase 3 PR-C: stage COMPLETE_STOP for the Trip State Reducer.
-                // The legacy Completed_Stops OVR write above remains as a read-side
-                // shim for components that have not yet been migrated to state.completedStops.
+                // The transient global above is the read-side source for
+                // components that have not yet migrated to state.completedStops.
                 let stopId = newStopEntry;
                 let tripId = evId.substring(0, evId.lastIndexOf("_"));
                 setLocal("par1", "COMPLETE_STOP");
