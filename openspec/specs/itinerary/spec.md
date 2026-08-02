@@ -1,6 +1,6 @@
 # Itinerary Scheduler Specification
 
-> **Status:** First slice (tasker-tesla-upgrade) applied 2026-07-19; second slice (tasker-tesla-upgrade-slice-2) applied 2026-07-19. AC-8, AC-9, AC-10 PASS via harness (slice 1); AC-1, AC-6 PASS via harness (slice 2). Remaining Phase 0 (AC-5), sub-items 0B and 0E, and Phases 1–6 are open.
+> **Status:** First slice (tasker-tesla-upgrade) applied 2026-07-19; second slice (tasker-tesla-upgrade-slice-2) applied 2026-07-19; follow-up port (tasker-tesla-followup-id-override-port) applied 2026-08-02. AC-8, AC-9, AC-10 PASS via harness (slice 1); AC-1, AC-6 PASS via harness (slice 2). ID-2 strict occurrence-ID parsing, RULE-8C override single writer (seven former writers consolidated to staged commands/transient globals), and SCRIPT-15 adapter responsibility PASS via harness (follow-up port: harness/test_id_parsing.js, harness/test_single_writer.js, 17/17 suite green). Remaining Phase 0 (AC-5), sub-items 0B and 0E, synthetic/manual return acceptance, zero-duration fallback, Sandbox OVR-10 cleanup, and Phases 1–6 are open.
 
 **Authority:** canonicalised from `_spec_source.md` (verbatim source). Requirements use RFC 2119 terms; source-section references are evidence pointers. Exceptions are only those stated below.
 
