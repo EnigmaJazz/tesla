@@ -5,6 +5,37 @@ Delivery: chained PR, stacked-to-main (PR A of 6).
 
 ---
 
+## Slice C — Operations and projections (PR C) — COMPLETE
+
+Branch: `tasker-tesla-followup-id-override-pr-c`
+Harness: `for f in harness/test_*.js; do node "$f"; done` → **17/17 PASS** (all existing + `test_single_writer`).
+
+### Tasks Completed
+
+- [x] **C1.** RED/verification coverage for `APPLY_OVERRIDE`, `APPEND_OVERRIDE`, `SET_DEFAULT`, `PRUNE`, exact-key decoys, projections, and global-array pruning (Serialized Override Command API scenarios). File: `harness/test_single_writer.js`.
+- [x] **C2.** Implement all four operations; **APPLY_OVERRIDE toggles the exact key and removes only exact conflicting-category keys via `exactKeyRemove`/`categorizedWipe`**, while preserving compatible history/default projections (CMD-9, OVR-10). File: `Override_Handler.js`.
+
+### Files Changed
+
+| File | Action | What Was Done |
+|------|--------|---------------|
+| `Override_Handler.js` | Modified | Replaced the four Slice-C stubs with real operations: `APPLY_OVERRIDE` (exact-key toggle via `applyCategory`, conflicting-category wipe via `categorizedWipe`, empty-entry deletion, propose-default on third categorized occurrence), `APPEND_OVERRIDE` (append + `alsoAppendLate`, categorized history accumulation), `SET_DEFAULT` (set/wipe/clearAll against `seriesPreferences`, `cancel_id` staging), `PRUNE` (map-based retention via `occurrenceWithinRetention` with whitelist override, `hasTrimmedEnd` presence-check for legacy `trimmedEndUnix = 0`, projection rebuild via `syncProjections`, global memory CSV pruning for `TDS_Depart_Memory`/`TDS_Completed_Dropins`/`TDS_Arrival_Memory`). Invalid occurrence IDs reject with `id_parse_rejected`; malformed target keys reject with `malformed_targetKey`. Caller owns deletion — `categorizedWipe` only clears what the caller explicitly targets. |
+| `harness/test_single_writer.js` | Modified | C1 RED coverage added: four-operation dispatch semantics, exact-key substring-decoy immunity (toggle OFF on `abc123_s44tm8` leaves `xyzabc123_s44tm8`), invalid-ID rejection with no mutation, retention boundaries (recent survives, 48h stale pruned, 13h future excluded, 1h future kept), whitelist survival, four-hour Depart window, global CSV pruning, propose-default on third occurrence, and map/projection consistency (every projection backed by a map entry). Updated the two stale Slice-B assertions that asserted the old stubs (PRUNE now real, legacy 2010-era fixture correctly pruned). |
+
+### Deviations from Design
+
+1. **`^WALK` is a MODE-category modifier.** The wipe test originally used `WALK` as the "different category" default; bare `WALK` is a forced-walk MODE modifier, so wiping `DRIVE` correctly wipes it. The different-category fixture is `IGNORELATENESS`. Test fixture fix, no handler change.
+2. **Legacy `trimmedEndUnix = 0` falsy trap.** Legacy `Trimmed_Events` materialize with `trimmedEndUnix = 0`; truthiness checks would silently drop them. `hasTrimmedEnd` presence-checks the field (memory #162).
+
+### Workload / PR Boundary
+
+- Mode: chained PR slice (stacked-to-main), PR C of 6.
+- Commit: pending (handler + tests).
+- Changed lines: ~731 (426 handler + 305 test) vs 400 budget — **maintainer-approved reset required** (same pattern as slices A and B; the C1 coverage suite for four operations plus retention/globals/projection tests is the driver).
+- Rollback boundary: revert this slice's commit on `pr-c`; slices D-F files untouched.
+
+---
+
 ## Slice B — Override Handler shell + migration (PR B) — COMPLETE
 
 Branch: `tasker-tesla-followup-id-override-pr-b`
