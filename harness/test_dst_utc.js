@@ -145,6 +145,106 @@ try {
     console.log('  UTC midnight boundary = false');
     console.log('  utcDayBoundaryUnix(1700000000) = ' + boundaryForT1);
     console.log('  Dispatcher chain-break waypoints = ' + waypoints.length);
+
+    // -----------------------------------------------------------------
+    // 4. Slice A: Sandbox planningDay must be DST-local, not UTC.
+    //
+    // An event at 2026-10-24T23:30:00Z lands on local day 2026-10-25
+    // (00:30 BST) but UTC day 2026-10-24. The planned queue row col 20 must
+    // carry the LOCAL planning day label.
+    // -----------------------------------------------------------------
+    const dstNowSec = Date.parse('2026-10-24T22:30:00Z') / 1000;   // local 23:30 BST on 24 Oct
+    const dstEvStart = Date.parse('2026-10-24T23:30:00Z') / 1000;  // local 00:30 BST on 25 Oct
+    const dstHomeCoords = '51.9,-2.1';
+    const dstEventCoords = '52.5,-1.5';
+    const dstDayLabel = '2026-10-25'; // LOCAL day, differs from UTC day 2026-10-24
+
+    const dstMasterJson = JSON.stringify([
+        {
+            id: 'event_dst_kx8f04',
+            start: dstEvStart,
+            end: dstEvStart + 3600,
+            duration: 3600,
+            title: 'DST Event',
+            desc: '',
+            loc: 'Office',
+            coords: dstEventCoords
+        }
+    ]);
+
+    const dstBaseGeocodes = [
+        dstNowSec.toString(),
+        (dstNowSec + 86400).toString(),
+        dstHomeCoords,
+        '0',
+        'Home',
+        '',
+        'home_base'
+    ].join('~');
+
+    const dstFiles = {
+        'Tasker/Tesla/Data/Itin_Master.json': '[]',
+        'Tasker/Tesla/Data/TDS_Master.json': dstMasterJson,
+        'Tasker/Tesla/Data/TDS_Base_Geocodes.txt': dstBaseGeocodes,
+        'Tasker/Tesla/Data/TDS_Overrides.json': '{}',
+        'Tasker/Tesla/Data/Temp_Route_Cache.txt': '',
+        'Tasker/Tesla/Data/RouteCache.txt': ''
+    };
+
+    const dstGlobals = {
+        User_At_Base: 'true',
+        Base_Arrival_Unix: dstNowSec.toString(),
+        User_Loc: dstHomeCoords,
+        Home_Coords: dstHomeCoords,
+        Current_Status: '',
+        Arrival_Buffer_Mins: '5',
+        Departure_Buffer_Mins: '5',
+        Max_Walk_Meters: '8046',
+        Daily_Walk_Meters: '0',
+        Live_Traffic_Threshold: '7200',
+        Car_Connected: 'false'
+    };
+
+    const dstLocals = {
+        idx: '1',
+        vcar_loc: dstHomeCoords,
+        virtual_time: String(dstNowSec)
+    };
+
+    const { sandbox: dstSandbox, store: dstStore } = createSandbox({
+        locals: dstLocals,
+        globals: dstGlobals,
+        files: dstFiles,
+        nowMs: dstNowSec * 1000
+    });
+
+    const sandboxPath = path.resolve(__dirname, '..', 'Sandbox_Engine.js');
+    runScript(sandboxPath, dstSandbox, dstStore);
+
+    if (dstStore.runError) {
+        fail('DST Sandbox fixture threw: ' + dstStore.runError.message + ' (line ' + dstStore.runError.line + ')');
+    }
+
+    const dstQueue = dstStore.locals['block_queue'];
+    if (!dstQueue || dstQueue === 'EOF') fail('DST Sandbox expected non-empty block_queue');
+    const dstHead = dstQueue.split('~')[0].split('|');
+    if (dstHead.length < 21) fail('DST head expected >= 21 columns (Slice A), got ' + dstHead.length);
+    if (dstHead[19] !== dstDayLabel) {
+        fail('DST planningDay (col 20) should be local ' + dstDayLabel + ', got ' + JSON.stringify(dstHead[19]) + ' (UTC day is 2026-10-24)');
+    }
+    if (dstStore.locals['block_step20'] !== dstDayLabel) {
+        fail('DST block_step20 should be local ' + dstDayLabel + ', got ' + JSON.stringify(dstStore.locals['block_step20']));
+    }
+
+    console.log('PASS: ' + testName);
+    console.log('  same UTC day (1 h apart) = true');
+    console.log('  different UTC days (24 h apart) = false');
+    console.log('  BST→GMT doubled hour same UTC day = true');
+    console.log('  GMT→BST skipped hour same UTC day = true');
+    console.log('  UTC midnight boundary = false');
+    console.log('  utcDayBoundaryUnix(1700000000) = ' + boundaryForT1);
+    console.log('  Dispatcher chain-break waypoints = ' + waypoints.length);
+    console.log('  DST-local planningDay = ' + dstHead[19] + ' (local), block_step20 = ' + dstStore.locals['block_step20']);
     process.exit(0);
 } catch (e) {
     fail(e.message);

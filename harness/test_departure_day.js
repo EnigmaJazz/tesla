@@ -171,6 +171,34 @@ function testMultipleTripsIndependent() {
   pass('multi-trip: each trip tracks its own departures and planningDay');
 }
 
+function testTodayDeparturePreservesTomorrowRows() {
+  // AC-7/Slice A: observing today's departure must not touch tomorrow's
+  // planned trip. Tomorrow's row keeps its departure history, planningDay
+  // label, and activity timestamp — no cross-day propagation.
+  const { sandbox, store } = make();
+  sandbox.writeFile(ACTIVE_GEN, VALID_GEN_ID);
+  // Seed tomorrow's row first (its departure is observed as a separate event).
+  runCmd(sandbox, store, 'OBSERVE_DEPARTURE', {
+    generationId: VALID_GEN_ID, tripId: 'trip_tomorrow', at: 1700086400, planningDay: '2024-03-10'
+  });
+  const before = loadState(store);
+  // Today departs — tomorrow's row must be byte-identical after this event.
+  const r = runCmd(sandbox, store, 'OBSERVE_DEPARTURE', {
+    generationId: VALID_GEN_ID, tripId: 'trip_today', at: 1700001000, planningDay: '2024-03-09'
+  });
+  assert.strictEqual(r, 'OK', 'today departure must succeed');
+  const state = loadState(store);
+  assert.equal(state.trips.trip_today.lifecycleState, 'IN_PROGRESS', 'today advances to IN_PROGRESS');
+  assert.equal(state.trips.trip_today.departures.length, 1, 'today has one departure');
+  const tomorrowAfter = state.trips.trip_tomorrow;
+  const tomorrowBefore = before.trips.trip_tomorrow;
+  assert.equal(tomorrowAfter.lifecycleState, 'IN_PROGRESS', 'tomorrow row keeps its own lifecycle');
+  assert.equal(tomorrowAfter.departures.length, tomorrowBefore.departures.length, 'tomorrow departure history untouched');
+  assert.equal(tomorrowAfter.currentPlanningDay, '2024-03-10', 'tomorrow planningDay label preserved');
+  assert.equal(tomorrowAfter.lastActivityUnix, tomorrowBefore.lastActivityUnix, 'tomorrow lastActivity untouched');
+  pass('today-departure-preserves-tomorrow: tomorrow rows untouched, no cross-day propagation');
+}
+
 function runAll() {
   testObserveDepartureRecordsTrip();
   testObserveDepartureIdempotent();
@@ -181,6 +209,7 @@ function runAll() {
   testObserveDepartureRejectsInvalidGen();
   testObserveDepartureRejectsMissingFields();
   testMultipleTripsIndependent();
+  testTodayDeparturePreservesTomorrowRows();
   console.log("");
   console.log("departure-day results: " + passes + " passed, " + fails + " failed");
   process.exit(fails === 0 ? 0 : 1);
