@@ -43,6 +43,10 @@ var ID_SUFFIX_MIN_UNIX = 1e9;
 var ID_SUFFIX_MAX_UNIX = 2.5e9;
 var OVERRIDE_REGEX = /^([0-9a-zA-Z_]+)_([0-9a-zA-Z]+)$/;
 
+// A categorized occurrence is proposed as a learned default only when the
+// same exact route/mode has been seen this many times.
+var LEARNED_DEFAULT_THRESHOLD = 3;
+
 // Legacy preference keys migrated once on first Handler use.
 var LEGACY_PREF_KEYS = ["Route_Defaults", "Route_History"];
 
@@ -129,6 +133,10 @@ function parseOccurrenceId(rawId, component) {
   if (typeof rawId !== "string" || rawId.length === 0) {
     return rejectId(rawId, "empty_id", component);
   }
+  const lastSep = rawId.lastIndexOf("_");
+  if (lastSep <= 0 || lastSep === rawId.length - 1) {
+    return rejectId(rawId, "malformed_format", component);
+  }
   const match = OVERRIDE_REGEX.exec(rawId);
   if (!match) {
     return rejectId(rawId, "malformed_format", component);
@@ -203,6 +211,9 @@ function restoreSnapshot(path, snap) {
   try {
     if (snap.existed) {
       writeFile(path, snap.raw);
+      if (readFile(path) !== snap.raw) {
+        logEvent("error", "GENERATION_VALIDATION_FAILED", null, { reason: "snapshot restore read-back mismatch: " + path });
+      }
     } else {
       deleteFile(path);
     }
@@ -442,7 +453,7 @@ function applyCategorizedHistory(prefs, coreId, routeSig, modeForHistory) {
   });
   const count = (sp.history[modeForHistory] || 0) + 1;
   sp.history[modeForHistory] = count;
-  if (count === 3) return coreId + "^" + routeSig + "^" + modeForHistory;
+  if (count === LEARNED_DEFAULT_THRESHOLD) return coreId + "^" + routeSig + "^" + modeForHistory;
   return null;
 }
 

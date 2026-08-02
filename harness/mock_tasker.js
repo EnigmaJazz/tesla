@@ -7,9 +7,10 @@
 //
 // Failure injection (options.failures):
 //   writeThrows  - array of path substrings; writeFile throws if any match.
-//   tornWrites   - array of path substrings; writeFile stores a truncated
-//                  copy so the next readFile returns partial bytes, modelling
-//                  a torn write that read-back detection rejects.
+//   tornWrites   - array of path substrings; the FIRST write to a matching
+//                  path is stored truncated so read-back detection rejects it,
+//                  then the fault heals (one-shot) so a retry/restore write
+//                  succeeds — modelling a real torn write + rollback.
 //
 // Store observability:
 //   store.writeLog   - every writeFile and deleteFile call with op/path/length.
@@ -54,7 +55,10 @@ function createSandbox(options) {
   const deleteOrder = [];
   const failures = options.failures || {};
   const writeThrows = failures.writeThrows || [];
-  const tornWrites = failures.tornWrites || [];
+  // One-shot torn-write model: a torn write is a single fault event (power
+  // loss mid-write). The matching path pattern fires once, then heals so a
+  // retry/restore write succeeds — faithful to the rollback contract.
+  const tornWrites = (failures.tornWrites || []).slice();
   let now = initialNowMs;
 
   function publish(candidate) {
@@ -115,7 +119,12 @@ function createSandbox(options) {
     }
     if (matchesAny(path, writeThrows)) throw new Error("injected write failure: " + path);
     const s = stringify(content);
-    const written = matchesAny(path, tornWrites) ? s.slice(0, Math.max(0, s.length - 4)) : s;
+    let written = s;
+    const tornIdx = tornWrites.findIndex(function (p) { return path.indexOf(p) !== -1; });
+    if (tornIdx !== -1) {
+      written = s.slice(0, Math.max(0, s.length - 4));
+      tornWrites.splice(tornIdx, 1);
+    }
     liveFiles[path] = written;
     writeLog.push({ op: "write", path: path, length: written.length });
     writeOrder.push(path);

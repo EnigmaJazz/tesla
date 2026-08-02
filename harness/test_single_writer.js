@@ -199,6 +199,29 @@ try {
   fail('torn-write rollback section threw: ' + (e && e.message ? e.message : e));
 }
 
+// ---------- Torn-write rollback: second write (OVR) torn ----------
+// The torn-write fault is one-shot: PREFS migrates cleanly, the OVR commit is
+// torn and rejected by read-back, and the rollback must restore exact original
+// OVR bytes while PREFS stays absent.
+try {
+  const files = legacyFiles();
+  const r = runHandler(files, "PRUNE", { nowSec: nowSec, whitelistMap: {} }, {
+    tornWrites: [OVR_FILE]
+  });
+  assert(r.result.indexOf('ERROR') !== -1 || (function () { try { return JSON.parse(r.result).ok === false; } catch (e) { return false; } })(),
+    'torn OVR write must surface as an ERROR result, got: ' + r.result);
+
+  const ovrAfter = ovrOf(r.store);
+  assert.equal(ovrAfter["Route_Defaults"], "routeA^MODE=1,routeB^MODE=2", 'OVR-torn rollback must restore original Route_Defaults bytes');
+  assert.equal(ovrAfter["Route_History"], "routeA^3", 'OVR-torn rollback must restore original Route_History bytes');
+  assert.equal(ovrAfter["Forced_Drives"], ID_RECENT, 'OVR-torn rollback must restore original non-preference projections');
+  const prefsAfter = prefsOf(r.store);
+  assert(prefsAfter === null || !Object.prototype.hasOwnProperty.call(prefsAfter, "Route_Defaults"),
+    'no partial authoritative state: PREFS must not contain migrated Route_Defaults after OVR-torn failure');
+} catch (e) {
+  fail('torn-OVR rollback section threw: ' + (e && e.message ? e.message : e));
+}
+
 // ---------- APPLY_OVERRIDE ----------
 
 try {
