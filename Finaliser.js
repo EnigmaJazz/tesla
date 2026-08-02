@@ -88,10 +88,11 @@ try {
     let pLat = parseFloat(pLocRaw.split(",")[0]); let pLon = parseFloat(pLocRaw.split(",")[1]);
     let cLat = parseFloat(cLocRaw.split(",")[0]); let cLon = parseFloat(cLocRaw.split(",")[1]);
     
-    let ovrRaw = readFile("Tasker/Tesla/Data/TDS_Overrides.json") || "{}";
-    let mem = {}; try { mem = JSON.parse(ovrRaw); } catch(e){}
-    let completed = mem['Completed_Dropins'] ? mem['Completed_Dropins'].split(",") : [];
-    let arrivalMemRaw = mem['Arrival_Memory'] || "";
+    // E1 (RULE-8C): Completed_Dropins / Arrival_Memory are documented
+    // transient global state, not OVR top-level arrays.
+    let completedRaw = global('TDS_Completed_Dropins') || "";
+    let completed = completedRaw ? completedRaw.split(",") : [];
+    let arrivalMemRaw = global('TDS_Arrival_Memory') || "";
     
     let stateChanged = false;
     let survivingEvents = [];
@@ -162,9 +163,8 @@ try {
     validEvents = survivingEvents;
     
     if (stateChanged) {
-        mem['Completed_Dropins'] = completed.join(",");
-        mem['Arrival_Memory'] = arrivalMemRaw;
-        writeFile("Tasker/Tesla/Data/TDS_Overrides.json", JSON.stringify(mem), false);
+        setGlobal('TDS_Completed_Dropins', completed.join(","));
+        setGlobal('TDS_Arrival_Memory', arrivalMemRaw);
     }
 
     let nextGeoCoords = "NONE";
