@@ -243,9 +243,94 @@ try {
   fail('canonical parser section threw: ' + (e && e.message ? e.message : e));
 }
 
-// ---------- Consumer sites (pending — land with the inline remediations) ----------
-// Slice A commit 1 ships the canonical parser and its harness coverage. The
-// three consumer sections (Sandbox_Engine.js / Appender.js / Override_Injector.js
-// skip-on-reject) are added by commit 2 together with the inline parser copies.
+// ---------- Sandbox_Engine.js ----------
 
-console.log('PASS: ID Parsing — canonical parser, bounds, malformed, rejection-log shape');
+try {
+  const validStore = runSandbox(VALID_ID);
+  if (validStore.runError) fail('Sandbox valid ID runError: ' + validStore.runError);
+  if (idParseRejected(validStore)) fail('Sandbox valid ID must not flash ID_PARSE_REJECTED');
+  const validQueue = validStore.locals.block_queue || "";
+  if (!validQueue || validQueue === "EOF" || validQueue.indexOf("EVENT") === -1) {
+    fail('Sandbox valid ID must produce an EVENT queue row');
+  }
+  const eventRow = validQueue.split(";").filter(function (row) { return row.indexOf("EVENT") !== -1; })[0];
+  const eventCols = eventRow.split("|");
+  if (eventCols[9] !== VALID_ID) fail('Sandbox EVENT row col 9 must carry the full occurrence ID');
+
+  const invalidCases = [
+    { id: NO_UNDERSCORE_ID, reason: "malformed_format" },
+    { id: INVALID_SUFFIX_ID, reason: "invalid_suffix" },
+    { id: TRAILING_GARBAGE_ID, reason: "malformed_format" },
+    { id: EMPTY_CORE_ID, reason: "malformed_format" }
+  ];
+  invalidCases.forEach(function (c) {
+    const store = runSandbox(c.id);
+    if (!idParseRejectedShape(store, c.reason, "Sandbox", c.id)) {
+      fail('Sandbox ' + JSON.stringify(c.id) + ' missing ID_PARSE_REJECTED shape flash (reason ' + c.reason + ')');
+    }
+    const q = store.locals.block_queue || "";
+    if (q && q !== "EOF" && q.indexOf("EVENT") !== -1) {
+      fail('Sandbox rejected ' + JSON.stringify(c.id) + ' must not produce an EVENT queue row');
+    }
+  });
+} catch (e) {
+  fail('Sandbox section threw: ' + (e && e.message ? e.message : e));
+}
+
+// ---------- Appender.js ----------
+
+try {
+  const validStore = runAppender(VALID_ID);
+  if (validStore.runError) fail('Appender valid ID runError: ' + validStore.runError);
+  if (idParseRejected(validStore)) fail('Appender valid ID must not flash ID_PARSE_REJECTED');
+  const validOvr = readOvr(validStore);
+  assert.equal(validOvr["Forced_Drives"], VALID_ID, 'Appender valid ID must apply the override');
+
+  const invalidCases = [
+    { id: NO_UNDERSCORE_ID, reason: "malformed_format" },
+    { id: TRAILING_GARBAGE_ID, reason: "malformed_format" },
+    { id: EMPTY_ID, reason: "empty_id" }
+  ];
+  invalidCases.forEach(function (c) {
+    const store = runAppender(c.id);
+    if (!idParseRejectedShape(store, c.reason, "Appender", c.id)) {
+      fail('Appender ' + JSON.stringify(c.id) + ' missing ID_PARSE_REJECTED shape flash (reason ' + c.reason + ')');
+    }
+    const ovr = readOvr(store);
+    if ((ovr["Forced_Drives"] || "").length > 0) {
+      fail('Appender rejected ' + JSON.stringify(c.id) + ' must not persist the ID');
+    }
+  });
+} catch (e) {
+  fail('Appender section threw: ' + (e && e.message ? e.message : e));
+}
+
+// ---------- Override_Injector.js ----------
+
+try {
+  const validStore = runInjector(VALID_ID, "Forced_Drives");
+  if (validStore.runError) fail('Injector valid ID runError: ' + validStore.runError);
+  if (idParseRejected(validStore)) fail('Injector valid ID must not flash ID_PARSE_REJECTED');
+  const validOvr = readOvr(validStore);
+  assert.equal(validOvr["Forced_Drives"], VALID_ID, 'Injector valid ID must apply the override');
+
+  const invalidCases = [
+    { id: NO_UNDERSCORE_ID, reason: "malformed_format" },
+    { id: INVALID_SUFFIX_ID, reason: "invalid_suffix" },
+    { id: TRAILING_GARBAGE_ID, reason: "malformed_format" }
+  ];
+  invalidCases.forEach(function (c) {
+    const store = runInjector(c.id, "Forced_Drives");
+    if (!idParseRejectedShape(store, c.reason, "Override_Injector", c.id)) {
+      fail('Injector ' + JSON.stringify(c.id) + ' missing ID_PARSE_REJECTED shape flash (reason ' + c.reason + ')');
+    }
+    const ovr = readOvr(store);
+    if ((ovr["Forced_Drives"] || "").length > 0) {
+      fail('Injector rejected ' + JSON.stringify(c.id) + ' must not persist the ID');
+    }
+  });
+} catch (e) {
+  fail('Injector section threw: ' + (e && e.message ? e.message : e));
+}
+
+console.log('PASS: ID Parsing — canonical parser, bounds, malformed, rejection-log shape, and three consumer skip-on-reject sites');
