@@ -1,7 +1,8 @@
 // ==========================================
-// UNIVERSAL APPENDER (V10.3)
+// UNIVERSAL APPENDER (V10.3 -> D1)
 // Fully migrated to Tasker/Tesla/Data/ directory structure.
-// Categorized wiping protects orthogonal overrides and history streaks.
+// D1 (RULE-8C): stages APPEND_OVERRIDE commands; the Override Handler
+// performs categorized wiping, the category apply, and history learning.
 // ==========================================
 
 // [ID-2] Strict occurrence-ID parsing (inlined copy; canonical: ID_Parser.js).
@@ -69,114 +70,40 @@ try {
         else if (rawCmd === "IGNOREWALK" || rawCmd === "IGNOREDWALK") targetArray = "Ignored_Walks";
         else if (rawCmd === "TRIMEVENT" || rawCmd === "TRIM") targetArray = "Trimmed_Events";
 
-        var allArrays = [ "Forced_Lifts", "Forced_Transit", "Forced_Walks", "Forced_Drives", "Skipped_Events", "Forced_Lift_Chains", "Forced_Drive_Chains", "Skipped_Pitstops", "Forced_Pitstops", "Ignored_Lateness", "Ignored_Walks", "Trimmed_Events", "Route_History", "Route_Defaults" ];
-
-        var filePath = "Tasker/Tesla/Data/TDS_Overrides.json";
-        var rawFile = readFile(filePath) || "{}";
-        var mem = {};
-        try { mem = JSON.parse(rawFile); } catch(e) {}
-        
-        for (var i = 0; i < allArrays.length; i++) {
-            if (!mem[allArrays[i]]) mem[allArrays[i]] = "";
-        }
-
+        // D1 (RULE-8C): The Override Handler owns TDS_Overrides.json. Appender
+        // stages an APPEND_OVERRIDE command; the handler performs categorized
+        // wiping, the category apply (including FORCEPITSTOP lateness), and
+        // history learning (Route_History/Route_Defaults equivalent).
         if (targetArray !== "") {
-            // [ID-2] Reject malformed/out-of-range occurrence IDs before any mutation.
+            // [ID-2] Reject malformed/out-of-range occurrence IDs before staging.
             var parsedId = parseOccurrenceId(baseId, "Appender");
             if (!parsedId.ok) throw new Error("ID_PARSE_REJECTED: " + baseId + " (" + parsedId.reason + ")");
-            var coreId = parsedId.coreId;
 
-            // [SURGICAL UPGRADE: Categorized Event Wiping]
-            var catMode = ["Forced_Lifts", "Forced_Transit", "Forced_Walks", "Forced_Drives", "Forced_Lift_Chains", "Forced_Drive_Chains"];
-            var catPitstop = ["Skipped_Pitstops", "Forced_Pitstops"];
-            var catState = ["Skipped_Events", "Trimmed_Events"];
-            var catLate = ["Ignored_Lateness"];
-            var catWalk = ["Ignored_Walks"];
+            // Mirror the legacy history semantics so learned keys stay identical.
+            let baseCmd = rawCmd.replace("CHAIN", "").replace("ED", "");
+            if (baseCmd === "SKIP") baseCmd = "SKIPEVENT";
+            if (baseCmd === "TRIM") baseCmd = "TRIMEVENT";
 
-            var activeCategoryArrays = [];
-            if (catMode.indexOf(targetArray) !== -1) activeCategoryArrays = catMode;
-            else if (catPitstop.indexOf(targetArray) !== -1) activeCategoryArrays = catPitstop;
-            else if (catState.indexOf(targetArray) !== -1) activeCategoryArrays = catState;
-            else if (catLate.indexOf(targetArray) !== -1) activeCategoryArrays = catLate;
-            else if (catWalk.indexOf(targetArray) !== -1) activeCategoryArrays = catWalk;
-
-            for (var i = 0; i < activeCategoryArrays.length; i++) { 
-                var arrName = activeCategoryArrays[i];
-                if (mem[arrName].indexOf(baseId) !== -1) {
-                    var items = mem[arrName].split(","); var kept = [];
-                    for (var j = 0; j < items.length; j++) if (items[j].indexOf(baseId) === -1 && items[j].trim() !== "") kept.push(items[j]);
-                    mem[arrName] = kept.join(",");
-                }
+            let modeForHistory = baseCmd;
+            if (rawCmd.indexOf("LATENESS") !== -1) {
+                const pref = data.split("~")[1];
+                if (pref) modeForHistory += "~" + pref;
             }
 
-            var ex = mem[targetArray];
-            mem[targetArray] = ex ? (ex + "," + data) : data;
-            
-            if (rawCmd === "FORCEPITSTOP") {
-                var exLate = mem["Ignored_Lateness"];
-                mem["Ignored_Lateness"] = exLate ? (exLate + "," + data) : data;
-            }
+            let targetCategory = "MODE";
+            if (modeForHistory.indexOf("IGNORELATENESS") !== -1) targetCategory = "LATENESS";
+            else if (modeForHistory.indexOf("IGNOREWALK") !== -1) targetCategory = "WALK";
+            else if (modeForHistory.indexOf("SKIP") !== -1 || modeForHistory.indexOf("TRIM") !== -1) targetCategory = "STATE";
 
-            // [SURGICAL UPGRADE: Universal State Tracker with Categorized Streaks]
-            if (routeSig !== "") {
-                var baseCmd = rawCmd.replace("CHAIN", "").replace("ED", ""); 
-                if (baseCmd === "SKIP") baseCmd = "SKIPEVENT";
-                if (baseCmd === "TRIM") baseCmd = "TRIMEVENT";
-                
-                var modeForHistory = baseCmd;
-                if (rawCmd.indexOf("LATENESS") !== -1) {
-                    var pref = data.split("~")[1];
-                    if (pref) modeForHistory += "~" + pref;
-                }
-
-                var targetCategory = "MODE";
-                if (modeForHistory.indexOf("IGNORELATENESS") !== -1) targetCategory = "LATENESS";
-                else if (modeForHistory.indexOf("IGNOREWALK") !== -1) targetCategory = "WALK";
-                else if (modeForHistory.indexOf("SKIP") !== -1 || modeForHistory.indexOf("TRIM") !== -1) targetCategory = "STATE";
-                
-                // coreId comes from the strict occurrence-ID parse above (lastIndexOf("_")).
-                var routineKey = coreId + "^" + routeSig;
-                var histKey = routineKey + "^" + modeForHistory;
-                
-                if (mem["Route_Defaults"].indexOf(histKey) === -1) {
-                    var histRaw = mem["Route_History"];
-                    var hParts = histRaw ? histRaw.split(",") : [];
-                    var newHist = []; 
-                    var count = 1;
-
-                    for (var h = 0; h < hParts.length; h++) {
-                        if (!hParts[h]) continue;
-                        var hp = hParts[h].split("=");
-                        var storedKey = hp[0];
-
-                        if (storedKey.indexOf(routineKey) === 0) {
-                            if (storedKey === histKey) {
-                                count = parseInt(hp[1], 10) + 1;
-                            } else {
-                                // Check category of competing history entry
-                                var curMod = storedKey.split("^").pop();
-                                var curCat = "MODE";
-                                if (curMod.indexOf("IGNORELATENESS") !== -1) curCat = "LATENESS";
-                                else if (curMod.indexOf("IGNOREWALK") !== -1) curCat = "WALK";
-                                else if (curMod.indexOf("SKIP") !== -1 || curMod.indexOf("TRIM") !== -1) curCat = "STATE";
-
-                                // Only wipe streak if it's the SAME category but a different choice
-                                if (curCat !== targetCategory) {
-                                    newHist.push(hParts[h]);
-                                }
-                            }
-                        } else {
-                            newHist.push(hParts[h]);
-                        }
-                    }
-                    
-                    newHist.push(histKey + "=" + count);
-                    mem["Route_History"] = newHist.join(",");
-
-                    if (count === 3) setLocal('propose_default', histKey);
-                }
-            }
+            setLocal('par1', 'APPEND_OVERRIDE');
+            setLocal('par2', JSON.stringify({
+                baseId: baseId,
+                targetArray: targetArray,
+                routeSig: routeSig,
+                modeForHistory: modeForHistory,
+                targetCategory: targetCategory,
+                alsoAppendLate: rawCmd === "FORCEPITSTOP"
+            }));
         }
-        writeFile(filePath, JSON.stringify(mem), false);
     }
 } catch(e) { flash("Appender Error: " + e.message); } 

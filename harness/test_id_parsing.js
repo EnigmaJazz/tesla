@@ -99,6 +99,7 @@ const sandboxPath = path.resolve(__dirname, '..', 'Sandbox_Engine.js');
 const injectorPath = path.resolve(__dirname, '..', 'Override_Injector.js');
 const appenderPath = path.resolve(__dirname, '..', 'Appender.js');
 const idParserPath = path.resolve(__dirname, '..', 'ID_Parser.js');
+const overrideHandlerPath = path.resolve(__dirname, '..', 'Override_Handler.js');
 
 const OVR_PATH = "Tasker/Tesla/Data/TDS_Overrides.json";
 
@@ -138,7 +139,7 @@ function runInjector(targetId, overrideKey, ovrSeed) {
     nowMs: nowSec * 1000
   });
   runScript(injectorPath, sandbox, store);
-  return store;
+  return consumeStaged(store);
 }
 
 function runAppender(eventId, ovrSeed) {
@@ -151,12 +152,29 @@ function runAppender(eventId, ovrSeed) {
     nowMs: nowSec * 1000
   });
   runScript(appenderPath, sandbox, store);
-  return store;
+  return consumeStaged(store);
 }
 
 function readOvr(store) {
   const raw = store.files[OVR_PATH] || "{}";
   try { return JSON.parse(raw); } catch (e) { return {}; }
+}
+
+// D2 (RULE-8C): Adapters stage commands (par1/par2) instead of writing OVR
+// directly. Consume a staged Override Handler command by running the handler
+// against the same files so the mutation lands in the committed store.
+function consumeStaged(store) {
+  const par1 = store.locals.par1;
+  const knownCommands = ["APPLY_OVERRIDE", "APPEND_OVERRIDE", "SET_DEFAULT", "PRUNE"];
+  if (knownCommands.indexOf(par1) === -1) return store;
+  const { sandbox, store: handlerStore } = createSandbox({
+    locals: { par1: par1, par2: store.locals.par2 },
+    globals: {},
+    files: store.files,
+    nowMs: nowSec * 1000
+  });
+  runScript(overrideHandlerPath, sandbox, handlerStore);
+  return handlerStore;
 }
 
 // Asserts the full LOG-17 structured shape of an ID_PARSE_REJECTED flash.
@@ -283,8 +301,16 @@ try {
   const validStore = runAppender(VALID_ID);
   if (validStore.runError) fail('Appender valid ID runError: ' + validStore.runError);
   if (idParseRejected(validStore)) fail('Appender valid ID must not flash ID_PARSE_REJECTED');
+  if (validStore.locals.par1 !== "APPEND_OVERRIDE") fail('Appender valid ID must stage APPEND_OVERRIDE');
   const validOvr = readOvr(validStore);
   assert.equal(validOvr["Forced_Drives"], VALID_ID, 'Appender valid ID must apply the override');
+  // D2 (RULE-8C): the override lands through the staged command, so the
+  // schema-v2 eventOverrides map carries the mode (not just the projection).
+  if (!validOvr.eventOverrides || !validOvr.eventOverrides[VALID_ID] || validOvr.eventOverrides[VALID_ID].mode !== "drive") {
+    fail('Appender valid ID must consume the staged command into eventOverrides');
+  }
+  const appRv = validStore.locals.return_value || "";
+  if (appRv.indexOf('"ok":true') === -1) fail('Appender staged command must return ok: ' + appRv);
 
   const invalidCases = [
     { id: NO_UNDERSCORE_ID, reason: "malformed_format" },
@@ -295,6 +321,9 @@ try {
     const store = runAppender(c.id);
     if (!idParseRejectedShape(store, c.reason, "Appender", c.id)) {
       fail('Appender ' + JSON.stringify(c.id) + ' missing ID_PARSE_REJECTED shape flash (reason ' + c.reason + ')');
+    }
+    if (store.locals.par1 === "APPEND_OVERRIDE") {
+      fail('Appender rejected ' + JSON.stringify(c.id) + ' must not stage a command');
     }
     const ovr = readOvr(store);
     if ((ovr["Forced_Drives"] || "").length > 0) {
@@ -311,8 +340,16 @@ try {
   const validStore = runInjector(VALID_ID, "Forced_Drives");
   if (validStore.runError) fail('Injector valid ID runError: ' + validStore.runError);
   if (idParseRejected(validStore)) fail('Injector valid ID must not flash ID_PARSE_REJECTED');
+  if (validStore.locals.par1 !== "APPLY_OVERRIDE") fail('Injector valid ID must stage APPLY_OVERRIDE');
   const validOvr = readOvr(validStore);
   assert.equal(validOvr["Forced_Drives"], VALID_ID, 'Injector valid ID must apply the override');
+  // D2 (RULE-8C): the override lands through the staged command, so the
+  // schema-v2 eventOverrides map carries the mode (not just the projection).
+  if (!validOvr.eventOverrides || !validOvr.eventOverrides[VALID_ID] || validOvr.eventOverrides[VALID_ID].mode !== "drive") {
+    fail('Injector valid ID must consume the staged command into eventOverrides');
+  }
+  const injRv = validStore.locals.return_value || "";
+  if (injRv.indexOf('"ok":true') === -1) fail('Injector staged command must return ok: ' + injRv);
 
   const invalidCases = [
     { id: NO_UNDERSCORE_ID, reason: "malformed_format" },
@@ -324,6 +361,9 @@ try {
     if (!idParseRejectedShape(store, c.reason, "Override_Injector", c.id)) {
       fail('Injector ' + JSON.stringify(c.id) + ' missing ID_PARSE_REJECTED shape flash (reason ' + c.reason + ')');
     }
+    if (store.locals.par1 === "APPLY_OVERRIDE") {
+      fail('Injector rejected ' + JSON.stringify(c.id) + ' must not stage a command');
+    }
     const ovr = readOvr(store);
     if ((ovr["Forced_Drives"] || "").length > 0) {
       fail('Injector rejected ' + JSON.stringify(c.id) + ' must not persist the ID');
@@ -331,6 +371,59 @@ try {
   });
 } catch (e) {
   fail('Injector section threw: ' + (e && e.message ? e.message : e));
+}
+
+// --- D2: Default Manager (SET_DEFAULT staging) -----------------------------
+const defaultPath = path.resolve(__dirname, '..', 'Default.js');
+const PREFS_PATH = "Tasker/Tesla/Data/TDS_Routine_Preferences.json";
+
+function runDefault(fullCmd, ovrSeed) {
+  const { sandbox, store } = createSandbox({
+    locals: { command_text: fullCmd },
+    globals: {},
+    files: { [OVR_PATH]: ovrSeed || "{}" },
+    nowMs: nowSec * 1000
+  });
+  runScript(defaultPath, sandbox, store);
+  return consumeStaged(store);
+}
+
+function readPrefs(store) {
+  const raw = store.files[PREFS_PATH] || "{}";
+  try { return JSON.parse(raw); } catch (e) { return {}; }
+}
+
+try {
+  const dRouteSig = homeCoords + "^" + eventCoords;
+  const dKey = VALID_ID + "^" + dRouteSig + "^DRIVE";
+
+  // SET DEFAULT: the staged SET_DEFAULT lands in schema-v2 seriesPreferences
+  // (stored in the prefs file) and mirrors into its Route_Defaults projection.
+  const setStore = runDefault("TDS_SET_DEFAULT|" + dKey);
+  if (setStore.runError) fail('Default set runError: ' + setStore.runError);
+  if (setStore.locals.par1 !== "SET_DEFAULT") fail('Default set must stage SET_DEFAULT');
+  const setPrefs = readPrefs(setStore);
+  if (!setPrefs.seriesPreferences || !setPrefs.seriesPreferences[VALID_ID] || !setPrefs.seriesPreferences[VALID_ID][dRouteSig] || !setPrefs.seriesPreferences[VALID_ID][dRouteSig].defaults["DRIVE"]) {
+    fail('Default set must land in seriesPreferences defaults');
+  }
+  if ((setPrefs["Route_Defaults"] || "").indexOf(dKey) === -1) {
+    fail('Default set must mirror into the Route_Defaults projection');
+  }
+  if (setStore.locals.cancel_id !== VALID_ID) fail('Default set must export cancel_id');
+  const setRv = setStore.locals.return_value || "";
+  if (setRv.indexOf('"ok":true') === -1) fail('Default set must return ok: ' + setRv);
+
+  // WIPE ALL: clears every default and history entry.
+  const wipeStore = runDefault("TDS_CLEAR_DEFAULT|ALL", "{}");
+  if (wipeStore.runError) fail('Default clearAll runError: ' + wipeStore.runError);
+  if (wipeStore.locals.par1 !== "SET_DEFAULT") fail('Default clearAll must stage SET_DEFAULT');
+  const wipePrefs = readPrefs(wipeStore);
+  if ((wipePrefs["Route_Defaults"] || "") !== "") fail('Default clearAll must clear Route_Defaults projection');
+  if ((wipePrefs["Route_History"] || "") !== "") fail('Default clearAll must clear Route_History projection');
+  const wipeRv = wipeStore.locals.return_value || "";
+  if (wipeRv.indexOf('"ok":true') === -1) fail('Default clearAll must return ok: ' + wipeRv);
+} catch (e) {
+  fail('Default section threw: ' + (e && e.message ? e.message : e));
 }
 
 console.log('PASS: ID Parsing — canonical parser, bounds, malformed, rejection-log shape, and three consumer skip-on-reject sites');
