@@ -141,6 +141,40 @@ function runInjector(targetId, overrideKey, ovrSeed) {
   return consumeStaged(store);
 }
 
+// D2: manifest-backed variant — seeds a committed TDS_Run_Manifest.json plus
+// the committed generation's Itin_Master file, so the injector resolves the
+// itinerary through the canonical manifest resolver instead of the legacy
+// Itin_Master.json fallback.
+function runInjectorManifest(targetId, overrideKey) {
+  const gen = "gen:" + nowSec + ":abcd";
+  const genEnc = gen.replace(/:/g, "_");
+  const genItinPath = "Tasker/Tesla/Data/Itin_Master." + genEnc + ".json";
+  const itinGen = JSON.stringify([
+    {
+      tripId: "test_leg",
+      targetEventId: targetId,
+      mode: "DRIVE",
+      targetCoords: eventCoords
+    }
+  ]);
+  const { sandbox, store } = createSandbox({
+    locals: { par1: "0", par2: overrideKey },
+    globals: { User_Loc: homeCoords },
+    files: {
+      "Tasker/Tesla/Data/TDS_Run_Manifest.json": JSON.stringify({
+        state: "committed",
+        activeGeneration: gen,
+        itineraryPath: genItinPath
+      }),
+      [genItinPath]: itinGen,
+      [OVR_PATH]: "{}"
+    },
+    nowMs: nowSec * 1000
+  });
+  runScript(injectorPath, sandbox, store);
+  return consumeStaged(store);
+}
+
 function runAppender(eventId, ovrSeed) {
   const routeSig = homeCoords + "^" + eventCoords;
   const finalReturn = "DRIVE|" + eventId + "|" + routeSig;
@@ -371,6 +405,25 @@ try {
   });
 } catch (e) {
   fail('Injector section threw: ' + (e && e.message ? e.message : e));
+}
+
+// D2 (RULE-8C): manifest-backed injector — the committed itinerary resolves
+// through the manifest resolver (TDS_Run_Manifest.json + generation file),
+// not only the legacy Itin_Master.json fallback.
+try {
+  const mStore = runInjectorManifest(VALID_ID, "Forced_Drives");
+  if (mStore.runError) fail('Injector manifest-backed runError: ' + mStore.runError);
+  if (idParseRejected(mStore)) fail('Injector manifest-backed must not flash ID_PARSE_REJECTED');
+  if (mStore.locals.par1 !== "APPLY_OVERRIDE") fail('Injector manifest-backed must stage APPLY_OVERRIDE');
+  const mOvr = readOvr(mStore);
+  assert.equal(mOvr["Forced_Drives"], VALID_ID, 'Injector manifest-backed must apply the override');
+  if (!mOvr.eventOverrides || !mOvr.eventOverrides[VALID_ID] || mOvr.eventOverrides[VALID_ID].mode !== "drive") {
+    fail('Injector manifest-backed must consume the staged command into eventOverrides');
+  }
+  const mRv = mStore.locals.return_value || "";
+  if (mRv.indexOf('"ok":true') === -1) fail('Injector manifest-backed command must return ok: ' + mRv);
+} catch (e) {
+  fail('Injector manifest-backed section threw: ' + (e && e.message ? e.message : e));
 }
 
 // --- D2: Default Manager (SET_DEFAULT staging) -----------------------------
