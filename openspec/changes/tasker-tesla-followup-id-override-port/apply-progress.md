@@ -5,6 +5,40 @@ Delivery: chained PR, stacked-to-main (PR A of 6).
 
 ---
 
+## Slice D — Adapter conversion to command staging (PR D) — COMPLETE
+
+Branch: `tasker-tesla-followup-id-override-pr-d`
+Harness: `for f in harness/test_*.js; do node "$f"; done` → **17/17 PASS** (all existing + `test_single_writer`).
+
+### Tasks Completed
+
+- [x] **D1.** Convert the four remaining `TDS_Overrides.json` writers to schema-v2 handler command staging (RULE-8C): `Alpha.js` → `PRUNE`, `Appender.js` → `APPEND_OVERRIDE`, `Override_Injector.js` → `APPLY_OVERRIDE`, `Default.js` → `SET_DEFAULT`. All four stage `par1` op + `par2` JSON payload and never write OVR directly.
+- [x] **D2.** Extend the adapter sweep (`harness/test_id_parsing.js`) with a `consumeStaged` helper that runs the staged command through `Override_Handler.js` and asserts the schema-v2 map (not just the projection) plus the `return_value` result; add the Default Manager staging section (previously untested).
+
+### Files Changed
+
+| File | Action | What Was Done |
+|------|--------|---------------|
+| `Alpha.js` | Modified | D1.1: replaced the inline 15-array prune + OVR write with `PRUNE` command staging (`{ nowSec, whitelistMap }`). Kept the top-level OVR read (feeds `trimmedEventsRaw`); OVR top-level memory arrays stay as untouched projections until Slice E removes Compiler/Finaliser reads. |
+| `Appender.js` | Modified | D1: replaced the direct OVR write (categorized wipe + append + Route_History streaks + `propose_default`) with `APPEND_OVERRIDE` staging (`baseId`, `targetArray`, `routeSig`, `modeForHistory`, `targetCategory`, `alsoAppendLate`). ID-parse rejection still aborts before staging. |
+| `Override_Injector.js` | Modified | D1: replaced the direct OVR toggle + history learning with `APPLY_OVERRIDE` staging (`targetId`, `overrideKey`, `origCoords`, `destCoords`, `baseCmd`). The itinerary read now uses the canonical `readActiveGeneration` resolver (inlined local copy, `TDS_Helper.js` source of truth) instead of the legacy `Itin_Master.json` read; ID-parse rejection aborts before staging. |
+| `Default.js` | Modified | D1: replaced the direct `Route_Defaults`/`Route_History` write with `SET_DEFAULT` staging (`targetKey`, `isSet`, `clearAll`). |
+| `harness/test_id_parsing.js` | Modified | D2: added `consumeStaged` (runs staged `par1`/`par2` through `Override_Handler.js` in the shared mock filesystem, returns the store) and wired it into `runInjector`/`runAppender`; assertions now prove the schema-v2 map carries the override (`eventOverrides[id].mode === "drive"`, lowercase canonical) plus `return_value` `ok:true`. Added a Default Manager section: `SET_DEFAULT` lands in `seriesPreferences` defaults, mirrors into the `Route_Defaults` projection, exports `cancel_id`; `CLEAR_DEFAULT ALL` clears both projections. |
+
+### Deviations from Design
+
+1. **Canonical mode value is lowercase.** The handler stores `"drive"`, not `"DRIVE"` (memory #181); the D2 sweep assertions use the lowercase spelling.
+2. **Default Manager had zero harness coverage.** The design only specified the sweep-helper conversion; the new Default section closes the untested surface rather than leaving the D1 conversion unproven.
+
+### Workload / PR Boundary
+
+- Mode: chained PR slice (stacked-to-main), PR D of 6.
+- Commit: pending (adapters + sweep tests).
+- Changed lines: ~606 (475 production + 97 test + 34 ledger) vs 400 budget — **size overage flagged for maintainer decision** (same pattern as slices A/B/C; the port's conversions are mostly deletions: 205 insertions / 373 deletions across the four adapters).
+- Rollback boundary: revert the D1/D2 commit on `pr-d`; slices E-F files untouched.
+
+---
+
 ## Slice C — Operations and projections (PR C) — COMPLETE
 
 Branch: `tasker-tesla-followup-id-override-pr-c`
