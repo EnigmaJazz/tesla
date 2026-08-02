@@ -32,7 +32,8 @@ Harness: `for f in harness/test_*.js; do node "$f"; done` → **17/17 PASS** (al
 ### Workload / PR Boundary
 
 - Mode: chained PR slice (stacked-to-main), PR E of 6.
-- Commit: pending (mutators + Sandbox readers + E2 tests).
+- PR: https://github.com/EnigmaJazz/tesla/pull/23
+- Commit: `7c30698` (E1/E2).
 - Changed lines: ~191 production + 156 test + ledger vs 400 budget — within budget.
 - Rollback boundary: revert the E1/E2 commit on `pr-e`; slice F (ownership guard) files untouched.
 
