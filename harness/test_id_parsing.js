@@ -99,7 +99,6 @@ const sandboxPath = path.resolve(__dirname, '..', 'Sandbox_Engine.js');
 const injectorPath = path.resolve(__dirname, '..', 'Override_Injector.js');
 const appenderPath = path.resolve(__dirname, '..', 'Appender.js');
 const idParserPath = path.resolve(__dirname, '..', 'ID_Parser.js');
-const overrideHandlerPath = path.resolve(__dirname, '..', 'Override_Handler.js');
 
 const OVR_PATH = "Tasker/Tesla/Data/TDS_Overrides.json";
 
@@ -168,12 +167,13 @@ function consumeStaged(store) {
   const knownCommands = ["APPLY_OVERRIDE", "APPEND_OVERRIDE", "SET_DEFAULT", "PRUNE"];
   if (knownCommands.indexOf(par1) === -1) return store;
   const { sandbox, store: handlerStore } = createSandbox({
-    locals: { par1: par1, par2: store.locals.par2 },
     globals: {},
     files: store.files,
     nowMs: nowSec * 1000
   });
-  runScript(overrideHandlerPath, sandbox, handlerStore);
+  // F1: consume through the mock handler() shim so __currentScriptPath
+  // identifies the Override Handler and its OVR/PREFS writes pass the guard.
+  sandbox.handler(par1, JSON.parse(store.locals.par2));
   return handlerStore;
 }
 

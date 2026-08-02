@@ -21,7 +21,10 @@ const { runScript } = require('./runner');
 
 const PUBLISHER_PATH = path.resolve(__dirname, '..', 'Generation_Publisher.js');
 const REDUCER_PATH = path.resolve(__dirname, '..', 'Trip_State_Reducer.js');
+const OVERRIDE_HANDLER_PATH = path.resolve(__dirname, '..', 'Override_Handler.js');
 const PHASE3_STATE_PATH = "Tasker/Tesla/Data/TDS_Trip_State.json";
+const OVERRIDE_PATH = "Tasker/Tesla/Data/TDS_Overrides.json";
+const PREFS_PATH = "Tasker/Tesla/Data/TDS_Routine_Preferences.json";
 
 function createSandbox(options) {
   options = options || {};
@@ -70,6 +73,18 @@ function createSandbox(options) {
     return local('return_value');
   }
 
+  // handler(op, payload): runs the Override Handler through its own staged
+  // command entry (par1 op / par2 JSON payload) with __currentScriptPath set so
+  // its OVR/PREFS writes pass the ownership guard. Mirrors reducer().
+  function handler(command, payload) {
+    setLocal('par1', command);
+    setLocal('par2', JSON.stringify(payload));
+    sandbox.__currentScriptPath = OVERRIDE_HANDLER_PATH;
+    runScript(OVERRIDE_HANDLER_PATH, sandbox, store);
+    sandbox.__currentScriptPath = '';
+    return local('return_value');
+  }
+
   function local(key) {
     return Object.prototype.hasOwnProperty.call(liveLocals, key) ? liveLocals[key] : "";
   }
@@ -95,6 +110,9 @@ function createSandbox(options) {
     if (path === PHASE3_STATE_PATH && sandbox.__currentScriptPath !== REDUCER_PATH) {
       throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
     }
+    if ((path === OVERRIDE_PATH || path === PREFS_PATH) && sandbox.__currentScriptPath !== OVERRIDE_HANDLER_PATH) {
+      throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
+    }
     if (matchesAny(path, writeThrows)) throw new Error("injected write failure: " + path);
     const s = stringify(content);
     const written = matchesAny(path, tornWrites) ? s.slice(0, Math.max(0, s.length - 4)) : s;
@@ -103,6 +121,9 @@ function createSandbox(options) {
     writeOrder.push(path);
   }
   function deleteFile(path) {
+    if ((path === OVERRIDE_PATH || path === PREFS_PATH) && sandbox.__currentScriptPath !== OVERRIDE_HANDLER_PATH) {
+      throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
+    }
     delete liveFiles[path];
     writeLog.push({ op: "delete", path: path });
     deleteOrder.push(path);
@@ -154,7 +175,8 @@ function createSandbox(options) {
     Boolean: Boolean,
     __currentScriptPath: '',
     publish: publish,
-    reducer: reducer
+    reducer: reducer,
+    handler: handler
   };
 
   const store = {
