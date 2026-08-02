@@ -13,8 +13,8 @@ Each slice targets the preceding slice, is independently testable, and is revert
 - [ ] **B2.** Implement one-time legacy preference migration, PREFS-first/read-back deployment, exact snapshot restoration or deletion on failure, and rollback tests using torn-write injection (Protected Preference Migration scenarios). Files: `Override_Handler.js`, `harness/test_single_writer.js`.
 
 ### Slice C — Operations and projections (PR C)
-- [ ] **C1.** Add RED/verification coverage for `APPLY_OVERRIDE`, `APPEND_OVERRIDE`, `SET_DEFAULT`, `PRUNE`, exact-key decoys, projections, and global-array pruning (Serialized Override Command API scenarios).
-- [ ] **C2.** Implement all four operations; **APPLY_OVERRIDE MUST toggle the exact key and remove only exact conflicting-category keys via `exactKeyRemove`/`categorizedWipe`**, while preserving compatible history/default projections (CMD-9, OVR-10). File: `Override_Handler.js`.
+- [x] **C1.** Add RED/verification coverage for `APPLY_OVERRIDE`, `APPEND_OVERRIDE`, `SET_DEFAULT`, `PRUNE`, exact-key decoys, projections, and global-array pruning (Serialized Override Command API scenarios).
+- [x] **C2.** Implement all four operations; **APPLY_OVERRIDE MUST toggle the exact key and remove only exact conflicting-category keys via `exactKeyRemove`/`categorizedWipe`**, while preserving compatible history/default projections (CMD-9, OVR-10). File: `Override_Handler.js`.
 
 ### Slice D — Primary adapters (PR D)
 - [ ] **D1.** Convert `Alpha.js`, `Appender.js`, `Default.js`, and `Override_Injector.js` to staged Handler commands; switch Injector to `readActiveGeneration('itinerary')` with legacy fallback and preserve UI rerun behavior (RULE-8C, PUB-7; manifest-backed injection). Files: four adapters.
