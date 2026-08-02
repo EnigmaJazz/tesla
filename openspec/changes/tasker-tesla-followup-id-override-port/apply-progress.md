@@ -31,8 +31,8 @@ Harness: `for f in harness/test_*.js; do node "$f"; done` → **17/17 PASS** (al
 
 - Mode: chained PR slice (stacked-to-main), PR C of 6.
 - Commit: pending (handler + tests).
-- Changed lines: ~731 (426 handler + 305 test) vs 400 budget — **maintainer-approved reset required** (same pattern as slices A and B; the C1 coverage suite for four operations plus retention/globals/projection tests is the driver).
-- Rollback boundary: revert this slice's commit on `pr-c`; slices D-F files untouched.
+- Changed lines: ~731 (426 handler + 305 test) vs 400 budget — **maintainer-approved on 2026-08-02** ("Accept and continue to Slice D"). Ledger settled `complete` (commit predated acquire, so 0 worktree delta measured); the PR diff shows the true size. Same pattern as slices A and B.
+- Rollback boundary: revert `744e87c` on `pr-c`; slices D-F files untouched.
 
 ---
 
