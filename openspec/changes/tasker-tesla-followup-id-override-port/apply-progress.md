@@ -1,8 +1,39 @@
 # Apply Progress: Port ID Parsing and Override Ownership
 
 Change: `tasker-tesla-followup-id-override-port`
-Slice: **A — Parser foundation (PR A)** — COMPLETE
-Delivery: chained PR, stacked-to-main (PR A of 6). Branch: `tasker-tesla-followup-id-override-pr-a`
+Delivery: chained PR, stacked-to-main (PR A of 6).
+
+---
+
+## Slice B — Override Handler shell + migration (PR B) — COMPLETE
+
+Branch: `tasker-tesla-followup-id-override-pr-b`
+Harness: `for f in harness/test_*.js; do node "$f"; done` → **17/17 PASS** (16 existing + `test_single_writer`).
+
+### Tasks Completed
+
+- [x] **B1.** Create `Override_Handler.js` with `par1` command dispatch, schema-v2 OVR/PREFS stores, exact-key helpers, and four-hour/24-hour/12-hour retention boundaries (CMD-9, OVR-10, PRUNE scenario).
+- [x] **B2.** Implement one-time legacy preference migration, PREFS-first/read-back deployment, exact snapshot restoration or deletion on failure, and rollback tests using torn-write injection (Protected Preference Migration scenarios). Files: `Override_Handler.js`, `harness/test_single_writer.js`.
+
+### Files Changed
+
+| File | Action | What Was Done |
+|------|--------|---------------|
+| `Override_Handler.js` | Created | Sole writer shell for `TDS_Overrides.json`/`TDS_Routine_Preferences.json` (RULE-8C). Entry point mirrors `Trip_State_Reducer`: `%par1` op + `%par2` JSON payload, result staged via `return_value`. Schema-v2 stores (`eventOverrides` / `seriesPreferences` maps) with legacy top-level arrays kept as compatibility projections (never membership authorities). Exact-key helpers (`hasExactKey`, `exactKeyRemove`) — no substring membership. Named retention boundaries: `DEPART_WINDOW_SECS` (4h), `ROUTINE_RETENTION_SECS` (24h), `FUTURE_EXCLUSION_SECS` (12h). Canonical ID parser copy (ID-2) with `ID_PARSE_REJECTED` logging. Dispatch routes the four ops to Slice-C stubs (`not_implemented_slice_c`). `ensureMigrated()` runs on every dispatch: one-time legacy `Route_Defaults`/`Route_History` migration, PREFS commits first then OVR, each with exact read-back; any failure restores exact prior bytes/absence and returns an ERROR result. |
+| `harness/test_single_writer.js` | Created | Slice B coverage: shell dispatch (route to stub, unknown op, missing command), exact-key substring-decoy removal (decoy `xyzabc123_kx8f00` untouched when `abc123_kx8f00` removed), one-time successful migration (PREFS contains both values, OVR contains neither key, projections survive), idempotent second use, failed-write rollback (writeThrows → original bytes recoverable, PREFS absent), torn-write rollback (read-back rejects → no partial authoritative state). |
+
+### Workload / PR Boundary
+
+- Mode: chained PR slice (stacked-to-main), PR B of 6.
+- Commit: `bcdd1b3` (feat: Override Handler shell + protected migration + tests).
+- Changed lines: 438 (243 handler + 195 test) vs 400 budget — **maintainer-approved reset** (ledger `reset-slice-b-1`, reason `maintainer-approved-slice-b-438-lines`). Design estimate was 340-390; the shell plus migration suite ran 38 lines long. No re-slice requested.
+- Rollback boundary: revert `bcdd1b3` on this branch; slices C-F files untouched.
+
+---
+
+## Slice A — Parser foundation (PR A) — COMPLETE
+
+Branch: `tasker-tesla-followup-id-override-pr-a`
 Harness: `for f in harness/test_*.js; do node "$f"; done` → **16/16 PASS** (15 existing + `test_id_parsing`).
 
 ## Tasks Completed
