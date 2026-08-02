@@ -8,8 +8,10 @@ requirements: 6/6
 scenarios: 13/13
 test_command: for f in harness/test_*.js; do node "$f"; done
 test_exit_code: 0
+test_output_hash: sha256:f52e6b8cdfd75b591e6f627855bc2bd5a2a2e4130a81453265a9fa3d9850c60b
 build_command: node --check Override_Handler.js && node --check harness/mock_tasker.js && node --check harness/test_id_parsing.js && node --check harness/test_single_writer.js
 build_exit_code: 0
+build_output_hash: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
 
 # Verify Report: Port ID Parsing and Override Ownership
