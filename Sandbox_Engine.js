@@ -477,10 +477,11 @@ try {
                     }
                     // Slice B (AC-5/0E): base arrival completes the active
                     // manual return. Read the reducer state, find the
-                    // IN_PROGRESS/ARRIVED trip (the manual return), and
-                    // submit COMPLETE_TRIP so the trip lifecycle ends and
-                    // the action lock can close downstream (B3). Tomorrow's
-                    // PLANNED trips are never touched by the reducer.
+                    // IN_PROGRESS/ARRIVED trip on TODAY's planning day (the
+                    // manual return), and submit COMPLETE_TRIP so the trip
+                    // lifecycle ends and the action lock can close downstream
+                    // (B3). Other-day active trips and tomorrow's PLANNED
+                    // trips are never touched by the reducer.
                     // manualReturnCompleted records the success signal.
                     let activeManualTrips = [];
                     try {
@@ -488,9 +489,10 @@ try {
                         if (stRaw) {
                             const st = JSON.parse(stRaw);
                             const trips = st.trips || {};
+                            const todayLabel = localPlanningDay(nowSec);
                             Object.keys(trips).forEach(function (tid) {
                                 const t = trips[tid];
-                                if (t && (t.lifecycleState === 'IN_PROGRESS' || t.lifecycleState === 'ARRIVED')) {
+                                if (t && (t.lifecycleState === 'IN_PROGRESS' || t.lifecycleState === 'ARRIVED') && t.currentPlanningDay === todayLabel) {
                                     activeManualTrips.push(tid);
                                 }
                             });
