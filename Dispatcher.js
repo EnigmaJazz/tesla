@@ -148,12 +148,13 @@ try {
         const depUnix = parseInt(trip.departUnix || trip.time || 0, 10) || 0;
 
         if (tripMode === "DRIVE" || tripMode === "EOD_RETURN" || tripMode === "WALK" || tripMode === "TRANSIT" || tripMode === "LIFT") {
-            // AC-5 (Slice B): a leg on a future local planning day is never
-            // actionable today. Reject it explicitly instead of selecting it
-            // as bestFuture and letting the vehicle act on tomorrow's trip.
+            // AC-5 (Slice B): a leg on a FUTURE local planning day is never
+            // actionable today. Compare day labels lexicographically (YYYY-
+            // MM-DD sorts correctly); prior-day legs fall through to the
+            // stale/relevance logic below rather than being mislabelled.
             const tripDay = (trip.planningDay || "").trim();
             const todayDay = localPlanningDay(nowSec);
-            if (tripDay !== "" && tripDay !== todayDay) {
+            if (tripDay !== "" && tripDay > todayDay) {
                 flash(JSON.stringify({
                     timestamp: nowSec,
                     generationId: global('TDS_Active_Generation') || null,
