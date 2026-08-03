@@ -179,7 +179,9 @@ try {
         stopUiStr: stopUiStr,
         apiType: apiType,
         actionType: actionType,
-        apiUnix: apiUnix
+        apiUnix: apiUnix,
+        planningDay: local('block_step20') || null,
+        originSource: local('block_step21') || null
     };
 
     let pendingCompilerRaw = readFile("Tasker/Tesla/Data/Pending_Compiler.json") || "[]";
@@ -467,6 +469,8 @@ try {
                 targetCoords: leg.targetCoords,
                 mode: leg.mode,
                 departurePolicy: leg.departurePolicy,
+                planningDay: leg.planningDay,
+                originSource: leg.originSource,
                 departUnix: leg.actualDeparture,
                 arriveUnix: leg.actualArrival,
                 durationSecs: leg.durationSecs,
