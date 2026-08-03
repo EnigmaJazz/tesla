@@ -475,6 +475,42 @@ try {
                     if (typeof reducer === 'function') {
                         reducer('OBSERVE_LIVE_BASE', { generationId: global('TDS_Active_Generation') || "gen:0:0000", at: nowSec });
                     }
+                    // Slice B (AC-5/0E): base arrival completes the active
+                    // manual return. Read the reducer state, find the
+                    // IN_PROGRESS/ARRIVED trip on TODAY's planning day (the
+                    // manual return), and submit COMPLETE_TRIP so the trip
+                    // lifecycle ends and the action lock can close downstream
+                    // (B3). Other-day active trips and tomorrow's PLANNED
+                    // trips are never touched by the reducer.
+                    // manualReturnCompleted records the success signal.
+                    let activeManualTrips = [];
+                    try {
+                        const stRaw = readFile("Tasker/Tesla/Data/TDS_Trip_State.json") || "";
+                        if (stRaw) {
+                            const st = JSON.parse(stRaw);
+                            const trips = st.trips || {};
+                            const todayLabel = localPlanningDay(nowSec);
+                            Object.keys(trips).forEach(function (tid) {
+                                const t = trips[tid];
+                                if (t && (t.lifecycleState === 'IN_PROGRESS' || t.lifecycleState === 'ARRIVED') && t.currentPlanningDay === todayLabel) {
+                                    activeManualTrips.push(tid);
+                                }
+                            });
+                        }
+                    } catch (e) {}
+                    activeManualTrips.forEach(function (tid) {
+                        const completionPayload = {
+                            generationId: global('TDS_Active_Generation') || "gen:0:0000",
+                            tripId: tid,
+                            at: nowSec,
+                            planningDay: localPlanningDay(nowSec)
+                        };
+                        setLocal('par1', 'COMPLETE_TRIP');
+                        setLocal('par2', JSON.stringify(completionPayload));
+                        if (typeof reducer === 'function') {
+                            reducer('COMPLETE_TRIP', completionPayload);
+                        }
+                    });
                 } else if (!currentlyAtBase && prevAtBase) {
                     setGlobal('User_At_Base', "false");
                 }
@@ -538,6 +574,11 @@ try {
         }
 
         let queue = []; let notifQueue = []; let blockMode = null; let skipIdx = idx; let stepConflict = "";
+        // Slice B (AC-5/INV-0.4): tracks whether any real planned travel row
+        // was enqueued this pass. The tail EOD return is legitimate only when
+        // the day actually had planned travel; an observation-only day must
+        // suppress it (REQ-INV0_4-1).
+        let plannedEventSeen = false;
         let stateHistory = {};
 
         // INV-0.1 / AC-1: every planned queue row must carry an explicit
@@ -908,13 +949,23 @@ try {
                 break;
             }
 
-            if (evId.indexOf("_OUT") !== -1 && (distToEventDirect < 300 || isMeetingLatched)) {
+            // Observation marker is case-insensitive: cores like "walk_out"
+            // carry the movement marker in lowercase while some sources emit
+            // uppercase "_OUT" (legacy structural convention, not a suffix
+            // inference). Match both so the observation row is enqueued and
+            // the tail EOD return stays suppressed.
+            if (evId.toUpperCase().indexOf("_OUT") !== -1 && (distToEventDirect < 300 || isMeetingLatched)) {
                 let sDepMatch = evDesc.match(/(?:#dep:|#leave:)(\d+)/i);
                 let evDepBufSecs = (sDepMatch ? parseInt(sDepMatch[1], 10) : defDepMins) * 60;
                 state.time = Math.max(state.time, evEnd) + evDepBufSecs;
                 state.loc = evCoords;
                 simAtBase = false;
                 skipIdx = i + 1;
+                // Slice B (INV-0.4): represent the observed movement as an
+                // observation row (WALK), not a planning instruction. The
+                // pass must still emit a queue so downstream knows the user
+                // moved, but the tail EOD return is suppressed below.
+                enqueuePlannedRow(["WALK", evTitle, evCoords, "WALK", state.time, evEnd, "false", "DEPART", state.time, evId, evLoc, "0", "true", "none", encodeURIComponent(evDesc), ""], "JIT", chainPlanningDay);
                 continue;
             }
 
@@ -1465,6 +1516,7 @@ try {
             })();
 
             enqueuePlannedRow(["EVENT", evTitle, evCoords, routeToEv.mode, displayTime, trueDepartureTime, pitstopState, apiTimeType, apiTimeUnix, evId, evLoc, engineLateMins, currentLegStable, dropinStatusFlag, safeDesc, adHocObj.arr.join(",")], legPolicy);
+            plannedEventSeen = true;
 
             if (i === idx) state.isStableOrigin = false;
             state.loc = evCoords; state.time = trueDepartureTime;
@@ -1474,6 +1526,20 @@ try {
         }
 
         if (skipIdx > master.length && stepConflict === "") {
+            if (!plannedEventSeen) {
+                // Slice B (REQ-INV0_4-1): unplanned empty-day movement must
+                // not create a return. No planned travel was enqueued this
+                // pass, so a tail EOD return would be synthetic.
+                flash(JSON.stringify({
+                    timestamp: nowSec,
+                    generationId: global('TDS_Active_Generation') || null,
+                    component: "Sandbox",
+                    severity: "INFO",
+                    code: "SYNTHETIC_RETURN_SUPPRESSED",
+                    tripId: null,
+                    details: { reason: "observation-only day; no planned travel", queueRows: queue.length }
+                }));
+            } else {
             let eodBase = getBase(state.time);
             let distToEndBase = getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(eodBase.coords.split(",")[0]), parseFloat(eodBase.coords.split(",")[1]));
             
@@ -1495,6 +1561,7 @@ try {
 
                 enqueuePlannedRow(["EOD_RETURN", eodBase.name, eodBase.coords, eodMode, state.time, (state.time + 3600), "end_of_day", "DEPART", state.time, finalAnchorId, eodBase.name, "0", "true", "none", "Return Journey"], "ASAP");
                 simAtBase = true;
+            }
             }
         }
 

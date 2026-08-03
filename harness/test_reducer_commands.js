@@ -113,6 +113,30 @@ function testConcurrencySameTick() {
   assert.strictEqual(state.revision, 0, 'stub commands must not increment revision');
 }
 
+// Slice B (AC-5): COMPLETE_TRIP validation contract. The command must accept
+// an optional planningDay label alongside tripId/at, reject a payload missing
+// required fields, and never write state on rejection.
+function testCompleteTripRejectsMissingFields() {
+  const { sandbox, store } = make();
+  const r1 = runReducer(sandbox, store, 'COMPLETE_TRIP', { generationId: GEN_ID, at: nowSec });
+  assert.match(r1, /^ERROR:/, 'COMPLETE_TRIP missing tripId must return error');
+  const r2 = runReducer(sandbox, store, 'COMPLETE_TRIP', { generationId: GEN_ID, tripId: 'trip_x' });
+  assert.match(r2, /^ERROR:/, 'COMPLETE_TRIP missing at must return error');
+  const logs = parseLog(store);
+  const rejections = logs.filter(function (l) { return l.code === 'GENERATION_VALIDATION_FAILED'; });
+  assert.strictEqual(rejections.length, 2, 'each invalid payload must log GENERATION_VALIDATION_FAILED');
+  assert(!store.files[STATE], 'rejected COMPLETE_TRIP must not write state');
+}
+
+function testCompleteTripAcceptsPlanningDay() {
+  // planningDay is optional but must be accepted when present.
+  const { sandbox, store } = make();
+  runReducer(sandbox, store, 'COMPLETE_TRIP', { generationId: GEN_ID, tripId: 'trip_y', at: nowSec, planningDay: '2023-11-14' });
+  const logs = parseLog(store);
+  const accepted = logs.find(function (l) { return l.code === 'TRIP_STATE_COMMAND_ACCEPTED'; });
+  assert(accepted, 'COMPLETE_TRIP with planningDay must be accepted');
+}
+
 try {
   testUnauthorizedWriter();
   testInvalidCommandName();
@@ -122,6 +146,8 @@ try {
   testObservability();
   testDirectRunScriptGuarded();
   testConcurrencySameTick();
+  testCompleteTripRejectsMissingFields();
+  testCompleteTripAcceptsPlanningDay();
   console.log('PASS: reducer-commands: reducer shell, contract, and atomicity');
 } catch (e) {
   fail(e.message);

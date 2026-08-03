@@ -15,6 +15,17 @@ const RELEVANCE_DROPIN_GRACE_SECS = 15 * 60;  // INV-0.6: drop-in explicit deadl
 
 const SECONDS_PER_DAY = 86400;
 
+// AC-5 (Slice B): local planning-day label for a unix timestamp. Mirrors
+// Sandbox_Engine's localPlanningDay (reader-convergence: byte-identical
+// local copy for Tasker standalone isolation).
+function localPlanningDay(targetUnixSecs) {
+    let d = new Date(targetUnixSecs * 1000);
+    let y = d.getFullYear();
+    let m = ("0" + (d.getMonth() + 1)).slice(-2);
+    let day = ("0" + d.getDate()).slice(-2);
+    return y + "-" + m + "-" + day;
+}
+
 // INV-0.2: DST-safe day-boundary comparison. Both unixSec values are in UTC.
 function isSameUTCDay(unixSecA, unixSecB) {
     const dA = new Date(unixSecA * 1000);
@@ -137,6 +148,25 @@ try {
         const depUnix = parseInt(trip.departUnix || trip.time || 0, 10) || 0;
 
         if (tripMode === "DRIVE" || tripMode === "EOD_RETURN" || tripMode === "WALK" || tripMode === "TRANSIT" || tripMode === "LIFT") {
+            // AC-5 (Slice B): a leg on a FUTURE local planning day is never
+            // actionable today. Compare day labels lexicographically (YYYY-
+            // MM-DD sorts correctly); prior-day legs fall through to the
+            // stale/relevance logic below rather than being mislabelled.
+            const tripDay = (trip.planningDay || "").trim();
+            const todayDay = localPlanningDay(nowSec);
+            if (tripDay !== "" && tripDay > todayDay) {
+                flash(JSON.stringify({
+                    timestamp: nowSec,
+                    generationId: global('TDS_Active_Generation') || null,
+                    component: "Dispatcher",
+                    severity: "INFO",
+                    code: "FUTURE_TRIP_NOT_DUE",
+                    tripId: trip.tripId || null,
+                    details: { planningDay: tripDay, depUnix: depUnix, nowSec: nowSec }
+                }));
+                continue;
+            }
+
             const relDeadline = relevanceDeadlineForLeg(trip, nowSec);
             if (nowSec >= relDeadline) {
                 skippedStale++;
