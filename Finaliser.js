@@ -243,7 +243,16 @@ try {
                 setGlobal('Engine_Output_Itinerary', JSON.stringify(newItin));
             }
         } else {
-            writeFile(overrideFile, "{}", false);
+            // Slice B (AC-5/0E/B3): clear the stale action lock only after a
+            // successful reducer completion. The reducer records
+            // manualReturnCompleted=true when COMPLETE_TRIP succeeds; without
+            // that explicit signal the lock must survive (no session file).
+            let completionSeen = false;
+            try {
+                let stRaw = readFile("Tasker/Tesla/Data/TDS_Trip_State.json") || "";
+                if (stRaw) completionSeen = (JSON.parse(stRaw).manualReturnCompleted === true);
+            } catch(e) {}
+            if (completionSeen) writeFile(overrideFile, "{}", false);
         }
     }
 

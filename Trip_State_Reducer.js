@@ -191,6 +191,32 @@ function applyCompleteDropin(state, payload) {
   next.revision = state.revision + 1;
   return next;
 }
+// Slice B (AC-5/0E): idempotent COMPLETE_TRIP. Only the matched
+// IN_PROGRESS/ARRIVED trip becomes COMPLETED; completedUnix and
+// lastActivityUnix are set. A repeated completion, an unknown trip, or a
+// PLANNED later-day trip is a no-op — later-day trips remain unchanged.
+// manualReturnCompleted records the successful completion so the action
+// lock can be closed downstream (B3) without a session file.
+function applyCompleteTrip(state, payload) {
+  const next = JSON.parse(JSON.stringify(state));
+  const tripId = payload.tripId;
+  const tr = next.trips[tripId];
+  if (!tr) {
+    return state;
+  }
+  if (tr.lifecycleState !== 'IN_PROGRESS' && tr.lifecycleState !== 'ARRIVED') {
+    return state;
+  }
+  tr.lifecycleState = 'COMPLETED';
+  tr.completedUnix = payload.at;
+  tr.lastActivityUnix = payload.at;
+  if (payload.planningDay) {
+    tr.currentPlanningDay = payload.planningDay;
+  }
+  next.manualReturnCompleted = true;
+  next.revision = state.revision + 1;
+  return next;
+}
 var COMMANDS = [
   { name: "SET_OVERRIDE", validate: function(p) { return validateFields(p, [{name:"key",type:"string",required:true},{name:"value",type:"any",required:true}]); }, apply: stubApply },
   { name: "REMOVE_OVERRIDE", validate: function(p) { return validateFields(p, [{name:"key",type:"string",required:true}]); }, apply: stubApply },
@@ -205,7 +231,7 @@ var COMMANDS = [
   { name: "OBSERVE_DEPARTURE", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true},{name:"planningDay",type:"string",required:false}]); }, apply: applyObserveDeparture },
   { name: "OBSERVE_ARRIVAL", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true},{name:"accuracyM",type:"number",required:true}]); }, apply: applyObserveArrival },
   { name: "RECONCILE_GENERATION", validate: function(p) { return validateFields(p, [{name:"activeGeneration",type:"string",required:true},{name:"manifestSchemaVersion",type:"number",required:false}]); }, apply: applyReconcile },
-  { name: "COMPLETE_TRIP", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
+  { name: "COMPLETE_TRIP", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true},{name:"planningDay",type:"string",required:false}]); }, apply: applyCompleteTrip },
   { name: "EXPIRE_TRIP", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
   { name: "OBSERVE_LIVE_BASE", validate: function(p) { return validateFields(p, [{name:"at",type:"number",required:false}]); }, apply: applyObserveLiveBase }
 ];
