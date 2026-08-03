@@ -106,9 +106,9 @@ function runScenario(virtualLoc) {
 function assertRowsHavePolicy(rows, label) {
   rows.forEach(function (row, idx) {
     const cols = row.split("|");
-    const last = cols[cols.length - 1];
-    if (last !== "ASAP" && last !== "JIT") {
-      throw new Error(label + ' row ' + idx + ' missing explicit ASAP/JIT policy (got ' + JSON.stringify(last) + ')');
+    const policy = cols[18];
+    if (policy !== "ASAP" && policy !== "JIT") {
+      throw new Error(label + ' row ' + idx + ' missing explicit ASAP/JIT policy at col 19 (got ' + JSON.stringify(policy) + ')');
     }
   });
 }
@@ -128,7 +128,7 @@ try {
   const rowsHome = queueHome.split("~");
   const headHome = rowsHome[0].split("|");
   if (headHome.length < 18) fail('control head expected at least 18 columns, got ' + headHome.length);
-  if (headHome[headHome.length - 1] !== "JIT") fail('control head policy should be JIT, got ' + headHome[headHome.length - 1]);
+  if (headHome[18] !== "JIT") fail('control head policy (col 19) should be JIT, got ' + headHome[18]);
   assertRowsHavePolicy(rowsHome, 'control');
 
   const overrideHome = storeHome.flashLog.some(function (m) {
@@ -178,19 +178,70 @@ try {
     fail('stale-away queue should match control queue after live-base override;\n  away:   ' + queueAway + '\n  home:   ' + queueHome);
   }
 
-  const headPolicy = headAway[headAway.length - 1];
-  if (headPolicy !== "JIT") fail('stale-away head policy should be JIT, got ' + headPolicy);
+  const headPolicy = headAway[18];
+  if (headPolicy !== "JIT") fail('stale-away head policy (col 19) should be JIT, got ' + headPolicy);
 
   const blockStep19 = storeAway.locals['block_step19'];
   if (blockStep19 !== "JIT") fail('stale-away block_step19 should be JIT, got ' + blockStep19);
 
   assertRowsHavePolicy(rowsAway, 'stale-away');
 
+  // Slice A: every queue row must carry planningDay (col 20, YYYY-MM-DD) and
+  // originSource (col 21, SCH-3 enum). The live base override must surface as
+  // originSource = LIVE_BASE on the head row, and block_step20/21 mirror the
+  // head planningDay/originSource for the Compiler.
+  const SCH3_ORIGIN_SOURCES = [
+    "ACTIVE_MANUAL_TRIP",
+    "ACTIVE_PLANNED_TRIP",
+    "LIVE_BASE",
+    "LIVE_LOCATION",
+    "CONFIRMED_LAST_DESTINATION",
+    "OVERNIGHT_BASE_RESET",
+    "LEGACY_ITINERARY_FALLBACK"
+  ];
+  const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const todayLabel = new Date(nowSec * 1000).toISOString().slice(0, 10);
+
+  rowsAway.forEach(function (row, idx) {
+    const cols = row.split("|");
+    if (cols.length < 21) fail('stale-away row ' + idx + ' expected >= 21 columns (Slice A), got ' + cols.length);
+    if (!DAY_RE.test(cols[19] || '')) {
+      fail('stale-away row ' + idx + ' col 20 planningDay must be YYYY-MM-DD, got ' + JSON.stringify(cols[19]));
+    }
+    if (SCH3_ORIGIN_SOURCES.indexOf(cols[20]) === -1) {
+      fail('stale-away row ' + idx + ' col 21 originSource must be in SCH-3 enum, got ' + JSON.stringify(cols[20]));
+    }
+  });
+
+  const headAwayCols = headAway;
+  if (headAwayCols[19] !== todayLabel) {
+    fail('stale-away head planningDay should be ' + todayLabel + ', got ' + JSON.stringify(headAwayCols[19]));
+  }
+  if (headAwayCols[20] !== "LIVE_BASE") {
+    fail('stale-away head originSource should be LIVE_BASE, got ' + JSON.stringify(headAwayCols[20]));
+  }
+
+  const eodCols = eodReturnRow.split("|");
+  if (eodCols[19] !== todayLabel) {
+    fail('EOD_RETURN planningDay should be ' + todayLabel + ', got ' + JSON.stringify(eodCols[19]));
+  }
+  if (eodCols[20] !== "CONFIRMED_LAST_DESTINATION") {
+    fail('EOD_RETURN originSource should be CONFIRMED_LAST_DESTINATION, got ' + JSON.stringify(eodCols[20]));
+  }
+
+  if (storeAway.locals['block_step20'] !== todayLabel) {
+    fail('stale-away block_step20 should be ' + todayLabel + ', got ' + JSON.stringify(storeAway.locals['block_step20']));
+  }
+  if (storeAway.locals['block_step21'] !== "LIVE_BASE") {
+    fail('stale-away block_step21 should be LIVE_BASE, got ' + JSON.stringify(storeAway.locals['block_step21']));
+  }
+
   console.log('PASS: AC-6 Sandbox: stale-away itinerary loses to live base; future trip JIT');
-  console.log('  control: head policy = ' + headHome[headHome.length - 1]);
+  console.log('  control: head policy = ' + headHome[18]);
   console.log('  stale-away: queue identical to control (origin rebound to home), head policy = ' + headPolicy);
   console.log('  block_step19 = ' + blockStep19);
   console.log('  all ' + rowsAway.length + ' stale-away queue rows carry an explicit ASAP/JIT policy');
+  console.log('  head planningDay = ' + headAwayCols[19] + ', originSource = ' + headAwayCols[20] + ', block_step20/21 mirrored');
   process.exit(0);
 } catch (e) {
   fail(e.message);
