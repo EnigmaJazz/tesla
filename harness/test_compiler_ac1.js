@@ -159,6 +159,105 @@ try {
     fail('JIT: legacy handled pitstopState forced ASAP departure');
   }
 
+  // INV-0.7 (C1): metric fallback tiers. Tier order is validated API metrics,
+  // then positive Sandbox metrics (block_step17 duration secs / block_step18
+  // distance miles), then a local haversine estimate for ACTIVE_TRAVEL only,
+  // else the leg is rejected as zero-duration. Every fallback logs
+  // DEPARTURE_POLICY_FALLBACK_USED with {from,to,durationSecs,distanceMiles}.
+  function runWithMetrics(overrides) {
+    const base = {
+      block_step1: "EVENT",
+      block_step2: "Future Event",
+      block_step3: destCoords,
+      block_step4: "DRIVE",
+      block_step5: String(futureEventStart),
+      block_step7: "false",
+      block_step8: "DEPART",
+      block_step9: String(futureEventStart),
+      block_step10: "abc123_kx8f00",
+      block_step14: "",
+      block_step15: "",
+      block_step16: "",
+      block_step19: "JIT",
+      block_step20: "2026-10-24",
+      block_step21: "LIVE_BASE",
+      api_duration_secs: "",
+      api_distance_miles: "",
+      api_transit_steps: "",
+      virtual_time: String(nowSec - 60)
+    };
+    const locals = Object.assign({}, base, overrides);
+    const { sandbox, store } = createSandbox({
+      locals: locals,
+      globals: {
+        User_At_Base: "true",
+        User_Loc: homeCoords,
+        Arrival_Buffer_Mins: "5",
+        Departure_Buffer_Mins: "5"
+      },
+      files: {
+        "Tasker/Tesla/Data/TDS_Master.json": masterJson,
+        "Tasker/Tesla/Data/Itin_Master.json": itinJson,
+        "Tasker/Tesla/Data/TDS_Overrides.json": "{}"
+      },
+      nowMs: nowSec * 1000
+    });
+    runScript(path.resolve(__dirname, '..', 'Compiler.js'), sandbox, store);
+    return store;
+  }
+
+  function findFallbackFlash(store, from, to) {
+    return store.flashLog.find(function (m) {
+      if (m.indexOf('DEPARTURE_POLICY_FALLBACK_USED') === -1) return false;
+      try {
+        const o = JSON.parse(m);
+        return o.details && o.details.from === from && o.details.to === to;
+      } catch (e) { return false; }
+    });
+  }
+
+  // Sub-test: invalid API metrics + positive Sandbox metrics (columns 17-18).
+  // The Compiler must consume block_step17/18 BEFORE any local estimation and
+  // publish a positive duration, logging the API -> SANDBOX fallback.
+  const sbStore = runWithMetrics({ block_step17: "2400", block_step18: "12.5" });
+  if (sbStore.runError) fail('Sandbox-metrics fixture threw: ' + sbStore.runError.message);
+  const sbItin = readActiveItinerary(sbStore);
+  if (!sbItin) fail('Sandbox-metrics: published itinerary was not found');
+  if (sbItin.length !== 2) fail('Sandbox-metrics: expected 2 legs (stale + head), got ' + sbItin.length);
+  const sbHead = sbItin[1];
+  assert.equal(sbHead.durationSecs, 2400, 'Sandbox-metrics: published leg should carry the Sandbox route duration');
+  assert.equal(sbHead.distanceMiles, 12.5, 'Sandbox-metrics: published leg should carry the Sandbox route distance');
+  assert.equal(sbHead.departurePolicy, 'JIT', 'Sandbox-metrics: published leg should carry explicit departurePolicy (col 19)');
+  const sbFlash = findFallbackFlash(sbStore, "API", "SANDBOX");
+  if (!sbFlash) fail('Sandbox-metrics: expected DEPARTURE_POLICY_FALLBACK_USED {from:API,to:SANDBOX}');
+  const sbFlashObj = JSON.parse(sbFlash);
+  assert.equal(sbFlashObj.details.durationSecs, 2400, 'fallback flash should carry the Sandbox durationSecs');
+  assert.equal(sbFlashObj.details.distanceMiles, 12.5, 'fallback flash should carry the Sandbox distanceMiles');
+
+  // Sub-test: no API metrics, no Sandbox metrics, ACTIVE_TRAVEL -> local
+  // haversine estimate publishes a positive duration.
+  const atStore = runWithMetrics({ block_step8: "ACTIVE_TRAVEL" });
+  if (atStore.runError) fail('ACTIVE_TRAVEL fixture threw: ' + atStore.runError.message);
+  const atItin = readActiveItinerary(atStore);
+  if (!atItin) fail('ACTIVE_TRAVEL: published itinerary was not found');
+  if (atItin.length !== 2) fail('ACTIVE_TRAVEL: expected 2 legs (stale + head), got ' + atItin.length);
+  const atHead = atItin[1];
+  if (!(atHead.durationSecs > 0)) fail('ACTIVE_TRAVEL: local estimate must publish a positive duration, got ' + atHead.durationSecs);
+  if (!(atHead.distanceMiles > 0)) fail('ACTIVE_TRAVEL: local estimate must publish positive distance, got ' + atHead.distanceMiles);
+  const atFlash = findFallbackFlash(atStore, "SANDBOX", "LOCAL_ESTIMATE");
+  if (!atFlash) fail('ACTIVE_TRAVEL: expected DEPARTURE_POLICY_FALLBACK_USED {from:SANDBOX,to:LOCAL_ESTIMATE}');
+
+  // Sub-test: every tier fails (DEPART with no metrics) -> the leg is rejected
+  // with ZERO_DURATION_LEG_REJECTED and never publishes.
+  const zdStore = runWithMetrics({});
+  if (zdStore.runError) fail('zero-duration fixture threw: ' + zdStore.runError.message);
+  const zdFlash = zdStore.flashLog.find(function (m) { return m.indexOf('ZERO_DURATION_LEG_REJECTED') !== -1; });
+  if (!zdFlash) fail('zero-duration: expected ZERO_DURATION_LEG_REJECTED flash');
+  assert.equal(JSON.parse(zdFlash).tripId, 'abc123_kx8f00', 'zero-duration rejection should identify the trip');
+  const zdItin = readActiveItinerary(zdStore);
+  if (!zdItin) fail('zero-duration: published itinerary was not found');
+  if (zdItin.length !== 1) fail('zero-duration: rejected leg must not publish (expected only the stale leg, 1), got ' + zdItin.length);
+
   console.log('PASS: AC-1 Compiler: explicit departurePolicy consumed; isPrevBase reconstruction removed');
   console.log('  ASAP departUnix = ' + asapHead.departUnix + ' (hardFloor = ' + expectedHardFloor + ')');
   console.log('  JIT  departUnix = ' + jitHead.departUnix + ' (max = ' + Math.max(expectedHardFloor, expectedDepTarget) + ', depTarget = ' + expectedDepTarget + ')');
