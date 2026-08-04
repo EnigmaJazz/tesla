@@ -99,6 +99,14 @@ const ID_SUFFIX_MIN_UNIX = 1e9;
 const ID_SUFFIX_MAX_UNIX = 2.5e9;
 const ID_OCCURRENCE_REGEX = /^([0-9A-Za-z_]+)_([0-9A-Za-z]+)$/;
 
+// Route metric conversion: metres to statute miles (INV-0.7 columns 17/18).
+const METERS_TO_MILES = 0.000621371;
+// Actionability relevance window: an event more than 18 hours out is not a
+// candidate for lateness/next-day decisions (named deadline, never a raw delta).
+const RELEVANCE_WINDOW_SECS = 64800;
+// Bounds for the raw target delta used by the lateness floor (6 hours).
+const RAW_DELTA_BOUND_MINS = 360;
+
 function parseOccurrenceId(rawId, component) {
     component = component || "ID_Parser";
     if (typeof rawId !== "string" || rawId.length === 0) {
@@ -657,6 +665,16 @@ try {
             fields.push(originSource || ((queue.length === 0) ? passOriginSource : "CONFIRMED_LAST_DESTINATION"));
             queue.push(fields.join("|"));
             if (queue.length === 1) {
+                // INV-0.7 (C2): export positive Sandbox route metrics for the
+                // head leg as block_step17 (duration seconds) / block_step18
+                // (distance miles). Zero is never exported — the Compiler
+                // rejects missing metrics instead of publishing zero.
+                const sbDur = parseInt(fields[16], 10);
+                const sbDist = parseFloat(fields[17]);
+                if (!isNaN(sbDur) && sbDur > 0 && !isNaN(sbDist) && sbDist > 0) {
+                    setLocal('block_step17', String(sbDur));
+                    setLocal('block_step18', String(sbDist));
+                }
                 setLocal('block_step19', effectivePolicy);
                 setLocal('block_step20', fields[19]);
                 setLocal('block_step21', fields[20]);
@@ -1024,7 +1042,7 @@ try {
                     let distToNextEv = getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(evCoords.split(",")[0]), parseFloat(evCoords.split(",")[1]));
                     let timeGapSecs  = evStart - state.time;
 
-                    if (distToNextEv > 500 || timeGapSecs > 64800) {
+                    if (distToNextEv > 500 || timeGapSecs > RELEVANCE_WINDOW_SECS) {
                         let eodMode = calcMode(state.loc, activeBase.coords, "", "", "").mode;
                         let tailInheritedId = "EOD_EARLY_" + (master[i - 2] ? getSafeId(master[i - 2]) : "DEFAULT");
 
@@ -1301,12 +1319,17 @@ try {
 
             let trueDepartureTime;
             if (ev.isDropin && isAttachedDropin) {
+                // Stop padding must appear exactly once: estTravelSecs already
+                // carries adHocObj.secs into testTargetTime (and actualArrival),
+                // so it is NOT re-added to the departure gap (AGENTS.md:
+                // stopPadSecs may not be added to both leg duration and the
+                // forward-propagation gap).
                 if (isPrevBase && evStartTarget > testTargetTime) {
                     let actualArrival = Math.max(testTargetTime, Math.max(openUnix, evStartTarget));
-                    trueDepartureTime = actualArrival + (ev.duration || 0) + adHocObj.secs + evDepBufSecs;
+                    trueDepartureTime = actualArrival + (ev.duration || 0) + evDepBufSecs;
                 } else {
                     let actualArrival = Math.max(testTargetTime, openUnix);
-                    trueDepartureTime = actualArrival + (ev.duration || 0) + adHocObj.secs + evDepBufSecs;
+                    trueDepartureTime = actualArrival + (ev.duration || 0) + evDepBufSecs;
                 }
             } else {
                 let finalIgnoredPref = getLatenessMode(evId, ignoredLateness);
@@ -1340,7 +1363,7 @@ try {
             let doorTarget = isDepart ? (evStart + estTravelSecs) : evStartTarget;
             let rawDeltaMins = Math.ceil((testTargetTime - doorTarget) / 60);
             let timeGapFromNow = evStart - nowSec;
-            let engineLateMins = (timeGapFromNow <= 64800 && Math.abs(rawDeltaMins) <= 360) ? Math.max(0, rawDeltaMins) : 0;
+            let engineLateMins = (timeGapFromNow <= RELEVANCE_WINDOW_SECS && Math.abs(rawDeltaMins) <= RAW_DELTA_BOUND_MINS) ? Math.max(0, rawDeltaMins) : 0;
             
             if (lookAheadLate > engineLateMins) engineLateMins = lookAheadLate;
 
@@ -1562,7 +1585,16 @@ try {
                 return "JIT";
             })();
 
-            enqueuePlannedRow(["EVENT", evTitle, evCoords, routeToEv.mode, displayTime, trueDepartureTime, pitstopState, apiTimeType, apiTimeUnix, evId, evLoc, engineLateMins, currentLegStable, dropinStatusFlag, safeDesc, adHocObj.arr.join(",")], legPolicy);
+            // INV-0.7 (C2): the EVENT row carries the leg's route metrics in
+            // columns 17 (durationSecs) / 18 (distanceMiles) so the Compiler
+            // can consume positive Sandbox metrics before any local estimate.
+            // Only positive metrics are exported: a route duration that cannot
+            // be established stays empty (never "0") so the Compiler's fallback
+            // tiers or zero-duration rejection handle it.
+            let routeDistMiles = parseFloat((actualDriveDist * METERS_TO_MILES).toFixed(1));
+            let legDurCol = (routeTimeSecs > 0) ? String(routeTimeSecs) : "";
+            let legDistCol = (routeDistMiles > 0) ? String(routeDistMiles) : "";
+            enqueuePlannedRow(["EVENT", evTitle, evCoords, routeToEv.mode, displayTime, trueDepartureTime, pitstopState, apiTimeType, apiTimeUnix, evId, evLoc, engineLateMins, currentLegStable, dropinStatusFlag, safeDesc, adHocObj.arr.join(","), legDurCol, legDistCol], legPolicy);
             plannedEventSeen = true;
 
             if (i === idx) state.isStableOrigin = false;

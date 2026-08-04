@@ -1,7 +1,8 @@
 // ==========================================
 // SCRIPT 4: UNIFIED COMPILER (v24.18)
 // Translates multiple #stop:XX delays into physical Calendar travel blocks.
-// Exports pending stops into Itin_Master for Tasker UI integration.
+// Publishes the committed generation through the Generation_Publisher and
+// exports pending stops for Tasker UI integration.
 // [V24.18] Merged V24.17 Tasker-safe dummy array injection ("IGNORE")
 //          while preserving V24.16 conflict detection, Hold/Flush JIT,
 //          active-travel fallback recalculation, and stop padding behaviour.
@@ -12,6 +13,26 @@ const SECONDS_PER_DAY = 86400;
 // Phase 2: travel leg types whose route duration must be positive before
 // publication. Zero-duration synthetic or placeholder legs are rejected.
 const TRAVEL_API_TYPES = { DEPART: true, ARRIVE: true, ACTIVE_TRAVEL: true };
+
+// INV-0.7: route distance conversion from metres to statute miles.
+const METERS_TO_MILES = 0.000621371;
+// Actionability relevance window: departures more than 18 hours out are not
+// candidates for the depart-changed signal (named deadline, never a raw delta).
+const RELEVANCE_WINDOW_SECS = 64800;
+
+// Exact-token membership over a CSV row list (OVR-10): a row matches only when
+// it equals the id or starts with "<id>~" — never a bare substring, so decoy
+// occurrence IDs like ev_10 cannot satisfy an ev_1 lookup.
+function csvHasExactToken(csv, id) {
+    if (!csv || typeof id !== "string" || id === "") return false;
+    const rows = csv.split(",");
+    for (let r = 0; r < rows.length; r++) {
+        const row = rows[r];
+        if (row === id) return true;
+        if (row.indexOf(id + "~") === 0) return true;
+    }
+    return false;
+}
 
 // INV-0.2: DST-safe day-boundary comparison. Both unixSec values are in UTC.
 function isSameUTCDay(unixSecA, unixSecB) {
@@ -111,10 +132,29 @@ try {
     let duration = parseInt(local('api_duration_secs'), 10);
     let distMiles = parseFloat(local('api_distance_miles')) || 0;
 
-    // Preserve V24.16 behaviour:
-    // If either duration or distance is invalid, active travel gets a local haversine fallback.
+    // INV-0.7: metric fallback tiers — validated API metrics, then positive
+    // Sandbox metrics (block_step17 duration secs / block_step18 distance
+    // miles), then a local haversine estimate for ACTIVE_TRAVEL only, else the
+    // leg stays zero and is rejected as zero-duration. Every fallback logs
+    // EVT-DEPARTURE_POLICY_FALLBACK_USED with {from,to,durationSecs,distanceMiles}.
     if (isNaN(duration) || duration <= 0 || isNaN(distMiles) || distMiles <= 0) {
-        if (apiType === "ACTIVE_TRAVEL") {
+        const sbDuration = parseInt(local('block_step17'), 10);
+        const sbDistance = parseFloat(local('block_step18')) || 0;
+        if (!isNaN(sbDuration) && sbDuration > 0 && sbDistance > 0) {
+            duration = sbDuration;
+            distMiles = sbDistance;
+            setLocal('api_duration_secs', duration.toString());
+            setLocal('api_distance_miles', distMiles.toString());
+            flash(JSON.stringify({
+                timestamp: Math.floor(Date.now() / 1000),
+                generationId: global('TDS_Active_Generation') || null,
+                component: "Compiler",
+                severity: "INFO",
+                code: "DEPARTURE_POLICY_FALLBACK_USED",
+                tripId: evId || null,
+                details: { from: "API", to: "SANDBOX", durationSecs: duration, distanceMiles: distMiles }
+            }));
+        } else if (apiType === "ACTIVE_TRAVEL") {
             const orig = (global('User_Loc') || "0,0").trim(); 
             const oP = orig.split(","); 
             const dP = dest.split(",");
@@ -127,10 +167,19 @@ try {
             );
 
             duration = Math.round(distM / getSpeed(mode));
-            distMiles = parseFloat((distM * 0.000621371).toFixed(1));
+            distMiles = parseFloat((distM * METERS_TO_MILES).toFixed(1));
 
             setLocal('api_duration_secs', duration.toString());
             setLocal('api_distance_miles', distMiles.toString());
+            flash(JSON.stringify({
+                timestamp: Math.floor(Date.now() / 1000),
+                generationId: global('TDS_Active_Generation') || null,
+                component: "Compiler",
+                severity: "INFO",
+                code: "DEPARTURE_POLICY_FALLBACK_USED",
+                tripId: evId || null,
+                details: { from: "SANDBOX", to: "LOCAL_ESTIMATE", durationSecs: duration, distanceMiles: distMiles }
+            }));
         } else {
             duration = duration > 0 ? duration : 0; 
         }
@@ -359,8 +408,6 @@ try {
 
             currentUnix = leg.actualArrival + (leg.dropinDur || 0) + leg.stopPadSecs;
 
-            newDepMem.push(leg.targetEventId + "~" + leg.actualDeparture);
-
             if (i === cLen - 1) {
                 let oldD = null;
 
@@ -383,7 +430,7 @@ try {
                 let liveLateMins = parseInt(local('block_step12'), 10) || 0;
                 let timeGapFromNow = leg.apiUnix - nowSec; 
                 
-                if (timeGapFromNow <= 64800) {
+                if (timeGapFromNow <= RELEVANCE_WINDOW_SECS) {
                     if (oldD !== null && !isNaN(oldD) && oldD !== leg.actualDeparture) {
                         let diffDays = Math.round(
                             (utcDayBoundaryUnix(leg.apiUnix) - utcDayBoundaryUnix(nowSec)) / SECONDS_PER_DAY
@@ -400,10 +447,16 @@ try {
                     }
 
                     let ignored = OVR['Ignored_Lateness'] || "";
+                    // OVR-10: lateness-ignore membership consults the schema-v2
+                    // eventOverrides map by exact key first, then falls back to
+                    // exact-token CSV rows — never substring matching.
+                    const ovrEntry = (OVR && OVR.eventOverrides) ? OVR.eventOverrides[leg.targetEventId] : null;
+                    const ignoredByMap = !!(ovrEntry && ovrEntry.ignoreLateness === true);
 
                     if (
                         liveLateMins > 0 &&
-                        ignored.indexOf(leg.targetEventId) === -1 &&
+                        !ignoredByMap &&
+                        !csvHasExactToken(ignored, leg.targetEventId) &&
                         leg.actionType === "EVENT" &&
                         leg.apiType !== "ACTIVE_TRAVEL"
                     ) {
@@ -429,6 +482,10 @@ try {
             }));
             continue;
         }
+
+        // Only legs that survive the zero-duration rejection enter the depart
+        // memory — a rejected leg must not leak published state.
+        newDepMem.push(leg.targetEventId + "~" + leg.actualDeparture);
 
         if (leg.apiType === "ACTIVE_TRAVEL" || leg.durationSecs <= 0) {
                 outTitles.push("SKIP_CALENDAR");
