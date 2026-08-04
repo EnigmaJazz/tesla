@@ -25,6 +25,64 @@ let PREFS = {};
 try { PREFS = JSON.parse(prefsRaw); } catch(e) {}
 function getPrefs(key) { return PREFS[key] || ""; }
 
+// OVR-10 (REQ-OVR10-1): exact-key readers over the schema-v2 stores. Identity
+// membership MUST use own-property keys of eventOverrides/seriesPreferences —
+// never substring matching — so decoy occurrence IDs like ev_10 can never
+// satisfy an ev_1 lookup. CSV projections remain compatibility views; the
+// exact-token fallback preserves legacy files without substring matches.
+function getOvrEntry(occId) {
+    const map = (OVR && OVR.eventOverrides) || {};
+    if (typeof occId !== "string" || occId === "") return null;
+    return Object.prototype.hasOwnProperty.call(map, occId) ? map[occId] : null;
+}
+function hasExactOverride(occId, field, value) {
+    const entry = getOvrEntry(occId);
+    if (!entry) return false;
+    if (field === "mode") return entry.mode === value;
+    if (field === "pitstop") return entry.pitstop === value;
+    if (field === "skip") return entry.skip === true;
+    if (field === "ignoreLateness") return entry.ignoreLateness === true;
+    if (field === "ignoreWalk") return entry.ignoreWalk === true;
+    return false;
+}
+// Exact-row membership over CSV rows and in-memory accumulators. A row matches
+// only when it equals the occurrence id or starts with "<id>~" (suffixed rows
+// like ev_1~fixed) — never a bare substring.
+function csvHasOccurrence(csv, occId) {
+    if (!csv || typeof occId !== "string" || occId === "") return false;
+    const rows = csv.split(",");
+    for (let r = 0; r < rows.length; r++) {
+        const row = rows[r];
+        if (row === occId) return true;
+        if (row.indexOf(occId + "~") === 0) return true;
+    }
+    return false;
+}
+// Lateness mode: a map-backed ignoreLateness entry is "shifted" (the map
+// carries no fixed/shifted distinction); legacy rows retain eventId~fixed /
+// ~shifted and are matched by exact row, so a decoy id can never satisfy it.
+function getLatenessMode(evId, ignoredLatenessStr) {
+    const entry = getOvrEntry(evId);
+    if (entry && entry.ignoreLateness === true) return "shifted";
+    if (ignoredLatenessStr) {
+        const rows = ignoredLatenessStr.split(",");
+        for (let r = 0; r < rows.length; r++) {
+            const p = rows[r].split("~");
+            if (p[0] === evId && p.length > 1) return p[1].trim().toLowerCase();
+        }
+    }
+    return "shifted";
+}
+function hasExactPref(seriesId, routeSig, modifier) {
+    const map = (PREFS && PREFS.seriesPreferences) || {};
+    if (typeof seriesId !== "string" || typeof routeSig !== "string" || typeof modifier !== "string") return false;
+    if (!Object.prototype.hasOwnProperty.call(map, seriesId)) return false;
+    const routes = map[seriesId] || {};
+    if (!Object.prototype.hasOwnProperty.call(routes, routeSig)) return false;
+    const defaults = (routes[routeSig] || {}).defaults || {};
+    return Object.prototype.hasOwnProperty.call(defaults, modifier) && defaults[modifier] === true;
+}
+
 let trimmedEventsRaw = getOvr('Trimmed_Events');
 let skippedEvents = getOvr('Skipped_Events'); 
 
@@ -128,7 +186,7 @@ function readActiveGeneration(kind) {
 
 function getTrimmedEnd(evId, rawEnd, start, trimRaw) {
     let e = rawEnd || (start + 3600);
-    if (trimRaw && trimRaw.indexOf(evId) !== -1) {
+    if (trimRaw && csvHasOccurrence(trimRaw, evId)) {
         let tRows = trimRaw.split(",");
         for (let t = 0; t < tRows.length; t++) {
             let tp = tRows[t].split("~");
@@ -307,10 +365,10 @@ function calcMode(startCoords, targetCoords, evStartStr, evText, evId) {
     else if (/(drive|#drive)/i.test(evText)) { mode = "DRIVE"; forced = true; }
 
     if (safeId !== "") {
-        if (getOvr('Forced_Lifts').indexOf(safeId) !== -1) { mode = "LIFT"; forced = true; }
-        if (getOvr('Forced_Transit').indexOf(safeId) !== -1) { mode = "TRANSIT"; forced = true; }
-        if (getOvr('Forced_Walks').indexOf(safeId) !== -1) { mode = "WALK"; forced = true; }
-        if (getOvr('Forced_Drives').indexOf(safeId) !== -1) { mode = "DRIVE"; forced = true; }
+        if (hasExactOverride(safeId, "mode", "lift") || csvHasOccurrence(getOvr('Forced_Lifts'), safeId)) { mode = "LIFT"; forced = true; }
+        if (hasExactOverride(safeId, "mode", "transit") || csvHasOccurrence(getOvr('Forced_Transit'), safeId)) { mode = "TRANSIT"; forced = true; }
+        if (hasExactOverride(safeId, "mode", "walk") || csvHasOccurrence(getOvr('Forced_Walks'), safeId)) { mode = "WALK"; forced = true; }
+        if (hasExactOverride(safeId, "mode", "drive") || csvHasOccurrence(getOvr('Forced_Drives'), safeId)) { mode = "DRIVE"; forced = true; }
         if (isIdInChain(safeId, getOvr('Forced_Drive_Chains'))) { mode = "DRIVE"; forced = true; }
         if (isIdInChain(safeId, getOvr('Forced_Lift_Chains')))  { mode = "LIFT"; forced = true; }
     }
@@ -321,16 +379,6 @@ function getRecoveryMode(bLoc, cLoc, d) {
     if (d < 1500) return "WALK";
     let m = calcMode(bLoc, cLoc, "0", "", "").mode;
     return (m === "TRANSIT") ? "TRANSIT" : "LIFT";
-}
-
-function getIgnoredPref(evId, ignoredLatenessStr) {
-    if (!ignoredLatenessStr || ignoredLatenessStr.indexOf(evId) === -1) return "shifted"; 
-    let rows = ignoredLatenessStr.split(",");
-    for (let r = 0; r < rows.length; r++) {
-        let p = rows[r].split("~");
-        if (p[0] === evId && p.length > 1) return p[1].trim().toLowerCase();
-    }
-    return "shifted";
 }
 
 function getRemainingStops(evId, desc, completedRaw) {
@@ -615,7 +663,6 @@ try {
             }
         }
         
-        let skippedPitstops = getOvr('Skipped_Pitstops'); 
         let ignoredLateness = getOvr('Ignored_Lateness'); let ignoredWalks = getOvr('Ignored_Walks');
 
         let maxWalk = parseInt(global('Max_Walk_Meters'), 10) || 8046; 
@@ -784,7 +831,7 @@ try {
                 
                 let sEvEnd = getTrimmedEnd(sEvId, forceSeconds(sEv.end), sEvStart, trimmedEventsRaw);
                 let arr = sTime + travelSecs;
-                let sIgnoredPref = getIgnoredPref(sEvId, ignoredLateness);
+                let sIgnoredPref = getLatenessMode(sEvId, ignoredLateness);
                 
                 let doorTarget = isDepart ? (sEvStart + travelSecs) : (sEvStart - sArrBuf);
 
@@ -816,7 +863,7 @@ try {
                 let sId = getSafeId(sEv); let sCoords = sEv.coords || "0,0"; let sText = (sEv.title || "") + " " + (sEv.desc || "");
                 let ov = overrides[m] || {};
 
-                if (ov.skip || skippedEvents.indexOf(sId) !== -1) continue;
+                if (ov.skip || csvHasOccurrence(skippedEvents, sId) || hasExactOverride(sId, "skip")) continue;
                 
                 let sEnd = getTrimmedEnd(sId, forceSeconds(sEv.end), sStart, trimmedEventsRaw);
                 if (ov.trimEnd) {
@@ -856,7 +903,7 @@ try {
                 if (m === targetIdx) targetResult = { arr: doorArr, late: stepLate };
                 else if (m > targetIdx && stepLate > maxDownstreamLate) maxDownstreamLate = stepLate;
 
-                let sIgnoredPref = getIgnoredPref(sId, ignoredLateness);
+                let sIgnoredPref = getLatenessMode(sId, ignoredLateness);
                 
                 if (sEv.isDropin) {
                     let openUnix = simTime;
@@ -1010,7 +1057,7 @@ try {
             
             let evStartTarget = isDepart ? evStart + (getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(evCoords.split(",")[0]), parseFloat(evCoords.split(",")[1])) / 13.0) : evStart - evArrBufSecs;
 
-            let isBypassed = (ignoredLateness.indexOf(evId) !== -1 || /(#late)\b/i.test(evText));
+            let isBypassed = ((csvHasOccurrence(ignoredLateness, evId) || hasExactOverride(evId, "ignoreLateness")) || /(#late)\b/i.test(evText));
             
             let openUnix = state.time;
             let closeUnix = 2000000000;
@@ -1088,7 +1135,7 @@ try {
                 }
             }
 
-            if (evDeadline <= state.time || skippedEvents.indexOf(evId) !== -1) { skipIdx = i + 1; continue; }
+            if (evDeadline <= state.time || csvHasOccurrence(skippedEvents, evId) || hasExactOverride(evId, "skip")) { skipIdx = i + 1; continue; }
             
             let routeToEv = calcMode(state.loc, evCoords, evStartStr, evText, evId);
             if (routeToEv.isForced) isBypassed = true;
@@ -1096,7 +1143,7 @@ try {
             let arrivalSkipRadius = routeToEv.isForced ? 50 : 200;
 
             if (!ev.isDropin && (distToEventDirect < arrivalSkipRadius || (isMeetingLatched && distToEventDirect < 1000)) && (evStart - state.time) < 10800 && state.time < evDeadline) {
-                let currentIgnoredPref = getIgnoredPref(evId, ignoredLateness);
+                let currentIgnoredPref = getLatenessMode(evId, ignoredLateness);
                 if (currentIgnoredPref === "fixed") state.time = Math.max(state.time, evEnd) + evDepBufSecs;
                 else state.time = Math.max(state.time, evStartTarget) + evArrBufSecs + (evEnd - evStart) + evDepBufSecs;
                 state.loc = evCoords; 
@@ -1131,7 +1178,7 @@ try {
             let pitstopState = "false"; 
             let distToBaseCheck = activeBase.coords !== "0,0" ? getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(activeBase.coords.split(",")[0]), parseFloat(activeBase.coords.split(",")[1])) : 99999;
             
-            if (preGap > 0 && activeBase.coords !== "0,0" && distToBaseCheck > 300 && getOvr('Skipped_Pitstops').indexOf(evId) === -1) {
+            if (preGap > 0 && activeBase.coords !== "0,0" && distToBaseCheck > 300 && !(csvHasOccurrence(getOvr('Skipped_Pitstops'), evId) || hasExactOverride(evId, "pitstop", "skipped"))) {
                 let routeToBase = calcMode(state.loc, activeBase.coords, evStartStr, "", evId); let recTimeBase = 0;
                 
                 let carDistToBasePit = getDist(parseFloat(state.carLoc.split(",")[0]), parseFloat(state.carLoc.split(",")[1]), parseFloat(activeBase.coords.split(",")[0]), parseFloat(activeBase.coords.split(",")[1]));
@@ -1155,7 +1202,7 @@ try {
                 let timeBaseToEv = getCachedTime(tempCarLoc, evCoords, routeBaseToEv.mode, (estPitLeave + recTimeEv)) || Math.round(routeBaseToEv.dist / getSpeed(routeBaseToEv.mode));
                 
                 let totalDetour = recTimeBase + timeToBase + 1800 + recTimeEv + timeBaseToEv;
-                let isForcedPitstop = getOvr('Forced_Pitstops').indexOf(evId) !== -1;
+                let isForcedPitstop = (csvHasOccurrence(getOvr('Forced_Pitstops'), evId) || hasExactOverride(evId, "pitstop", "forced"));
                 let isLongGap       = (preGap >= 10800); 
 
                 if (isForcedPitstop || isLongGap) {
@@ -1217,14 +1264,14 @@ try {
             let routineKey = coreId + "^" + routeSig; 
             let routeDefaults = getPrefs('Route_Defaults');
 
-            if (routeDefaults.indexOf(routineKey + "^IGNORELATENESS~fixed") !== -1 && ignoredLateness.indexOf(evId) === -1) {
+            if ((hasExactPref(coreId, routeSig, "IGNORELATENESS~fixed") || csvHasOccurrence(routeDefaults, routineKey + "^IGNORELATENESS~fixed")) && !csvHasOccurrence(ignoredLateness, evId) && !hasExactOverride(evId, "ignoreLateness")) {
                 ignoredLateness += (ignoredLateness ? "," : "") + evId + "~fixed";
                 notifQueue.push("Auto-Applied: " + evTitle + "|Routinely fixing end time based on history.|TDS_CLEAR_DEFAULT|" + routineKey + "^IGNORELATENESS~fixed|" + coreId);
-            } else if (routeDefaults.indexOf(routineKey + "^IGNORELATENESS~shifted") !== -1 && ignoredLateness.indexOf(evId) === -1) {
+            } else if ((hasExactPref(coreId, routeSig, "IGNORELATENESS~shifted") || csvHasOccurrence(routeDefaults, routineKey + "^IGNORELATENESS~shifted")) && !csvHasOccurrence(ignoredLateness, evId) && !hasExactOverride(evId, "ignoreLateness")) {
                 ignoredLateness += (ignoredLateness ? "," : "") + evId + "~shifted";
                 notifQueue.push("Auto-Applied: " + evTitle + "|Routinely accepting lateness based on history.|TDS_CLEAR_DEFAULT|" + routineKey + "^IGNORELATENESS~shifted|" + coreId);
             }
-            if (routeDefaults.indexOf(routineKey + "^IGNOREWALK") !== -1 && ignoredWalks.indexOf(evId) === -1) {
+            if ((hasExactPref(coreId, routeSig, "IGNOREWALK") || csvHasOccurrence(routeDefaults, routineKey + "^IGNOREWALK")) && !csvHasOccurrence(ignoredWalks, evId) && !hasExactOverride(evId, "ignoreWalk")) {
                 ignoredWalks += (ignoredWalks ? "," : "") + evId;
                 notifQueue.push("Auto-Applied: " + evTitle + "|Routinely ignoring walk limits based on history.|TDS_CLEAR_DEFAULT|" + routineKey + "^IGNOREWALK|" + coreId);
             }
@@ -1236,7 +1283,7 @@ try {
             let adHocObj = getRemainingStops(evId, evDesc, completedStopsRaw);
             estTravelSecs += adHocObj.secs;
             
-            if (dailyWalkDist > maxWalk && ignoredWalks.indexOf(evId) === -1 && legWalkDist > 0) { 
+            if (dailyWalkDist > maxWalk && !csvHasOccurrence(ignoredWalks, evId) && !hasExactOverride(evId, "ignoreWalk") && legWalkDist > 0) { 
                 let dayTag = getDayPrefix(evStart, nowSec);
                 let walkMenu = {
                     title: "🚶 [" + dayTag + "] Walk Limit Exceeded (" + Math.round(dailyWalkDist) + "m)",
@@ -1262,7 +1309,7 @@ try {
                     trueDepartureTime = actualArrival + (ev.duration || 0) + adHocObj.secs + evDepBufSecs;
                 }
             } else {
-                let finalIgnoredPref = getIgnoredPref(evId, ignoredLateness);
+                let finalIgnoredPref = getLatenessMode(evId, ignoredLateness);
                 if (finalIgnoredPref === "fixed") {
                     trueDepartureTime = Math.max(testTargetTime, evEnd) + evDepBufSecs;
                 } else {
@@ -1276,7 +1323,7 @@ try {
                 let simLoc = evCoords;
                 for (let k = i + 1; k <= master.length; k++) {
                     let nEv = master[k-1];
-                    if (nEv.isDropin || skippedEvents.indexOf(getSafeId(nEv)) !== -1 || /(#late)\b/i.test(nEv.desc)) continue; 
+                    if (nEv.isDropin || csvHasOccurrence(skippedEvents, getSafeId(nEv)) || hasExactOverride(getSafeId(nEv), "skip") || /(#late)\b/i.test(nEv.desc)) continue; 
                     
                     let nDist = getDist(parseFloat(simLoc.split(",")[0]), parseFloat(simLoc.split(",")[1]), parseFloat(nEv.coords.split(",")[0]), parseFloat(nEv.coords.split(",")[1]));
                     let nTravel = Math.round(nDist / 13.0); 
@@ -1313,10 +1360,10 @@ try {
                 let lateHeaderStr = "⚠️ [" + dayTag + "] " + safeUIEvTitle + " (" + latenessStr + ")";
                 
                 let defMode = "";
-                if (routeDefaults.indexOf(routineKey + "^LIFT") !== -1) defMode = "LIFT";
-                else if (routeDefaults.indexOf(routineKey + "^WALK") !== -1) defMode = "WALK";
-                else if (routeDefaults.indexOf(routineKey + "^DRIVE") !== -1) defMode = "DRIVE";
-                else if (routeDefaults.indexOf(routineKey + "^TRANSIT") !== -1) defMode = "TRANSIT";
+                if (hasExactPref(coreId, routeSig, "LIFT") || csvHasOccurrence(routeDefaults, routineKey + "^LIFT")) defMode = "LIFT";
+                else if (hasExactPref(coreId, routeSig, "WALK") || csvHasOccurrence(routeDefaults, routineKey + "^WALK")) defMode = "WALK";
+                else if (hasExactPref(coreId, routeSig, "DRIVE") || csvHasOccurrence(routeDefaults, routineKey + "^DRIVE")) defMode = "DRIVE";
+                else if (hasExactPref(coreId, routeSig, "TRANSIT") || csvHasOccurrence(routeDefaults, routineKey + "^TRANSIT")) defMode = "TRANSIT";
                 
                 if (defMode !== "") {
                     let notifText = "Auto-selected " + defMode + " based on your routine history.";
