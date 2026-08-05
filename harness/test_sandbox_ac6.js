@@ -236,6 +236,29 @@ try {
     fail('stale-away block_step21 should be LIVE_BASE, got ' + JSON.stringify(storeAway.locals['block_step21']));
   }
 
+  // INV-0.7 (C1): the Sandbox exports positive route metrics for the head leg
+  // as block_step17 (route duration seconds) / block_step18 (route distance
+  // miles), and the head queue row carries them in columns 17/18. Zero is never
+  // exported — the Compiler rejects missing metrics instead.
+  const headMetricDur = parseInt(headAwayCols[16], 10);
+  const headMetricDist = parseFloat(headAwayCols[17]);
+  if (isNaN(headMetricDur) || headMetricDur <= 0) {
+    fail('stale-away head col 17 (durationSecs) should be positive, got ' + JSON.stringify(headAwayCols[16]));
+  }
+  if (isNaN(headMetricDist) || headMetricDist <= 0) {
+    fail('stale-away head col 18 (distanceMiles) should be positive, got ' + JSON.stringify(headAwayCols[17]));
+  }
+  const blockStep17 = parseInt(storeAway.locals['block_step17'], 10);
+  const blockStep18 = parseFloat(storeAway.locals['block_step18']);
+  if (isNaN(blockStep17) || blockStep17 <= 0) {
+    fail('stale-away block_step17 should be a positive route duration (seconds), got ' + JSON.stringify(storeAway.locals['block_step17']));
+  }
+  if (isNaN(blockStep18) || blockStep18 <= 0) {
+    fail('stale-away block_step18 should be a positive route distance (miles), got ' + JSON.stringify(storeAway.locals['block_step18']));
+  }
+  if (blockStep17 !== headMetricDur) fail('stale-away block_step17 should mirror head col 17');
+  if (blockStep18 !== headMetricDist) fail('stale-away block_step18 should mirror head col 18');
+
   console.log('PASS: AC-6 Sandbox: stale-away itinerary loses to live base; future trip JIT');
   console.log('  control: head policy = ' + headHome[18]);
   console.log('  stale-away: queue identical to control (origin rebound to home), head policy = ' + headPolicy);
