@@ -229,14 +229,18 @@ function rcmFilterRouteEntries(obj, nowSec) {
     const e = obj.entries[keys[i]];
     if (!e || typeof e !== "object") { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "route entry not an object", key: keys[i] }); continue; }
     if (typeof e.originCell !== "string" || typeof e.destinationCell !== "string" || typeof e.mode !== "string"
-        || typeof e.meanDurationSecs !== "number" || typeof e.sampleCount !== "number" || typeof e.m2 !== "number"
-        || typeof e.createdAt !== "number" || typeof e.updatedAt !== "number") {
+        || typeof e.meanDurationSecs !== "number" || !isFinite(e.meanDurationSecs) || typeof e.sampleCount !== "number" || !isFinite(e.sampleCount)
+        || typeof e.m2 !== "number" || !isFinite(e.m2) || typeof e.distanceMiles !== "number" || !isFinite(e.distanceMiles)
+        || typeof e.dayClass !== "number" || (e.bucket !== null && typeof e.bucket !== "number") || typeof e.createdAt !== "number" || typeof e.updatedAt !== "number") {
       rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "route entry malformed fields", key: keys[i] }); continue;
     }
+    // WALK entries must use the null bucket; DRIVE/others must carry a number.
+    if (e.mode === RCM_WALK && e.bucket !== null) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "walk entry must have null bucket", key: keys[i] }); continue; }
+    if (e.mode !== RCM_WALK && e.bucket === null) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "non-walk entry must have numeric bucket", key: keys[i] }); continue; }
     if (typeof e.expiresAt !== "number" || e.expiresAt <= nowSec) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "route entry expired", key: keys[i], expiresAt: e.expiresAt }); continue; }
     if (!(e.meanDurationSecs > 0)) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "route entry nonpositive duration", key: keys[i] }); continue; }
-    const dayClass = typeof e.dayClass === "number" ? e.dayClass : 0;
-    const rebuilt = rcmRouteKey(e.originCell, e.destinationCell, e.mode, e.bucket === undefined ? null : e.bucket, dayClass);
+    const dayClass = e.dayClass;
+    const rebuilt = rcmRouteKey(e.originCell, e.destinationCell, e.mode, e.bucket, dayClass);
     if (rebuilt !== keys[i]) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "route key/bucket mismatch", key: keys[i], rebuilt: rebuilt }); continue; }
     out[keys[i]] = e;
   }
