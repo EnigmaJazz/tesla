@@ -45,5 +45,6 @@ try {
         }
     }
 } catch(e) {
-    flash("Unlock Error: " + e.message);
+    flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+        component: "Unlock", severity: "ERROR", code: "UNLOCK_ADAPTER_ERROR", tripId: null, details: { message: e.message } }));
 }
