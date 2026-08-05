@@ -110,8 +110,6 @@ function validateCommand(command, payload) {
   } else if (command === "APPLY_OVERRIDE") {
     if (!parseOccurrenceId(payload.targetId).ok) return "invalid occurrence id";
     if (!isNonEmptyString(payload.overrideKey)) return "overrideKey must be a non-empty string";
-  } else if (command === "RECONCILE_GENERATION") {
-    if (!isNonEmptyString(payload.activeGeneration)) return "activeGeneration must be a string";
   } else if (command === "PUBLISH_GENERATION") {
     if (!Array.isArray(payload.events) || !Array.isArray(payload.master) || !Array.isArray(payload.itinerary)) {
       return "publish candidate must carry events/master/itinerary arrays";

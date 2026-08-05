@@ -184,6 +184,22 @@ try {
   wrongOptional.sandbox.setLocal('par2', JSON.stringify({ generationId: ACTIVE_GEN, tripId: 't1', at: 100, planningDay: 123 }));
   runRouter(wrongOptional.sandbox, wrongOptional.store);
   assert(/ERROR: planningDay must be string/.test(wrongOptional.sandbox.local('return_value')), 'wrong-typed optional planningDay must be rejected');
+
+  // Parity: RECONCILE_GENERATION must go through the full reducer map — a
+  // wrong-typed manifestSchemaVersion and a malformed generationId must be
+  // rejected pre-owner (regression: a special-case branch used to shadow it).
+  const reconcileType = make({ globals: { TDS_Active_Generation: ACTIVE_GEN } });
+  reconcileType.sandbox.setLocal('par1', 'RECONCILE_GENERATION');
+  reconcileType.sandbox.setLocal('par2', JSON.stringify({ generationId: ACTIVE_GEN, activeGeneration: ACTIVE_GEN, manifestSchemaVersion: 'two' }));
+  runRouter(reconcileType.sandbox, reconcileType.store);
+  assert(/ERROR: manifestSchemaVersion must be number/.test(reconcileType.sandbox.local('return_value')), 'wrong-typed manifestSchemaVersion must be rejected');
+  assert.strictEqual(reconcileType.sandbox.local('tds_state_owner'), '', 'rejected RECONCILE_GENERATION must not set an owner');
+
+  const reconcileGen = make({ globals: { TDS_Active_Generation: ACTIVE_GEN } });
+  reconcileGen.sandbox.setLocal('par1', 'RECONCILE_GENERATION');
+  reconcileGen.sandbox.setLocal('par2', JSON.stringify({ generationId: 'bad', activeGeneration: ACTIVE_GEN }));
+  runRouter(reconcileGen.sandbox, reconcileGen.store);
+  assert(/ERROR: invalid generationId format/.test(reconcileGen.sandbox.local('return_value')), 'malformed RECONCILE generationId must be rejected');
 } catch (e) { fail('typed validation: ' + e.message); }
 
 if (failures > 0) { console.log('FAIL: state-command — ' + failures + ' group(s) failed'); process.exit(1); }
