@@ -133,7 +133,8 @@ try {
                         if (typeof reducer === "function") {
                             let r = reducer("COMPLETE_DROPIN", JSON.parse(local("par2")));
                             if (typeof r === "string" && r.indexOf("OK") !== 0) {
-                                flash("Reducer rejected COMPLETE_DROPIN: " + r);
+                                flash(JSON.stringify({ timestamp: nowSec, generationId: global('TDS_Active_Generation') || null,
+                                    component: "Finaliser", severity: "ERROR", code: "COMPLETE_DROPIN_REJECTED", tripId: ev.id, details: { reason: r } }));
                             }
                         }
                     }
