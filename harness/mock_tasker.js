@@ -13,7 +13,9 @@
 //                  succeeds — modelling a real torn write + rollback.
 //
 // Store observability:
-//   store.writeLog   - every writeFile and deleteFile call with op/path/length.
+//   store.writeLog   - every writeFile and deleteFile call with op/path/length
+//                      and the owner row (the __currentScriptPath that made the
+//                      call, or null) so tests can prove which script wrote it.
 //   store.writeOrder - ordered list of paths passed to writeFile.
 //   store.deleteOrder- ordered list of paths passed to deleteFile.
 
@@ -159,7 +161,7 @@ function createSandbox(options) {
       tornWrites.splice(tornIdx, 1);
     }
     liveFiles[path] = written;
-    writeLog.push({ op: "write", path: path, length: written.length });
+    writeLog.push({ op: "write", path: path, length: written.length, owner: sandbox.__currentScriptPath || null });
     writeOrder.push(path);
   }
   function deleteFile(path) {
@@ -173,7 +175,7 @@ function createSandbox(options) {
       throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
     }
     delete liveFiles[path];
-    writeLog.push({ op: "delete", path: path });
+    writeLog.push({ op: "delete", path: path, owner: sandbox.__currentScriptPath || null });
     deleteOrder.push(path);
   }
   function flash(message) {
