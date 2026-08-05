@@ -455,6 +455,20 @@ try {
   assert(readT2.indexOf('OK') === 0, 'CACHE_READ temp must succeed (missing dayClass): ' + readT2);
   const tempFiltered2 = JSON.parse(missingDayClass.sandbox.local('cache_read_result'));
   assert.strictEqual(Object.keys(tempFiltered2.entries || {}).length, 0, 'temp entries missing dayClass or bucket must be dropped');
+
+  // Present-but-invalid temp dayClass/bucket values are also misses.
+  const badValues = createSandbox({
+    files: {
+      [TEMP_JSON]: JSON.stringify({ schemaVersion: 1, updatedAt: nowSec, entries: {
+        [badTempKey]: { originCell: '1,1', destinationCell: '2,2', mode: 'DRIVE', dayClass: {}, bucket: '900', meanDurationSecs: 900, sampleCount: 1, m2: 0, distanceMiles: 50, apiUnix: nowSec, targetUnix: nowSec, createdAt: nowSec, updatedAt: nowSec, expiresAt: nowSec + RCM_TEST_FUTURE }
+      } })
+    },
+    nowMs: nowSec * 1000
+  });
+  const readT3 = badValues.sandbox.cacheManager('CACHE_READ', { kind: 'temp' });
+  assert(readT3.indexOf('OK') === 0, 'CACHE_READ temp must succeed (bad values): ' + readT3);
+  const tempFiltered3 = JSON.parse(badValues.sandbox.local('cache_read_result'));
+  assert.strictEqual(Object.keys(tempFiltered3.entries || {}).length, 0, 'object dayClass + string bucket must be dropped');
   const badOrderKey = 'c1|d1|wp1,wp2';
   const malformedOrder = createSandbox({
     files: {
