@@ -181,7 +181,12 @@ try {
                 details: { from: "SANDBOX", to: "LOCAL_ESTIMATE", durationSecs: duration, distanceMiles: distMiles }
             }));
         } else {
-            duration = duration > 0 ? duration : 0; 
+            // Partial API metrics (one side valid, the other not) with no
+            // later tier: the pair is incomplete, so the leg is rejected as
+            // zero-duration rather than publishing with a partial metric
+            // (INV-0.7 complete-metric contract).
+            duration = 0;
+            distMiles = 0;
         }
     }
 
