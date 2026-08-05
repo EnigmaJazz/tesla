@@ -11,14 +11,73 @@
         return Math.floor(v); 
     }
 
+    // Phase 5 Slice C (REQ-5REQID-1/2, REQ-5LOG-1): correlation helpers.
+    function logEvt(code, severity, details) {
+        flash(JSON.stringify({ timestamp: Date.now(), generationId: global('TDS_Active_Generation') || null,
+            component: "API_Parser", severity: severity, code: code, tripId: null, details: details || {} }));
+    }
+
+    // Request state is manager-owned (documented read-only schema); the parser
+    // only reads it for exact correlation and never writes it.
+    function readLatestByCluster() {
+        let rawState = readFile("Tasker/Tesla/Data/TDS_Route_Request_State.json");
+        if (!rawState) return null;
+        try {
+            let st = JSON.parse(rawState);
+            if (st && st.schemaVersion === 1 && st.latestByCluster) return st.latestByCluster;
+        } catch (e) {}
+        return null;
+    }
+
+    // Exact correlation (REQ-5REQID-2): generation MUST equal the active
+    // generation AND the latest-by-cluster record MUST match generation +
+    // requestId exactly. Superseded (older) requestIds and unknown clusters
+    // are stale. A pre-correlation legacy callback carries no correlation and
+    // keeps the historical path (Slice C migration stance).
+    function correlationOk(correlation) {
+        if (!correlation) return true;
+        let activeGen = global('TDS_Active_Generation') || null;
+        let corrGen = correlation.generationId || null;
+        if (corrGen !== activeGen) return false;
+        if (typeof correlation.clusterId !== "string" || correlation.clusterId.length === 0) return false;
+        if (typeof correlation.requestId !== "string" || correlation.requestId.length === 0) return false;
+        let latest = readLatestByCluster();
+        let rec = latest ? latest[correlation.clusterId] : null;
+        if (!rec) return false;
+        if (rec.requestId !== correlation.requestId) return false;
+        if ((rec.generationId || null) !== corrGen) return false;
+        return true;
+    }
+
     try {
         let rawPayload = readFile("Tasker/Tesla/Data/temp_payload.json");
         if (!rawPayload || rawPayload.indexOf("{") === -1) throw new Error("Missing or empty disk staging payload.");
 
-        let res = JSON.parse(rawPayload);
+        let staged = JSON.parse(rawPayload);
+        let correlation = null;
+        let res = staged;
+        if (staged && typeof staged === "object" && !Array.isArray(staged) && staged.correlation && typeof staged.correlation === "object" && staged.response) {
+            // Callback envelope {correlation, response} retained by staging.
+            correlation = staged.correlation;
+            res = staged.response;
+        } else {
+            // Raw Google response: the builder's api_correlation local is the
+            // correlation source for the callback.
+            let corrRaw = local('api_correlation');
+            if (corrRaw) { try { correlation = JSON.parse(corrRaw); } catch (e2) { correlation = null; } }
+        }
+
+        if (!correlationOk(correlation)) {
+            logEvt("STALE_API_RESPONSE_DISCARDED", "warn", { reason: "correlation mismatch", correlation: correlation || null });
+            setLocal('par1', '');
+            setLocal('par2', '');
+            writeFile("Tasker/Tesla/Data/temp_payload.json", "{}", false);
+            return; // REQ-5REQID-2: no cache/reorder mutation on mismatch.
+        }
+        if (correlation) logEvt("ROUTE_RESPONSE_ACCEPTED", "info", { clusterId: correlation.clusterId, requestId: correlation.requestId });
         
         if (local('api_route_mode') === "CLUSTER") {
-            let clusterRaw = local('par1');
+            let clusterRaw = local('api_cluster_json') || local('par1');
             let cluster = JSON.parse(clusterRaw);
             let uLoc = global('User_Loc') || "0,0";
             let wpIdStr = cluster.waypoints.map(function(w){ return w.id; }).join(",");

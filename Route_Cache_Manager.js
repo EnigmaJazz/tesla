@@ -586,11 +586,13 @@ function rcmHandleRegister(payload) {
   if (typeof payload.emittedAt !== "number") return "emittedAt must be a number";
   const now = rcmNowSec();
   const state = rcmReadRequestState(now);
+  const payloadGen = payload.generationId === undefined ? null : payload.generationId;
   const latestByCluster = {};
   const sKeys = Object.keys(state.latestByCluster);
   for (let i = 0; i < sKeys.length; i++) {
     const rec = state.latestByCluster[sKeys[i]];
     if (rec.emittedAt && rec.emittedAt < now - RCM_REQUEST_TTL_SECS) continue; // TTL 2h
+    if ((rec.generationId === undefined ? null : rec.generationId) !== payloadGen) continue; // other generation
     latestByCluster[sKeys[i]] = rec;
   }
   latestByCluster[payload.clusterId] = {

@@ -235,8 +235,8 @@ try {
   assert.strictEqual(evt.severity, 'warn', 'stale LOG-17 severity');
   assert(typeof evt.timestamp === 'number' && 'generationId' in evt && 'tripId' in evt && evt.details,
     'stale LOG-17 must carry timestamp/generationId/tripId/details');
-  assert(sandbox.local('par1') !== 'ORDER_CACHE_UPSERT' && sandbox.local('par1') !== 'SESSION_CACHE_UPSERT',
-    'stale callback must not stage cache/reorder commands (par1=' + sandbox.local('par1') + ')');
+  assert(sandbox.local('par1') === '' && sandbox.local('par2') === '',
+    'stale callback must clear the command channel (par1=' + sandbox.local('par1') + ')');
   assert(!store.writeLog.some(function (w) { return w.path.indexOf('TDS_Order_Cache') !== -1 || w.path.indexOf('Temp_Route_Cache') !== -1; }),
     'stale callback must not write cache files');
   assert.strictEqual(store.files[TEMP_PAYLOAD], '{}', 'stale callback staging must be consumed');
@@ -261,8 +261,8 @@ try {
   runScript(PARSER, sandbox, store);
   if (store.runError) throw new Error('API_Parser crashed on generation-mismatch callback: ' + JSON.stringify(store.runError));
   assert(logsWithCode(store, 'STALE_API_RESPONSE_DISCARDED').length === 1, 'generation mismatch must be discarded');
-  assert(sandbox.local('par1') !== 'ORDER_CACHE_UPSERT' && sandbox.local('par1') !== 'SESSION_CACHE_UPSERT',
-    'generation-mismatch callback must not stage cache/reorder commands');
+  assert.strictEqual(sandbox.local('par1'), '', 'generation-mismatch callback must not stage cache/reorder commands');
+  assert.strictEqual(sandbox.local('par2'), '', 'generation-mismatch callback must not stage a payload');
 
   // Unknown cluster: no record for the claimed clusterId.
   sandbox.writeFile(TEMP_PAYLOAD, JSON.stringify({
@@ -272,8 +272,8 @@ try {
   runScript(PARSER, sandbox, store);
   if (store.runError) throw new Error('API_Parser crashed on unknown-cluster callback: ' + JSON.stringify(store.runError));
   assert(logsWithCode(store, 'STALE_API_RESPONSE_DISCARDED').length === 2, 'unknown cluster must be discarded');
-  assert(sandbox.local('par1') !== 'ORDER_CACHE_UPSERT' && sandbox.local('par1') !== 'SESSION_CACHE_UPSERT',
-    'unknown-cluster callback must not stage cache/reorder commands');
+  assert.strictEqual(sandbox.local('par1'), '', 'unknown-cluster callback must not stage cache/reorder commands');
+  assert.strictEqual(sandbox.local('par2'), '', 'unknown-cluster callback must not stage a payload');
   assert(!store.writeLog.some(function (w) { return w.path.indexOf('TDS_Order_Cache') !== -1 || w.path.indexOf('Temp_Route_Cache') !== -1; }),
     'stale callbacks must not write cache files');
 } catch (e) {
@@ -322,8 +322,8 @@ try {
   runScript(PARSER, sandbox, store);
   if (store.runError) throw new Error('API_Parser crashed on route stale: ' + JSON.stringify(store.runError));
   assert(logsWithCode(store, 'STALE_API_RESPONSE_DISCARDED').length === 1, 'unregistered requestId must be discarded');
-  assert(sandbox.local('par1') !== 'SESSION_CACHE_UPSERT' && sandbox.local('par1') !== 'ORDER_CACHE_UPSERT',
-    'stale route callback must not stage cache commands');
+  assert.strictEqual(sandbox.local('par1'), '', 'stale route callback must not stage cache commands');
+  assert.strictEqual(sandbox.local('par2'), '', 'stale route callback must not stage a payload');
 } catch (e) {
   fail('standard-fork section threw: ' + (e && e.message ? e.message : e));
 }
