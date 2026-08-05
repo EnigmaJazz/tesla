@@ -83,6 +83,16 @@ section('helper-rejects-unknown-and-legacy', function () {
     'readActiveGeneration:bogus must log HELPER_REQUEST_REJECTED with LOG-17 fields');
   const r5 = runHelper('readActiveGeneration:master', files);
   assert(r5.rv.indexOf('ERROR:') !== 0, 'readActiveGeneration:master must be accepted, got: ' + r5.rv);
+  const r6 = runHelper('readOrigin:', files);
+  assert(r6.rv.indexOf('ERROR:') === 0, 'readOrigin: (empty suffix) must be rejected, got: ' + r6.rv);
+  assert(parseLog(r6.store).some(function (l) { return l.code === 'HELPER_REQUEST_REJECTED' && logFieldsOk(l); }),
+    'readOrigin: must log HELPER_REQUEST_REJECTED with LOG-17 fields');
+  const r7 = runHelper('readActiveGeneration:', files);
+  assert(r7.rv.indexOf('ERROR:') === 0, 'readActiveGeneration: (empty kind) must be rejected, got: ' + r7.rv);
+  const r8 = runHelper('readActiveGeneration:master:bogus', files);
+  assert(r8.rv.indexOf('ERROR:') === 0, 'readActiveGeneration:master:bogus (surplus tokens) must be rejected, got: ' + r8.rv);
+  const r9 = runHelper('readActiveGeneration::bogus', files);
+  assert(r9.rv.indexOf('ERROR:') === 0, 'readActiveGeneration::bogus (empty kind) must be rejected, got: ' + r9.rv);
 });
 
 section('owner-row-on-handler-clear', function () {
