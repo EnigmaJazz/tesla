@@ -137,5 +137,31 @@ try {
   assert(store.writeLog.some(function (w) { return w.path === OVR_FILE; }), 'the Override Handler must apply the injector command');
 } catch (e) { fail('Injector staging: ' + e.message); }
 
+// REQ-4CMD-1 (SCN-4CMD-2): typed pre-invocation validation — an incomplete or
+// wrong-typed reducer payload must be rejected BEFORE any owner runs.
+try {
+  const expire = make({ globals: { TDS_Active_Generation: ACTIVE_GEN } });
+  expire.sandbox.setLocal('par1', 'EXPIRE_TRIP');
+  expire.sandbox.setLocal('par2', JSON.stringify({ generationId: ACTIVE_GEN }));
+  runRouter(expire.sandbox, expire.store);
+  assert.strictEqual(expire.sandbox.local('tds_state_owner'), '', 'EXPIRE_TRIP missing tripId must NOT set an owner');
+  assert(/ERROR: missing tripId/.test(expire.sandbox.local('return_value')), 'missing tripId must be rejected');
+  assert(!expire.store.writeLog.some(function (w) { return w.path === STATE_FILE; }), 'rejected EXPIRE_TRIP must not write state');
+
+  const wrongType = make({ globals: { TDS_Active_Generation: ACTIVE_GEN } });
+  wrongType.sandbox.setLocal('par1', 'COMPLETE_TRIP');
+  wrongType.sandbox.setLocal('par2', JSON.stringify({ generationId: ACTIVE_GEN, tripId: 123, at: 'now' }));
+  runRouter(wrongType.sandbox, wrongType.store);
+  assert.strictEqual(wrongType.sandbox.local('tds_state_owner'), '', 'wrong-typed COMPLETE_TRIP must NOT set an owner');
+  assert(/ERROR: tripId must be string/.test(wrongType.sandbox.local('return_value')), 'wrong-typed tripId must be rejected');
+  assert(!wrongType.store.writeLog.some(function (w) { return w.path === STATE_FILE; }), 'rejected COMPLETE_TRIP must not write state');
+
+  const badGen = make({ globals: { TDS_Active_Generation: ACTIVE_GEN } });
+  badGen.sandbox.setLocal('par1', 'COMPLETE_TRIP');
+  badGen.sandbox.setLocal('par2', JSON.stringify({ generationId: 'not-a-gen', tripId: 't1', at: 100 }));
+  runRouter(badGen.sandbox, badGen.store);
+  assert(/ERROR: invalid generationId format/.test(badGen.sandbox.local('return_value')), 'malformed generationId must be rejected');
+} catch (e) { fail('typed validation: ' + e.message); }
+
 if (failures > 0) { console.log('FAIL: state-command — ' + failures + ' group(s) failed'); process.exit(1); }
-console.log('PASS: state-command — router contract, single-owner routing, adapter staging');
+console.log('PASS: state-command — router contract, single-owner routing, adapter staging, typed validation');
