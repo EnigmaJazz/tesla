@@ -231,6 +231,18 @@ try {
   if (malformed.store.runError) throw new Error('API_Parser crashed on malformed envelope: ' + JSON.stringify(malformed.store.runError));
   assert.strictEqual(malformed.sandbox.local('par1'), '', 'malformed-envelope callback must stage no mutation');
   assert(logsWithCode(malformed.store, 'STALE_API_RESPONSE_DISCARDED').length === 1, 'malformed correlation envelope must be discarded');
+
+  // REQ-5REQID-2/3: a RAW callback {routes:[...]} with no envelope is stale —
+  // there is NO local-correlation fallback (correlation must travel with the
+  // callback post-migration).
+  const raw = runRegisteredClusterFlow();
+  raw.sandbox.writeFile(TEMP_PAYLOAD, JSON.stringify({ routes: [{ optimizedIntermediateWaypointIndex: [1, 0] }] }));
+  runScript(PARSER, raw.sandbox, raw.store);
+  if (raw.store.runError) throw new Error('API_Parser crashed on raw callback: ' + JSON.stringify(raw.store.runError));
+  assert.strictEqual(raw.sandbox.local('par1'), '', 'raw callback must stage no mutation');
+  const rawStale = logsWithCode(raw.store, 'STALE_API_RESPONSE_DISCARDED');
+  assert(rawStale.length === 1, 'raw callback without envelope must be discarded (got ' + rawStale.length + ')');
+  assert(logsWithCode(raw.store, 'ROUTE_RESPONSE_ACCEPTED').length === 0, 'raw callback must never be accepted');
 } catch (e) {
   fail('accepted correlation section threw: ' + (e && e.message ? e.message : e));
 }
@@ -335,8 +347,8 @@ try {
   const regResult = sandbox.cacheManager('REQUEST_STATE_REGISTER', payload);
   assert(regResult.indexOf('OK') === 0, 'standard registration must succeed: ' + regResult);
 
-  // Route-mode accept via the local correlation path (HTTP writes the raw response).
-  sandbox.writeFile(TEMP_PAYLOAD, JSON.stringify({ routes: [{ duration: '1800s', distanceMeters: 12000 }] }));
+  // Route-mode accept via the callback envelope {correlation, response}.
+  sandbox.writeFile(TEMP_PAYLOAD, JSON.stringify({ correlation: correlation, response: { routes: [{ duration: '1800s', distanceMeters: 12000 }] } }));
   runScript(PARSER, sandbox, store);
   if (store.runError) throw new Error('API_Parser crashed on route accept: ' + JSON.stringify(store.runError));
   assert.strictEqual(sandbox.local('par1'), 'SESSION_CACHE_UPSERT', 'accepted route response must stage SESSION_CACHE_UPSERT');
@@ -346,10 +358,8 @@ try {
   assert(logsWithCode(store, 'ROUTE_RESPONSE_ACCEPTED').length === 1, 'route accept must log ROUTE_RESPONSE_ACCEPTED');
 
   // Route-mode stale: callback requestId never registered -> exact mismatch.
-  sandbox.setLocal('api_correlation', JSON.stringify({
-    generationId: GEN, clusterId: '51.9,-2.1|51.5,-2.0|DRIVE', requestId: 'req:1700000000:ffff'
-  }));
-  sandbox.writeFile(TEMP_PAYLOAD, JSON.stringify({ routes: [{ duration: '900s', distanceMeters: 6000 }] }));
+  const staleCorr = { generationId: GEN, clusterId: '51.9,-2.1|51.5,-2.0|DRIVE', requestId: 'req:1700000000:ffff' };
+  sandbox.writeFile(TEMP_PAYLOAD, JSON.stringify({ correlation: staleCorr, response: { routes: [{ duration: '900s', distanceMeters: 6000 }] } }));
   runScript(PARSER, sandbox, store);
   if (store.runError) throw new Error('API_Parser crashed on route stale: ' + JSON.stringify(store.runError));
   assert(logsWithCode(store, 'STALE_API_RESPONSE_DISCARDED').length === 1, 'unregistered requestId must be discarded');
