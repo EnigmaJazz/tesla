@@ -26,7 +26,11 @@ function make(files, failures, mathRandom) {
 function runPub(files, candidate, failures, mathRandom) {
   const { sandbox, store } = make(files, failures, mathRandom);
   sandbox.setLocal('par1', candidate === undefined ? '' : (typeof candidate === 'string' ? candidate : JSON.stringify(candidate)));
+  // Identify the Generation Publisher so its reorder-queue drain/clear passes
+  // the mock ownership guard (State Command enqueues; Publisher drains/clears).
+  sandbox.__currentScriptPath = PUBLISHER;
   runScript(PUBLISHER, sandbox, store);
+  sandbox.__currentScriptPath = '';
   if (store.runError) throw new Error(store.runError.message);
   return { sandbox, store, result: sandbox.local('return_value') };
 }
@@ -478,7 +482,10 @@ function testReorderTiming() {
 
 function testStaleReorderRejection() {
   const expectedGen = 'gen:' + nowSec + ':ab12';
-  const staleGen = 'gen:1699999999:0001';
+  // Phase 4 (REQ-4REORDER-2): admission matches the pre-build committed
+  // generation ('gen:1699999999:0001' from prior()) — never the minted id.
+  // A command stamped with any OTHER generation is stale and must be rejected.
+  const staleGen = 'gen:1800000000:ffff';
   const files = prior();
   files[DATA + 'TDS_Reorder_Commands.json'] = JSON.stringify([{
     type: 'APPLY_CLUSTER_REORDER',
@@ -499,6 +506,7 @@ function testStaleReorderRejection() {
   assert.deepStrictEqual(master.map(function (x) { return x.id; }), ['e1', 'e2', 'e3'], 'stale reorder command must be rejected');
   const log = r.store.flashLog.find(function (f) { return f.indexOf('REORDER_COMMAND_REJECTED') !== -1 || f.indexOf('STALE_REORDER_COMMAND_REJECTED') !== -1; });
   assert(log, 'stale reorder command should be logged as rejected');
+  assert.strictEqual(r.store.files[DATA + 'TDS_Reorder_Commands.json'], '[]', 'rejected command must be drained and cleared');
 }
 
 function testGatekeeperEmitsCommand() {
@@ -515,11 +523,19 @@ function testGatekeeperEmitsCommand() {
   });
   runScript(GATEKEEPER, sandbox, store);
   if (store.runError) throw new Error(store.runError.message);
+  // Phase 4 (REQ-4REORDER-1): the producer stages ENQUEUE_REORDER; the State
+  // Command owns the queue append.
+  assert.strictEqual(sandbox.local('par1'), 'ENQUEUE_REORDER', 'Gatekeeper should stage ENQUEUE_REORDER');
+  const staged = JSON.parse(sandbox.local('par2'));
+  assert.deepStrictEqual(staged.orderedEventIds, ['wp2', 'wp1']);
+  assert.strictEqual(staged.generationId, activeGen);
+  assert(!store.writeLog.some(function (w) { return w.path === DATA + 'TDS_Reorder_Commands.json'; }), 'Gatekeeper must not write the queue directly');
+  const result = sandbox.stateCommand('ENQUEUE_REORDER', staged);
+  assert(result.indexOf('OK') === 0, 'router should accept the staged reorder command');
   const queue = JSON.parse(store.files[DATA + 'TDS_Reorder_Commands.json'] || '[]');
-  assert.strictEqual(queue.length, 1, 'Gatekeeper should emit one reorder command');
+  assert.strictEqual(queue.length, 1, 'router should enqueue one reorder command');
   assert.strictEqual(queue[0].type, 'APPLY_CLUSTER_REORDER');
   assert.deepStrictEqual(queue[0].orderedEventIds, ['wp2', 'wp1']);
-  assert.strictEqual(queue[0].generationId, activeGen);
   const directMasterWrite = store.writeLog.some(function (w) { return w.path === DATA + 'TDS_Master.json'; });
   assert(!directMasterWrite, 'Gatekeeper must not write TDS_Master.json');
 }
@@ -540,11 +556,18 @@ function testApiParserEmitsCommand() {
   });
   runScript(API_PARSER, sandbox, store);
   if (store.runError) throw new Error(store.runError.message);
+  // Phase 4 (REQ-4REORDER-1): the producer stages ENQUEUE_REORDER; the State
+  // Command owns the queue append.
+  assert.strictEqual(sandbox.local('par1'), 'ENQUEUE_REORDER', 'API_Parser should stage ENQUEUE_REORDER');
+  const staged = JSON.parse(sandbox.local('par2'));
+  assert.deepStrictEqual(staged.orderedEventIds, ['wp2', 'wp1']);
+  assert.strictEqual(staged.generationId, activeGen);
+  assert(!store.writeLog.some(function (w) { return w.path === DATA + 'TDS_Reorder_Commands.json'; }), 'API_Parser must not write the queue directly');
+  const result = sandbox.stateCommand('ENQUEUE_REORDER', staged);
+  assert(result.indexOf('OK') === 0, 'router should accept the staged reorder command');
   const queue = JSON.parse(store.files[DATA + 'TDS_Reorder_Commands.json'] || '[]');
-  assert.strictEqual(queue.length, 1, 'API_Parser should emit one reorder command');
+  assert.strictEqual(queue.length, 1, 'router should enqueue one reorder command');
   assert.strictEqual(queue[0].type, 'APPLY_CLUSTER_REORDER');
-  assert.deepStrictEqual(queue[0].orderedEventIds, ['wp2', 'wp1']);
-  assert.strictEqual(queue[0].generationId, activeGen);
   const directMasterWrite = store.writeLog.some(function (w) { return w.path === DATA + 'TDS_Master.json'; });
   assert(!directMasterWrite, 'API_Parser must not write TDS_Master.json');
 }
@@ -826,7 +849,11 @@ function publishPar1(store, candidate) {
   const nextLocals = Object.assign({}, store.locals);
   nextLocals['par1'] = JSON.stringify(candidate);
   const { sandbox: pubBox, store: pubStore } = createSandbox({ files: store.files, locals: nextLocals, nowMs: nowSec * 1000 });
+  // Identify the Generation Publisher so its reorder-queue drain/clear passes
+  // the mock ownership guard.
+  pubBox.__currentScriptPath = PUBLISHER;
   runScript(PUBLISHER, pubBox, pubStore);
+  pubBox.__currentScriptPath = '';
   if (pubStore.runError) throw new Error(pubStore.runError.message);
   return pubStore;
 }

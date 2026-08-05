@@ -79,7 +79,7 @@ try {
 try {
   const { sandbox, store } = make({ globals: { TDS_Active_Generation: ACTIVE_GEN } });
   sandbox.setLocal('par1', 'RECONCILE_GENERATION');
-  sandbox.setLocal('par2', JSON.stringify({ activeGeneration: ACTIVE_GEN, manifestSchemaVersion: 2 }));
+  sandbox.setLocal('par2', JSON.stringify({ generationId: ACTIVE_GEN, activeGeneration: ACTIVE_GEN, manifestSchemaVersion: 2 }));
   runRouter(sandbox, store);
   assert(store.runError === undefined, 'reconcile must not crash');
   assert.strictEqual(sandbox.local('tds_state_owner'), 'Trip_State_Reducer', 'RECONCILE_GENERATION must route to the reducer');
@@ -100,13 +100,18 @@ try {
 } catch (e) { fail('publisher routing: ' + e.message); }
 
 // SCN-4ADAPTER-1: Appender stages exact-ID APPEND_OVERRIDE; the router delivers it.
+// Adapter and router run in SEPARATE sandboxes: Tasker runs each JSlet in its
+// own context, and the staged locals thread between them.
 try {
+  const stage = make({ globals: { TDS_Active_Generation: ACTIVE_GEN } });
+  stage.sandbox.setLocal('final_return', 'LIFT|' + ID_RECENT + '|51.9,-2.1^51.5,-2.0');
+  runScript(APPENDER, stage.sandbox, stage.store);
+  assert(stage.store.runError === undefined, 'Appender must not crash');
+  assert.strictEqual(stage.sandbox.local('par1'), 'APPEND_OVERRIDE', 'Appender must stage APPEND_OVERRIDE');
+  assert.strictEqual(JSON.parse(stage.sandbox.local('par2')).baseId, ID_RECENT, 'Appender must stage the exact occurrence ID');
   const { sandbox, store } = make({ globals: { TDS_Active_Generation: ACTIVE_GEN } });
-  sandbox.setLocal('final_return', 'LIFT|' + ID_RECENT + '|51.9,-2.1^51.5,-2.0');
-  runScript(APPENDER, sandbox, store);
-  assert(store.runError === undefined, 'Appender must not crash');
-  assert.strictEqual(sandbox.local('par1'), 'APPEND_OVERRIDE', 'Appender must stage APPEND_OVERRIDE');
-  assert.strictEqual(JSON.parse(sandbox.local('par2')).baseId, ID_RECENT, 'Appender must stage the exact occurrence ID');
+  sandbox.setLocal('par1', stage.sandbox.local('par1'));
+  sandbox.setLocal('par2', stage.sandbox.local('par2'));
   runRouter(sandbox, store);
   assert(store.runError === undefined, 'router must accept the Appender envelope');
   assert.strictEqual(sandbox.local('tds_state_owner'), 'Override_Handler', 'Appender command must reach the Override Handler');
@@ -117,12 +122,15 @@ try {
 try {
   const files = { [DATA + 'TDS_Run_Manifest.json']: JSON.stringify(manifest(ACTIVE_GEN)),
     [DATA + 'Itin_Master.' + GEN_ENC + '.json']: JSON.stringify([{ tripId: 'leg1', targetEventId: ID_RECENT, targetCoords: '51.5,-2.0' }]) };
-  const { sandbox, store } = make({ globals: { TDS_Active_Generation: ACTIVE_GEN }, files: files });
-  sandbox.setLocal('par1', '0'); sandbox.setLocal('par2', 'Forced_Drives');
-  runScript(INJECTOR, sandbox, store);
-  assert(store.runError === undefined, 'Injector must not crash');
-  assert.strictEqual(sandbox.local('par1'), 'APPLY_OVERRIDE', 'Injector must stage APPLY_OVERRIDE');
-  assert.strictEqual(JSON.parse(sandbox.local('par2')).targetId, ID_RECENT, 'Injector must stage the exact occurrence ID');
+  const stage = make({ globals: { TDS_Active_Generation: ACTIVE_GEN }, files: files });
+  stage.sandbox.setLocal('par1', '0'); stage.sandbox.setLocal('par2', 'Forced_Drives');
+  runScript(INJECTOR, stage.sandbox, stage.store);
+  assert(stage.store.runError === undefined, 'Injector must not crash');
+  assert.strictEqual(stage.sandbox.local('par1'), 'APPLY_OVERRIDE', 'Injector must stage APPLY_OVERRIDE');
+  assert.strictEqual(JSON.parse(stage.sandbox.local('par2')).targetId, ID_RECENT, 'Injector must stage the exact occurrence ID');
+  const { sandbox, store } = make({ globals: { TDS_Active_Generation: ACTIVE_GEN } });
+  sandbox.setLocal('par1', stage.sandbox.local('par1'));
+  sandbox.setLocal('par2', stage.sandbox.local('par2'));
   runRouter(sandbox, store);
   assert(store.runError === undefined, 'router must accept the Injector envelope');
   assert.strictEqual(sandbox.local('tds_state_owner'), 'Override_Handler', 'Injector command must reach the Override Handler');
