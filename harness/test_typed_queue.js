@@ -7,7 +7,7 @@
 //                    controls retain their values after one parse
 //   SCN-5QUEUE-2     malformed JSON / unsupported schema / invalid row ->
 //                    TYPED_QUEUE_REJECTED, nothing compiled (no partial rows)
-//   SCN-5CUTOVER-1   shadow dual-emit: head block_step17-21 mirror the typed
+//   SCN-5CUTOVER-2   cutover: legacy block_step17-21 retired; typed row authoritative
 //                    head row during the shadow phase (equivalence check)
 //   INV-0.7 tier 2   positive typed routeDurationSecs/routeDistanceMiles
 //                    consumed before any local estimate (API -> SANDBOX)
@@ -172,17 +172,14 @@ try {
   assert(head.routeDurationSecs > 0, 'head typed routeDurationSecs must be positive for an away leg');
   assert(head.routeDistanceMiles > 0, 'head typed routeDistanceMiles must be positive for an away leg');
 
-  // SCN-5CUTOVER-1 (shadow phase): the legacy block_step17-21 split locals
-  // must mirror the typed head row so equivalence holds before cutover.
-  const shadowDur = parseInt(store.locals['block_step17'], 10);
-  const shadowDist = parseFloat(store.locals['block_step18']);
-  if (!(shadowDur > 0)) fail('shadow block_step17 must mirror typed routeDurationSecs, got ' + JSON.stringify(store.locals['block_step17']));
-  if (!(shadowDist > 0)) fail('shadow block_step18 must mirror typed routeDistanceMiles, got ' + JSON.stringify(store.locals['block_step18']));
-  if (shadowDur !== head.routeDurationSecs) fail('block_step17 (' + shadowDur + ') must equal typed routeDurationSecs (' + head.routeDurationSecs + ')');
-  if (shadowDist !== head.routeDistanceMiles) fail('block_step18 (' + shadowDist + ') must equal typed routeDistanceMiles (' + head.routeDistanceMiles + ')');
-  if (store.locals['block_step19'] !== head.departurePolicy) fail('block_step19 must mirror typed departurePolicy');
-  if (store.locals['block_step20'] !== head.planningDay) fail('block_step20 must mirror typed planningDay');
-  if (store.locals['block_step21'] !== head.originSource) fail('block_step21 must mirror typed originSource');
+  // SCN-5CUTOVER-2 (cutover complete): the legacy block_step17-21 split
+  // locals are RETIRED — they must NOT be produced by Sandbox or read by
+  // Compiler. Typed row fields are authoritative.
+  ['block_step17', 'block_step18', 'block_step19', 'block_step20', 'block_step21'].forEach(function (k) {
+    if (store.locals[k] !== undefined && store.locals[k] !== '') {
+      fail('cutover: Sandbox must not emit legacy ' + k + ' (got ' + JSON.stringify(store.locals[k]) + ')');
+    }
+  });
 
   // ------------------------------------------------------------------
   // EOF: an empty-row envelope (idx beyond the master length).
@@ -260,7 +257,7 @@ try {
 
   console.log('PASS: typed queue envelope contract');
   console.log('  SCN-5QUEUE-1: envelope parsed once; rows + tail controls intact; typed head metrics positive');
-  console.log('  SCN-5CUTOVER-1: shadow block_step17-21 mirror typed head (equivalence)');
+  console.log('  SCN-5CUTOVER-2: legacy block_step17-21 retired; typed row authoritative');
   console.log('  SCN-5QUEUE-2: malformed/schema/invalid-row rejected with TYPED_QUEUE_REJECTED, nothing compiled');
   console.log('  INV-0.7 tier 2: typed routeDurationSecs/routeDistanceMiles consumed (API -> SANDBOX)');
   console.log('  SCN-5CUTOVER-3: zero-duration rejected; EOF envelope empty-row');

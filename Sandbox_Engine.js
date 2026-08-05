@@ -703,18 +703,6 @@ try {
         function enqueueTypedRow(row) {
             const typed = buildTypedRow(row);
             queue.push(typed);
-            if (queue.length === 1) {
-                // REQ-5CUTOVER-1 (shadow phase): mirror the head typed
-                // metrics/policy/day/origin to block_step17-21 so the
-                // pre-cutover Compiler split path sees identical values.
-                if (typed.routeDurationSecs > 0 && typed.routeDistanceMiles > 0) {
-                    setLocal('block_step17', String(typed.routeDurationSecs));
-                    setLocal('block_step18', String(typed.routeDistanceMiles));
-                }
-                setLocal('block_step19', typed.departurePolicy);
-                setLocal('block_step20', typed.planningDay);
-                setLocal('block_step21', typed.originSource);
-            }
         }
         
         let ignoredLateness = getOvr('Ignored_Lateness'); let ignoredWalks = getOvr('Ignored_Walks');
