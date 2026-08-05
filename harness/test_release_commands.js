@@ -26,6 +26,7 @@ const TRIP_ID = 'manual_return_' + B36;
 
 const STATE_COMMAND = path.resolve(__dirname, '..', 'TDS_State_Command.js');
 const TDS_HELPER = path.resolve(__dirname, '..', 'TDS_Helper.js');
+const STOP_LOGGER = path.resolve(__dirname, '..', 'Stop_Logger.js');
 
 const failures = [];
 function section(name, fn) {
@@ -109,6 +110,30 @@ section('owner-row-on-handler-clear', function () {
   const logs = parseLog(store);
   assert(logs.some(function (l) { return l.code === 'LOCK_COMPATIBILITY_CLEARED' && logFieldsOk(l); }), 'LOCK_COMPATIBILITY_CLEARED must carry LOG-17 fields');
   assert(logs.some(function (l) { return l.code === 'SESSION_CLOSED' && logFieldsOk(l); }), 'SESSION_CLOSED must carry LOG-17 fields');
+});
+
+section('stop-logger-validation-errors-structured', function () {
+  // REQ-4LOG-1: Stop_Logger validation errors must be structured LOG-17 JSON,
+  // never free-form flash. Both the missing-target and invalid-duration paths.
+  const missingTarget = make({});
+  missingTarget.sandbox.setLocal('active_target_id', '');
+  missingTarget.sandbox.setLocal('ld_selected', '5m');
+  runScript(STOP_LOGGER, missingTarget.sandbox, missingTarget.store);
+  if (missingTarget.store.runError) throw new Error(missingTarget.store.runError.message);
+  assert(!missingTarget.store.flashLog.some(function (f) { return typeof f === 'string' && f.indexOf('Missing target') !== -1; }),
+    'missing-target error must not be free-form');
+  assert(parseLog(missingTarget.store).some(function (l) { return l.code === 'STOP_TARGET_MISSING' && logFieldsOk(l); }),
+    'missing-target must log STOP_TARGET_MISSING with LOG-17 fields');
+
+  const invalidDuration = make({});
+  invalidDuration.sandbox.setLocal('active_target_id', 'event_abc_kx8f00');
+  invalidDuration.sandbox.setLocal('ld_selected', 'abc');
+  runScript(STOP_LOGGER, invalidDuration.sandbox, invalidDuration.store);
+  if (invalidDuration.store.runError) throw new Error(invalidDuration.store.runError.message);
+  assert(!invalidDuration.store.flashLog.some(function (f) { return typeof f === 'string' && /^Error: /.test(f); }),
+    'invalid-duration error must not be free-form');
+  assert(parseLog(invalidDuration.store).some(function (l) { return l.code === 'STOP_DURATION_INVALID' && logFieldsOk(l); }),
+    'invalid-duration must log STOP_DURATION_INVALID with LOG-17 fields');
 });
 
 try {

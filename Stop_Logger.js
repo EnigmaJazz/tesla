@@ -64,12 +64,15 @@ try {
                 }
                 flash(cleanStop + "m stop marked as completed.");
             } else {
-                flash("Error: Selected stop didn't contain a valid number.");
+                flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                    component: "Stop_Logger", severity: "ERROR", code: "STOP_DURATION_INVALID", tripId: evId || null, details: { reason: "selected stop did not contain a valid number", selected: selStop } }));
             }
         }
     } else {
-        flash("Error: Missing target ID or menu selection.");
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Stop_Logger", severity: "ERROR", code: "STOP_TARGET_MISSING", tripId: null, details: { reason: "missing target id or menu selection", evId: evId || null, selStop: selStop || null } }));
     }
 } catch(e) {
-    flash("Stop Logger Crash: " + e.message);
+    flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+        component: "Stop_Logger", severity: "ERROR", code: "STOP_LOGGER_CRASH", tripId: null, details: { message: e.message } }));
 }
