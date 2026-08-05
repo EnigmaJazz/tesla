@@ -24,13 +24,6 @@ function getSafeId(idStr, startSecInt) {
     return idStr ? (idStr + "_" + rawStart) : rawStart;
 }
 
-function getDist(lat1, lon1, lat2, lon2) {
-    let R = 6371e3; let rLat1 = lat1 * Math.PI / 180; let rLat2 = lat2 * Math.PI / 180;
-    let dLat = (lat2 - lat1) * Math.PI / 180; let dLon = (lon2 - lon1) * Math.PI / 180;
-    let a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(rLat1) * Math.cos(rLat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
 const SECONDS_PER_DAY = 86400;
 
 // INV-0.2: DST-safe day-boundary comparison. Both unixSec values are in UTC.
@@ -48,13 +41,6 @@ function utcDayBoundaryUnix(unixSec) {
     return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000;
 }
 
-function isClose(cStrA, cStrB) {
-    if (!cStrA || !cStrB || cStrA === "0,0" || cStrB === "0,0") return false;
-    let pA = cStrA.split(","), pB = cStrB.split(",");
-    if (pA.length !== 2 || pB.length !== 2) return false;
-    return getDist(parseFloat(pA[0]), parseFloat(pA[1]), parseFloat(pB[0]), parseFloat(pB[1])) <= 200;
-}
-
 try {
     try { writeFile("Tasker/Tesla/Data/TDS_Optimize_Queue.json", "[]", false); } catch(e){}
 
@@ -66,133 +52,12 @@ try {
     try { mem = JSON.parse(readFile("Tasker/Tesla/Data/TDS_Overrides.json") || "{}"); } catch(e) {}
     let trimmedEventsRaw = mem['Trimmed_Events'] || "";
 
-    let tempRaw = "";
-    try { tempRaw = readFile("Tasker/Tesla/Data/Temp_Route_Cache.txt") || ""; } catch(e){}
-    if (tempRaw.indexOf("%") === 0) tempRaw = "";
-    
-    if (tempRaw.length > 5) {
-        let tempArr = tempRaw.split("|");
-        let latestApiCallMap = {}; 
-        let keepTemp = [];
-
-        for (let t = 0; t < tempArr.length; t++) {
-            if (!tempArr[t]) continue;
-            let tp = tempArr[t].split("~");
-            if (tp.length < 7) continue; 
-
-            let o = tp[0] ? tp[0].trim() : "";
-            let d = tp[1] ? tp[1].trim() : "";
-            let m = tp[2] ? tp[2].trim() : "";
-            
-            if (!o || !d || o === "0,0" || d === "0,0") continue;
-
-            let durSec    = parseInt(tp[3], 10);
-            let distM     = parseInt(tp[4], 10);
-            let apiUnix   = parseInt(tp[5], 10);
-            let targetSec = parseInt(tp[6], 10); 
-
-            if (isNaN(durSec) || isNaN(distM) || isNaN(apiUnix) || isNaN(targetSec)) continue;
-            if (distM > 3000000 || distM > 10000000) continue; 
-
-            let key = o + "~~" + d + "~~" + m;
-
-            if (nowSec >= targetSec) {
-                if (!latestApiCallMap[key] || latestApiCallMap[key].apiUnix < apiUnix) {
-                    latestApiCallMap[key] = { 
-                        o: o, d: d, m: m, dur: durSec, dist: distM, 
-                        apiUnix: apiUnix, eventUnix: targetSec 
-                    };
-                }
-            } else {
-                keepTemp.push(tempArr[t]);
-            }
-        }
-        writeFile("Tasker/Tesla/Data/Temp_Route_Cache.txt", keepTemp.join("|"), false);
-
-        let tripsToCommit = Object.keys(latestApiCallMap).map(function(k) { return latestApiCallMap[k]; });
-        
-        if (tripsToCommit.length > 0) {
-            let rCacheRaw = "";
-            try { rCacheRaw = readFile("Tasker/Tesla/Data/RouteCache.txt") || ""; } catch(e){}
-            let routes = rCacheRaw.split("|");
-
-            for (let c = 0; c < tripsToCommit.length; c++) {
-                let trip = tripsToCommit[c];
-                let to = trip.o, td = trip.d, tm = trip.m, finalDur = trip.dur, tUnix = trip.eventUnix;
-
-                let tDate   = new Date(tUnix * 1000);
-                let tod     = tDate.getHours() * 60 + tDate.getMinutes();
-                let dayType = (tDate.getDay() === 0 || tDate.getDay() === 6) ? 1 : 0;
-
-                let matchFound = false; let isOutlier = false; let updatedRoutes = [];
-                let zombieTracker = {}; 
-
-                for (let r = 0; r < routes.length; r++) {
-                    if (!routes[r] || routes[r].indexOf("~") === -1) continue;
-                    let p = routes[r].split("~");
-                    if (p.length < 10) continue; 
-
-                    let isSpatialMatch = (p[2] === tm && isClose(p[0], to) && isClose(p[1], td));
-
-                    if (isSpatialMatch && tm !== "WALK") {
-                        let cTod     = parseInt(p[7], 10);
-                        let cDayType = parseInt(p[8], 10);
-                        let diff     = Math.abs(tod - cTod);
-                        if (diff > 720) diff = 1440 - diff;
-
-                        if (diff <= 60 && cTod !== -999 && cDayType === dayType) {
-                            let zKey = tm + "_" + cTod + "_" + cDayType;
-                            if (zombieTracker[zKey]) continue; 
-
-                            zombieTracker[zKey] = true;
-                            matchFound = true;
-
-                            let anchorOrig = p[0]; 
-                            let anchorDest = p[1]; 
-
-                            let oldMean = parseFloat(p[3]); 
-                            let oldDist = parseInt(p[4], 10) || 0; 
-                            let oldM2   = parseFloat(p[6]); 
-                            let n       = parseInt(p[9], 10);
-                            if (isNaN(n) || n < 1) n = 1;
-                            
-                            let sd = (n > 2) ? Math.sqrt(oldM2 / (n - 1)) : Math.max(120, oldMean * 0.15);
-                            
-                            if (n >= 3) {
-                                let zScore = Math.abs(finalDur - oldMean) / sd;
-                                isOutlier = (zScore > 2.0 && Math.abs(finalDur - oldMean) > 300);
-                            } else {
-                                isOutlier = (finalDur > oldMean * 3.0 || finalDur < oldMean * 0.33);
-                            }
-
-                            if (!isOutlier) {
-                                let newN = Math.min(n + 1, 20);
-                                let delta = finalDur - oldMean; 
-                                let newMean = oldMean + (delta / newN);
-                                let delta2 = finalDur - newMean; 
-                                let newM2 = oldM2 + (delta * delta2);
-                                
-                                updatedRoutes.push(anchorOrig + "~" + anchorDest + "~" + tm + "~" + Math.round(newMean) + "~" + oldDist + "~" + nowSec + "~" + Math.round(newM2) + "~" + tod + "~" + dayType + "~" + newN);
-                            } else {
-                                let shockedN = Math.max(1, Math.floor(n / 2));
-                                updatedRoutes.push(anchorOrig + "~" + anchorDest + "~" + tm + "~" + Math.round(oldMean) + "~" + oldDist + "~" + nowSec + "~" + Math.round(oldM2) + "~" + tod + "~" + dayType + "~" + shockedN);
-                            }
-                            continue;
-                        }
-                    }
-                    if (!isSpatialMatch || p[2] === "WALK") {
-                        updatedRoutes.push(p.slice(0, 10).join("~"));
-                    }
-                }
-                
-                if (!matchFound && !isOutlier) {
-                    updatedRoutes.push(to + "~" + td + "~" + tm + "~" + finalDur + "~" + (trip.dist || 0) + "~" + nowSec + "~0~" + tod + "~" + dayType + "~1");
-                }
-                routes = updatedRoutes; 
-            }
-            writeFile("Tasker/Tesla/Data/RouteCache.txt", routes.join("|"), false);
-        }
-    } 
+    // Phase 5 Slice B (REQ-5CACHE-1): Alpha no longer reads or writes the route
+    // / temp caches. The temp rollup (keep-until-event + capped-Welford/outlier
+    // commit) moved verbatim into Route_Cache_Manager; Alpha stages the
+    // ROLLUP_DUE_TEMP command at the end of this pass and embeds the PRUNE
+    // payload so the manager re-stages it for the Override Handler (serial
+    // owner chain, mirroring the TDS_State_Command re-stage precedent).
 
     let lastSyncRaw  = (global('Tesla_Last_Sync') || "").trim();
     let lastSyncUnix = parseInt(lastSyncRaw, 10);
@@ -380,8 +245,11 @@ try {
     // prunes eventOverrides and the global transient memories with today's
     // whitelist. The OVR top-level memory arrays stay as untouched projections;
     // Compiler/Finaliser still read them until Slice E removes those reads.
-    setLocal('par1', 'PRUNE');
-    setLocal('par2', JSON.stringify({ nowSec: nowSec, whitelistMap: whitelistMap }));
+    // Phase 5 Slice B (REQ-5CACHE-1): the PRUNE payload now travels embedded in
+    // the ROLLUP_DUE_TEMP command; Route_Cache_Manager runs the rollup (sole
+    // writer of the caches) and re-stages PRUNE for the Override Handler.
+    setLocal('par1', 'ROLLUP_DUE_TEMP');
+    setLocal('par2', JSON.stringify({ nowSec: nowSec, prune: { nowSec: nowSec, whitelistMap: whitelistMap } }));
 
     setLocal('tds_temp_json', JSON.stringify(validEvents));
     setLocal('raw_base_data', baseStr);
