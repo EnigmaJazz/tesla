@@ -74,17 +74,28 @@ try {
   const parts = String(par1).split(":");
   let result;
   if (parts[0] === "readOrigin") {
-    // REQ-4HELPER-1: readOrigin takes NO kind suffix; a suffixed request is
-    // an unknown/unsupported operation and MUST be rejected.
-    if (parts.length > 1 && parts[1] !== "") {
+    // REQ-4HELPER-1: readOrigin takes NO suffix — exactly one token. Empty
+    // or surplus tokens (readOrigin:, readOrigin::bogus) are malformed and
+    // MUST be rejected.
+    if (parts.length !== 1 || parts[1] !== undefined) {
       helperLogEvent("warn", "HELPER_REQUEST_REJECTED", { reason: "readOrigin takes no suffix", par1: par1 });
       throw new Error("TDS_Helper: readOrigin suffix rejected: " + par1);
     }
     result = readOrigin();
   } else if (parts[0] === "readActiveGeneration") {
-    // REQ-4HELPER-1: only the exact events|master|itinerary kinds are valid;
-    // any other suffix is an unsupported operation and MUST be rejected.
-    const kind = parts[1] || "master";
+    // REQ-4HELPER-1: exactly one optional kind token with a non-empty value
+    // in events|master|itinerary. Empty or surplus tokens (readActiveGeneration:,
+    // readActiveGeneration:master:bogus, readActiveGeneration::bogus) are
+    // malformed and MUST be rejected.
+    if (parts.length > 2) {
+      helperLogEvent("warn", "HELPER_REQUEST_REJECTED", { reason: "readActiveGeneration surplus tokens", par1: par1 });
+      throw new Error("TDS_Helper: readActiveGeneration surplus rejected: " + par1);
+    }
+    const kind = parts[1];
+    if (kind === undefined || kind === "") {
+      helperLogEvent("warn", "HELPER_REQUEST_REJECTED", { reason: "readActiveGeneration empty kind", par1: par1 });
+      throw new Error("TDS_Helper: readActiveGeneration empty kind rejected: " + par1);
+    }
     if (kind !== "events" && kind !== "master" && kind !== "itinerary") {
       helperLogEvent("warn", "HELPER_REQUEST_REJECTED", { reason: "unknown readActiveGeneration kind", par1: par1 });
       throw new Error("TDS_Helper: unknown kind rejected: " + par1);
