@@ -247,6 +247,19 @@ try {
   const atFlash = findFallbackFlash(atStore, "SANDBOX", "LOCAL_ESTIMATE");
   if (!atFlash) fail('ACTIVE_TRAVEL: expected DEPARTURE_POLICY_FALLBACK_USED {from:SANDBOX,to:LOCAL_ESTIMATE}');
 
+  // Sub-test (verify run 2): SHORT-distance ACTIVE_TRAVEL local estimate must
+  // not round distance to 0.0 and publish an incomplete pair. A ~10 m walk
+  // (distance ≈ 0.006 mi) must publish with BOTH metrics positive.
+  const shortCoords = "51.9001,-2.1001"; // ~10 m from homeCoords
+  const shortStore = runWithMetrics({ block_step8: "ACTIVE_TRAVEL", block_step3: shortCoords });
+  if (shortStore.runError) fail('short-distance fixture threw: ' + shortStore.runError.message);
+  const shortItin = readActiveItinerary(shortStore);
+  if (!shortItin) fail('short-distance: published itinerary was not found');
+  if (shortItin.length !== 2) fail('short-distance: expected 2 legs (stale + head), got ' + shortItin.length);
+  const shortHead = shortItin[1];
+  if (!(shortHead.durationSecs > 0)) fail('short-distance: duration must be positive, got ' + shortHead.durationSecs);
+  if (!(shortHead.distanceMiles > 0)) fail('short-distance: distance must stay positive after rounding, got ' + shortHead.distanceMiles);
+
   // Sub-test: every tier fails (DEPART with no metrics) -> the leg is rejected
   // with ZERO_DURATION_LEG_REJECTED and never publishes.
   const zdStore = runWithMetrics({});

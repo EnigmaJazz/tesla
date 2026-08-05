@@ -167,7 +167,10 @@ try {
             );
 
             duration = Math.round(distM / getSpeed(mode));
-            distMiles = parseFloat((distM * METERS_TO_MILES).toFixed(1));
+            // Preserve positivity: one-decimal rounding turns a short but real
+            // distance (e.g. 10 m) into 0.0, producing an incomplete metric
+            // pair. Three decimals keeps short local estimates positive.
+            distMiles = parseFloat((distM * METERS_TO_MILES).toFixed(3));
 
             setLocal('api_duration_secs', duration.toString());
             setLocal('api_distance_miles', distMiles.toString());
@@ -475,7 +478,7 @@ try {
             setLocal('live_late_mins', liveLateMins.toString());
         }
 
-        if (TRAVEL_API_TYPES[leg.apiType] && leg.durationSecs <= 0) {
+        if (TRAVEL_API_TYPES[leg.apiType] && (leg.durationSecs <= 0 || !(leg.distanceMiles > 0))) {
             flash(JSON.stringify({
                 timestamp: nowSec,
                 generationId: global('TDS_Active_Generation') || null,
@@ -483,7 +486,7 @@ try {
                 severity: "WARN",
                 code: "ZERO_DURATION_LEG_REJECTED",
                 tripId: leg.targetEventId || null,
-                details: { apiType: leg.apiType, durationSecs: leg.durationSecs, targetTitle: leg.targetTitle }
+                details: { apiType: leg.apiType, durationSecs: leg.durationSecs, distanceMiles: leg.distanceMiles, targetTitle: leg.targetTitle }
             }));
             continue;
         }
