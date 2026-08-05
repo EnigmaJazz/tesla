@@ -134,10 +134,11 @@ try {
 
   const queue = store.locals['block_queue'];
   if (!queue || queue === "EOF") fail('expected a non-empty block_queue');
-  const rows = queue.split("~").filter(function (r) { return r; });
+  const env = JSON.parse(queue);
+  const rows = env.rows;
 
   function rowFor(eventId) {
-    return rows.filter(function (r) { return r.split("|")[9] === eventId; });
+    return rows.filter(function (r) { return r.evId === eventId; });
   }
 
   // Exact-key skip: ev_1 (skip:true) must vanish; ev_10 and the underscore-core
@@ -157,7 +158,7 @@ try {
   }
 
   // Preference reads by exact series key + final-underscore core parsing.
-  const notifs = (store.locals['notif_queue'] || "").split("^^").filter(function (n) { return n; });
+  const notifs = env.notifications;
 
   const ev10Notif = notifs.find(function (n) { return n.indexOf('|ev_10^') !== -1; });
   if (!ev10Notif) fail('ev_10 routine default should apply by exact series key');

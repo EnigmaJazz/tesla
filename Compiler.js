@@ -23,6 +23,57 @@ const RELEVANCE_WINDOW_SECS = 64800;
 // migration-only fallback when the session store is absent/unreadable.
 const LOCK_FRESH_SECS = 7200;
 
+// Phase 5 (REQ-5QUEUE-1): typed queue envelope contract. block_queue is one
+// JSON document {schemaVersion,rows,eof,skipIdxUntil,stepConflict,notifications};
+// the Compiler JSON.parses it once inside its JSlet — Tasker Variable Split
+// never processes it. Malformed JSON, an unsupported schema, or any invalid
+// row rejects the whole queue without compiling partial rows (TYPED_QUEUE_REJECTED).
+const TYPED_QUEUE_SCHEMA_VERSION = 1;
+const TYPED_QUEUE_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function isValidTypedRow(row) {
+    return !!row && typeof row === "object"
+        && typeof row.rowType === "string" && row.rowType !== ""
+        && typeof row.evId === "string" && row.evId !== ""
+        && typeof row.title === "string"
+        && typeof row.coords === "string"
+        && typeof row.evLoc === "string"
+        && typeof row.mode === "string"
+        && typeof row.displayTime === "number"
+        && typeof row.departTime === "number"
+        && typeof row.pitstopState === "string"
+        && typeof row.apiTimeType === "string"
+        && typeof row.apiTimeUnix === "number"
+        && typeof row.engineLateMins === "number"
+        && typeof row.currentLegStable === "boolean"
+        && typeof row.dropinStatusFlag === "string"
+        && typeof row.safeDesc === "string"
+        && Array.isArray(row.adHoc)
+        && (row.routeDurationSecs === null || (typeof row.routeDurationSecs === "number" && row.routeDurationSecs > 0))
+        && (row.routeDistanceMiles === null || (typeof row.routeDistanceMiles === "number" && row.routeDistanceMiles > 0))
+        && (row.departurePolicy === "ASAP" || row.departurePolicy === "JIT")
+        && typeof row.planningDay === "string"
+        && (row.planningDay === "" || TYPED_QUEUE_DAY_RE.test(row.planningDay))
+        && typeof row.originSource === "string";
+}
+
+function parseQueueEnvelope(raw) {
+    let env = null;
+    try { env = JSON.parse(raw); } catch (e) { env = null; }
+    if (!env || env.schemaVersion !== TYPED_QUEUE_SCHEMA_VERSION || !Array.isArray(env.rows)) return null;
+    // REQ-5QUEUE-1 (SCN-5QUEUE-1): controls MUST retain exact values.
+    // eof is a boolean; skipIdxUntil is a non-negative integer;
+    // stepConflict is null or a non-empty string; notifications is an array.
+    if (typeof env.eof !== "boolean") return null;
+    if (typeof env.skipIdxUntil !== "number" || !isFinite(env.skipIdxUntil) || env.skipIdxUntil < 0 || Math.floor(env.skipIdxUntil) !== env.skipIdxUntil) return null;
+    if (env.stepConflict !== null && (typeof env.stepConflict !== "string" || env.stepConflict === "")) return null;
+    if (!Array.isArray(env.notifications)) return null;
+    for (let r = 0; r < env.rows.length; r++) {
+        if (!isValidTypedRow(env.rows[r])) return null;
+    }
+    return env;
+}
+
 // Exact-token membership over a CSV row list (OVR-10): a row matches only when
 // it equals the id or starts with "<id>~" — never a bare substring, so decoy
 // occurrence IDs like ev_10 cannot satisfy an ev_1 lookup.
@@ -165,30 +216,78 @@ function actionLockActive() {
 }
 
 try {
-    const mode        = (local('block_step4') || "WALK").toUpperCase().trim(); 
-    const apiType     = (local('block_step8') || "DEPART").trim(); 
-    const dest        = (local('block_step3') || "0,0").trim();
+    // Phase 5 (REQ-5QUEUE-1): parse + validate the typed queue envelope once.
+    const envelope = parseQueueEnvelope(local('block_queue'));
+    if (!envelope) {
+        flash(JSON.stringify({
+            timestamp: Math.floor(Date.now() / 1000),
+            generationId: global('TDS_Active_Generation') || null,
+            component: "Compiler",
+            severity: "WARN",
+            code: "TYPED_QUEUE_REJECTED",
+            tripId: null,
+            details: { reason: "malformed_json_unsupported_schema_or_invalid_row", queueHead: String(local('block_queue')).slice(0, 120) }
+        }));
+    } else {
+        // REQ-5QUEUE-1 / SCN-5QUEUE-1 [EVT: TYPED_QUEUE_ACCEPTED]: a valid
+        // envelope is accepted and its controls are retained for the pass.
+        flash(JSON.stringify({
+            timestamp: Math.floor(Date.now() / 1000),
+            generationId: global('TDS_Active_Generation') || null,
+            component: "Compiler",
+            severity: "INFO",
+            code: "TYPED_QUEUE_ACCEPTED",
+            tripId: null,
+            details: { rows: envelope.rows.length, eof: envelope.eof, skipIdxUntil: envelope.skipIdxUntil, stepConflict: envelope.stepConflict, notifications: envelope.notifications }
+        }));
+        const queueRows = envelope.rows || [];
+        // REQ-5CUTOVER-2: the typed row fields are authoritative — the legacy
+        // block_step17-21 split locals are retired and never read here.
+        // [EVT: TYPED_QUEUE_CUTOVER_COMPLETED] is emitted once per pass below.
+        let compiledRows = 0;
+        for (let qi = 0; qi < queueRows.length; qi++) {
+            compileTypedRow(queueRows[qi]);
+            compiledRows++;
+        }
+        flash(JSON.stringify({
+            timestamp: Math.floor(Date.now() / 1000),
+            generationId: global('TDS_Active_Generation') || null,
+            component: "Compiler",
+            severity: "INFO",
+            code: "TYPED_QUEUE_CUTOVER_COMPLETED",
+            tripId: null,
+            details: { compiledRows: compiledRows, legacyStepsRetired: true }
+        }));
+    }
+} catch(e) { flash("Unified Engine Crash:\n" + e.message); }
+
+// Phase 5: compile one typed row. Replaces the per-leg block_step1-21 local
+// reads with explicit TypedRow fields.
+function compileTypedRow(row) {
+    const mode        = (row.mode || "WALK").toUpperCase().trim(); 
+    const apiType     = (row.apiTimeType || "DEPART").trim(); 
+    const dest        = (row.coords || "0,0").trim();
     const vTime       = parseInt(local('virtual_time'), 10) || Math.floor(Date.now() / 1000); 
-    const evId        = (local('block_step10') || "").trim(); 
-    const apiUnix     = parseInt(local('block_step9'), 10) || vTime; 
-    const actionType  = (local('block_step1') || "").trim(); 
-    const destName    = (local('block_step2') || "Destination").trim();
-    const targetDesc  = decodeURIComponent(local('block_step15') || "");
-    const pendingStopsRaw = (local('block_step16') || "").trim();
-    const isAttachedDropin = (local('block_step14') === "attached_dropin");
+    const evId        = (row.evId || "").trim(); 
+    const apiUnix     = row.apiTimeUnix || vTime; 
+    const actionType  = (row.rowType || "").trim(); 
+    const destName    = (row.title || "Destination").trim();
+    const targetDesc  = decodeURIComponent(row.safeDesc || "");
+    const pendingStopsRaw = (Array.isArray(row.adHoc) ? row.adHoc.join(",") : "").trim();
+    const isAttachedDropin = (row.dropinStatusFlag === "attached_dropin");
 
     let duration = parseInt(local('api_duration_secs'), 10);
     let distMiles = parseFloat(local('api_distance_miles')) || 0;
 
     // INV-0.7: metric fallback tiers — validated API metrics, then positive
-    // Sandbox metrics (block_step17 duration secs / block_step18 distance
-    // miles), then a local haversine estimate for ACTIVE_TRAVEL only, else the
-    // leg stays zero and is rejected as zero-duration. Every fallback logs
+    // typed Sandbox metrics (row.routeDurationSecs / row.routeDistanceMiles),
+    // then a local haversine estimate for ACTIVE_TRAVEL only, else the leg
+    // stays zero and is rejected as zero-duration. Every fallback logs
     // EVT-DEPARTURE_POLICY_FALLBACK_USED with {from,to,durationSecs,distanceMiles}.
     if (isNaN(duration) || duration <= 0 || isNaN(distMiles) || distMiles <= 0) {
-        const sbDuration = parseInt(local('block_step17'), 10);
-        const sbDistance = parseFloat(local('block_step18')) || 0;
-        if (!isNaN(sbDuration) && sbDuration > 0 && sbDistance > 0) {
+        const sbDuration = (typeof row.routeDurationSecs === "number" && row.routeDurationSecs > 0) ? row.routeDurationSecs : NaN;
+        const sbDistance = (typeof row.routeDistanceMiles === "number" && row.routeDistanceMiles > 0) ? row.routeDistanceMiles : NaN;
+        if (!isNaN(sbDuration) && !isNaN(sbDistance)) {
             duration = sbDuration;
             distMiles = sbDistance;
             setLocal('api_duration_secs', duration.toString());
@@ -260,7 +359,7 @@ try {
     const masterArr = readActiveGeneration("master");
 
     let mEv = masterArr.find(e => (e.id || "DEFAULT") === evId);
-    let evStartSecs = mEv ? parseInt(mEv.start, 10) : parseInt(local('block_step5'), 10) || nowSec;
+    let evStartSecs = mEv ? parseInt(mEv.start, 10) : (row.departTime || nowSec);
     let dropinDur = mEv ? (parseInt(mEv.duration, 10) || 0) : 0;
 
     let isDepartEventLateCheck = /(#leave|#depart)\b/i.test((destName || "") + " " + targetDesc);
@@ -273,7 +372,7 @@ try {
         mode: mode,
         durationSecs: duration,
         distanceMiles: distMiles,
-        pitstopState: local('block_step7') || "false",
+        pitstopState: row.pitstopState || "false",
         evStartSecs: evStartSecs,
         isDepart: isDepartEventLateCheck,
         transitStepsRaw: local('api_transit_steps') || "", 
@@ -285,8 +384,8 @@ try {
         apiType: apiType,
         actionType: actionType,
         apiUnix: apiUnix,
-        planningDay: local('block_step20') || null,
-        originSource: local('block_step21') || null
+        planningDay: row.planningDay || null,
+        originSource: row.originSource || null
     };
 
     let pendingCompilerRaw = readFile("Tasker/Tesla/Data/Pending_Compiler.json") || "[]";
@@ -298,9 +397,10 @@ try {
     } catch(e) {}
 
     // INV-0.1: assign the explicit departure policy before storing the leg.
-    // Attached chains are always ASAP per spec §0.1; non-attached heads fall
-    // back to the explicit block_step19 value from the Sandbox.
-    const rawPolicy = (local('block_step19') || "").toString().toUpperCase().trim();
+    // Attached chains are always ASAP per spec §0.1; non-attached heads carry
+    // the typed row departurePolicy from the Sandbox (Phase 5 cutover — the
+    // legacy block_step19 local is retired).
+    const rawPolicy = (row.departurePolicy || "ASAP").toString().toUpperCase().trim();
     currentLeg.departurePolicy = (actionType === "EVENT" && isAttachedDropin) ? "ASAP" : (rawPolicy || "ASAP");
 
     if (actionType === "EVENT" && isAttachedDropin) {
@@ -483,7 +583,7 @@ try {
                 let departChanged = "false"; 
                 let departDiffMins = 0;
                 let apiConflictStr = "";
-                let liveLateMins = parseInt(local('block_step12'), 10) || 0;
+                let liveLateMins = (typeof row.engineLateMins === "number") ? row.engineLateMins : 0;
                 let timeGapFromNow = leg.apiUnix - nowSec; 
                 
                 if (timeGapFromNow <= RELEVANCE_WINDOW_SECS) {
@@ -605,7 +705,4 @@ try {
         setLocal('cal_start_out', outStarts.join("|"));
         setLocal('cal_end_out', outEnds.join("|"));
     }
-
-} catch(e) { 
-    flash("Unified Engine Crash:\n" + e.message); 
 }
