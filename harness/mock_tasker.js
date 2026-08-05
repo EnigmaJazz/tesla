@@ -167,9 +167,24 @@ function createSandbox(options) {
     return false;
   }
   function isCacheFile(path) { return CACHE_FILES.indexOf(path) !== -1; }
+  function rejectCacheWrite(op, path) {
+    // REQ-5LOG-1: ownership rejection emits structured LOG-17 evidence so
+    // tests can assert the event shape, not just the thrown error text.
+    const ts = Math.floor(Date.now() / 1000);
+    flashLog.push(JSON.stringify({
+      timestamp: ts,
+      generationId: null,
+      component: "Route_Cache_Manager",
+      severity: "ERROR",
+      code: "CACHE_WRITE_REJECTED",
+      tripId: null,
+      details: { op: op, path: path, owner: sandbox.__currentScriptPath || "unknown" }
+    }));
+    throw new Error("CACHE_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
+  }
   function writeFile(path, content) {
     if (isCacheFile(path) && sandbox.__currentScriptPath !== CACHE_MANAGER_PATH) {
-      throw new Error("CACHE_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
+      rejectCacheWrite("write", path);
     }
     if (path === PHASE3_STATE_PATH && sandbox.__currentScriptPath !== REDUCER_PATH) {
       throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
@@ -197,7 +212,7 @@ function createSandbox(options) {
   }
   function deleteFile(path) {
     if (isCacheFile(path) && sandbox.__currentScriptPath !== CACHE_MANAGER_PATH) {
-      throw new Error("CACHE_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
+      rejectCacheWrite("delete", path);
     }
     if ((path === OVERRIDE_PATH || path === PREFS_PATH) && sandbox.__currentScriptPath !== OVERRIDE_HANDLER_PATH) {
       throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));

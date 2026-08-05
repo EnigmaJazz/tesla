@@ -35,6 +35,7 @@ const { runScript } = require('./runner');
 
 const DATA = "Tasker/Tesla/Data/";
 const nowSec = 1700000000; // 2023-11-14T22:13:20Z, Tuesday, tod 1333, dayType 0
+const RCM_TEST_FUTURE = 30 * 86400; // future TTL horizon for seeded entries
 
 const ROUTE_JSON = DATA + 'TDS_Route_Cache.json';
 const ORDER_JSON = DATA + 'TDS_Order_Cache.json';
@@ -101,6 +102,14 @@ try {
     }
     assert(rejected, 'direct write of ' + f + ' must be rejected with CACHE_WRITE_REJECTED');
     assert.strictEqual(store.files[f], undefined, 'rejected write must not mutate ' + f);
+    // REQ-5LOG-1: the rejection also emits structured LOG-17 evidence.
+    const structured = (store.flashLog || []).map(function (msg) {
+      try { return JSON.parse(msg); } catch (e) { return null; }
+    }).filter(function (o) { return o && o.code === 'CACHE_WRITE_REJECTED' && o.component === 'Route_Cache_Manager'; });
+    assert(structured.length > 0, 'CACHE_WRITE_REJECTED must emit structured LOG-17 evidence for ' + f);
+    const evt = structured[structured.length - 1];
+    assert(typeof evt.timestamp === 'number' && typeof evt.severity === 'string' && evt.details && evt.details.op && evt.details.path,
+      'CACHE_WRITE_REJECTED LOG-17 must carry timestamp/severity/details(op,path)');
     rejected = false;
     try { sandbox.deleteFile(f); } catch (e) {
       rejected = String(e && e.message || e).indexOf('CACHE_WRITE_REJECTED') !== -1;
@@ -351,6 +360,41 @@ try {
   const cache = JSON.parse(sandbox.local('cache_read_result'));
   assert.strictEqual(cache.schemaVersion, 1, 'CACHE_READ must return the route cache');
   assert.strictEqual(Object.keys(cache.entries).length, 1, 'CACHE_READ must expose the committed entry');
+
+  // REQ-5CACHE-2: CACHE_READ MUST NOT surface expired or nonpositive entries
+  // (they are misses). Seed a JSON with one valid + one expired + one
+  // nonpositive route entry; read back only the valid one.
+  const seeded = createSandbox({
+    files: {
+      [ROUTE_JSON]: JSON.stringify({ schemaVersion: 1, updatedAt: nowSec, entries: {
+        'good~~key~~DRIVE~~900~~0': {
+          originCell: '1,1', destinationCell: '2,2', mode: 'DRIVE', dayClass: 0, bucket: 900,
+          meanDurationSecs: 600, sampleCount: 1, m2: 0, distanceMiles: 100,
+          createdAt: nowSec - 60, updatedAt: nowSec - 60, expiresAt: nowSec + RCM_TEST_FUTURE
+        },
+        'expired~~key~~DRIVE~~900~~0': {
+          originCell: '3,3', destinationCell: '4,4', mode: 'DRIVE', dayClass: 0, bucket: 900,
+          meanDurationSecs: 700, sampleCount: 1, m2: 0, distanceMiles: 100,
+          createdAt: nowSec - 400000, updatedAt: nowSec - 400000, expiresAt: nowSec - 60
+        },
+        'zero~~key~~DRIVE~~900~~0': {
+          originCell: '5,5', destinationCell: '6,6', mode: 'DRIVE', dayClass: 0, bucket: 900,
+          meanDurationSecs: 0, sampleCount: 1, m2: 0, distanceMiles: 100,
+          createdAt: nowSec - 60, updatedAt: nowSec - 60, expiresAt: nowSec + RCM_TEST_FUTURE
+        }
+      } })
+    },
+    nowMs: nowSec * 1000
+  });
+  const read2 = seeded.sandbox.cacheManager('CACHE_READ', { kind: 'route' });
+  assert(read2.indexOf('OK') === 0, 'CACHE_READ must succeed on seeded cache: ' + read2);
+  const filtered = JSON.parse(seeded.sandbox.local('cache_read_result'));
+  const keptKeys = Object.keys(filtered.entries || {});
+  assert.strictEqual(keptKeys.length, 1, 'CACHE_READ must drop expired + nonpositive entries (got ' + keptKeys.length + ': ' + keptKeys.join(',') + ')');
+  assert(keptKeys[0].indexOf('good') === 0, 'CACHE_READ must keep only the valid entry');
+  const rejectedLogs = (seeded.store.flashLog || []).map(function (f) { try { return JSON.parse(f); } catch (e) { return null; } })
+    .filter(function (l) { return l && l.code === 'CACHE_ENTRY_REJECTED'; });
+  assert(rejectedLogs.length >= 2, 'expired + nonpositive drops must log CACHE_ENTRY_REJECTED (got ' + rejectedLogs.length + ')');
 } catch (e) {
   fail('CACHE_READ section threw: ' + (e && e.message ? e.message : e));
 }
