@@ -23,7 +23,9 @@ const { runScript } = require('./runner');
 const PUBLISHER_PATH = path.resolve(__dirname, '..', 'Generation_Publisher.js');
 const REDUCER_PATH = path.resolve(__dirname, '..', 'Trip_State_Reducer.js');
 const OVERRIDE_HANDLER_PATH = path.resolve(__dirname, '..', 'Override_Handler.js');
+const STATE_COMMAND_PATH = path.resolve(__dirname, '..', 'TDS_State_Command.js');
 const PHASE3_STATE_PATH = "Tasker/Tesla/Data/TDS_Trip_State.json";
+const REORDER_QUEUE_PATH = "Tasker/Tesla/Data/TDS_Reorder_Commands.json";
 const OVERRIDE_PATH = "Tasker/Tesla/Data/TDS_Overrides.json";
 const PREFS_PATH = "Tasker/Tesla/Data/TDS_Routine_Preferences.json";
 
@@ -63,7 +65,11 @@ function createSandbox(options) {
 
   function publish(candidate) {
     setLocal('par1', JSON.stringify(candidate));
+    // Identify the Generation Publisher so its reorder-queue drain/clear passes
+    // the ownership guard (State Command enqueues; Publisher drains and clears).
+    sandbox.__currentScriptPath = PUBLISHER_PATH;
     runScript(PUBLISHER_PATH, sandbox, store);
+    sandbox.__currentScriptPath = '';
     return local('return_value');
   }
 
@@ -85,6 +91,19 @@ function createSandbox(options) {
     setLocal('par2', JSON.stringify(payload));
     sandbox.__currentScriptPath = OVERRIDE_HANDLER_PATH;
     runScript(OVERRIDE_HANDLER_PATH, sandbox, store);
+    sandbox.__currentScriptPath = '';
+    return local('return_value');
+  }
+
+  // stateCommand(command, payload): runs the TDS_State_Command router through
+  // its staged entry (par1 command / par2 JSON payload) with __currentScriptPath
+  // set so its TDS_Reorder_Commands.json append passes the ownership guard.
+  // Mirrors reducer()/handler().
+  function stateCommand(command, payload) {
+    setLocal('par1', command);
+    setLocal('par2', JSON.stringify(payload));
+    sandbox.__currentScriptPath = STATE_COMMAND_PATH;
+    runScript(STATE_COMMAND_PATH, sandbox, store);
     sandbox.__currentScriptPath = '';
     return local('return_value');
   }
@@ -117,6 +136,9 @@ function createSandbox(options) {
     if ((path === OVERRIDE_PATH || path === PREFS_PATH) && sandbox.__currentScriptPath !== OVERRIDE_HANDLER_PATH) {
       throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
     }
+    if (path === REORDER_QUEUE_PATH && sandbox.__currentScriptPath !== STATE_COMMAND_PATH && sandbox.__currentScriptPath !== PUBLISHER_PATH) {
+      throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
+    }
     if (matchesAny(path, writeThrows)) throw new Error("injected write failure: " + path);
     const s = stringify(content);
     let written = s;
@@ -131,6 +153,9 @@ function createSandbox(options) {
   }
   function deleteFile(path) {
     if ((path === OVERRIDE_PATH || path === PREFS_PATH) && sandbox.__currentScriptPath !== OVERRIDE_HANDLER_PATH) {
+      throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
+    }
+    if (path === REORDER_QUEUE_PATH && sandbox.__currentScriptPath !== STATE_COMMAND_PATH && sandbox.__currentScriptPath !== PUBLISHER_PATH) {
       throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
     }
     delete liveFiles[path];
@@ -185,7 +210,8 @@ function createSandbox(options) {
     __currentScriptPath: '',
     publish: publish,
     reducer: reducer,
-    handler: handler
+    handler: handler,
+    stateCommand: stateCommand
   };
 
   const store = {

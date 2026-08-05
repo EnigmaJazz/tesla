@@ -26,6 +26,9 @@ function writeReorderQueue(commands) {
 }
 function clearReorderQueue() {
   writeFile(PHASE2_REORDER_QUEUE_PATH, "[]");
+  if (readFile(PHASE2_REORDER_QUEUE_PATH) !== "[]") {
+    logEvent("error", "GENERATION_VALIDATION_FAILED", null, { reason: "reorder queue clear read-back mismatch" });
+  }
 }
 function isSameUTCDay(unixSecA, unixSecB) {
   const dA = new Date(unixSecA * 1000);
@@ -34,14 +37,17 @@ function isSameUTCDay(unixSecA, unixSecB) {
       && dA.getUTCMonth() === dB.getUTCMonth()
       && dA.getUTCDate() === dB.getUTCDate();
 }
-function validateReorderCommand(cmd, master, events, genId) {
+function validateReorderCommand(cmd, master, events, committedGenId) {
   if (!cmd || cmd.type !== REORDER_COMMAND_TYPE) {
     return { valid: false, reason: "type mismatch" };
   }
   if (cmd.generationId && !GENERATION_ID_REGEX.test(cmd.generationId)) {
     return { valid: false, reason: "invalid generationId format" };
   }
-  if (cmd.generationId && cmd.generationId !== genId) {
+  // Phase 4 (REQ-4REORDER-2): admission matches the PRE-BUILD committed
+  // generation (the one active when the producer emitted) — never the minted
+  // id. Legacy-null commands stay permitted (migration path).
+  if (cmd.generationId && cmd.generationId !== committedGenId) {
     return { valid: false, reason: "stale generation" };
   }
   if (!Array.isArray(cmd.orderedEventIds) || cmd.orderedEventIds.length === 0) {
@@ -86,30 +92,28 @@ function applyReorderCommand(master, cmd) {
   }
   return master;
 }
-function drainReorderQueue(master, events, genId) {
+function drainReorderQueue(master, events, committedGenId) {
   const commands = readReorderQueue();
-  const remaining = [];
   let appliedCount = 0;
+  let rejectedCount = 0;
   for (let i = 0; i < commands.length; i++) {
     const cmd = commands[i];
-    const validation = validateReorderCommand(cmd, master, events, genId);
+    const validation = validateReorderCommand(cmd, master, events, committedGenId);
     if (validation.valid) {
       applyReorderCommand(master, cmd);
       appliedCount++;
+    } else if (cmd.generationId && cmd.generationId !== committedGenId) {
+      rejectedCount++;
+      logEvent("warn", "STALE_REORDER_COMMAND_REJECTED", committedGenId || cmd.generationId, { source: cmd.source, reason: validation.reason, command: cmd });
     } else {
-      logEvent("warn", "REORDER_COMMAND_REJECTED", genId, { source: cmd.source, reason: validation.reason, command: cmd });
-      if (cmd.generationId === genId) {
-        // Reject invalid commands for the current generation; keep stale ones for later? No, stale never valid.
-      }
-      if (cmd.generationId !== genId) {
-        logEvent("warn", "STALE_REORDER_COMMAND_REJECTED", genId || cmd.generationId, { source: cmd.source, reason: validation.reason, command: cmd });
-      }
-      remaining.push(cmd);
+      rejectedCount++;
+      logEvent("warn", "REORDER_COMMAND_REJECTED", committedGenId, { source: cmd.source, reason: validation.reason, command: cmd });
     }
   }
   if (appliedCount > 0) {
-    logEvent("info", "REORDER_COMMANDS_APPLIED", genId, { count: appliedCount, totalSeen: commands.length });
+    logEvent("info", "REORDER_COMMANDS_APPLIED", committedGenId, { count: appliedCount, totalSeen: commands.length });
   }
+  logEvent("info", "REORDER_QUEUE_DRAINED", committedGenId, { totalSeen: commands.length, applied: appliedCount, rejected: rejectedCount });
   clearReorderQueue();
   return master;
 }
@@ -180,7 +184,9 @@ function publish(candidate) {
     const mstPath = pathFor(genId, "master");
     const itnPath = pathFor(genId, "itinerary");
     writeWithReadback(evtPath, JSON.stringify(candidate.events), genId);
-    const reorderedMaster = drainReorderQueue(candidate.master.slice(), candidate.events, genId);
+    // Phase 4 (REQ-4REORDER-2): reorder commands match the pre-build committed
+    // generation (previousId), never the newly minted genId.
+    const reorderedMaster = drainReorderQueue(candidate.master.slice(), candidate.events, previousId);
     writeWithReadback(mstPath, JSON.stringify(reorderedMaster), genId);
     writeWithReadback(itnPath, JSON.stringify(candidate.itinerary), genId);
     writeWithReadback(PHASE2_MANIFEST_PATH, JSON.stringify(manifest(genId, previousId, counts, "committed", history)), genId);
@@ -190,14 +196,15 @@ function publish(candidate) {
     // and lastReconciledGeneration to genId.
     if (typeof reducer === "function") {
       try {
-        reducer("RECONCILE_GENERATION", { activeGeneration: genId, manifestSchemaVersion: 2 });
+        // The reducer's validateCommon requires generationId in every payload.
+        reducer("RECONCILE_GENERATION", { generationId: genId, activeGeneration: genId, manifestSchemaVersion: 2 });
       } catch (reconcileErr) {
         logEvent("warn", "RECONCILE_GENERATION", null, { reason: reconcileErr.message, generation: genId });
       }
     } else {
       // Real Tasker: stage the command for the next action to run the reducer.
       setLocal("par1", "RECONCILE_GENERATION");
-      setLocal("par2", JSON.stringify({ activeGeneration: genId, manifestSchemaVersion: 2 }));
+      setLocal("par2", JSON.stringify({ generationId: genId, activeGeneration: genId, manifestSchemaVersion: 2 }));
     }
     prune();
     return genId;
