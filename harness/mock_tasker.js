@@ -34,6 +34,18 @@ const PREFS_PATH = "Tasker/Tesla/Data/TDS_Routine_Preferences.json";
 const SESSIONS_PATH = "Tasker/Tesla/Data/TDS_Action_Sessions.json";
 const MANUAL_TRIPS_PATH = "Tasker/Tesla/Data/TDS_Manual_Trips.json";
 const ACTION_LOCK_PATH = "Tasker/Tesla/Data/TDS_Action_Lock.json";
+// Phase 5 Slice B (REQ-5CACHE-1, RULE-8E): the Route Cache Manager is the sole
+// writer of the four cache JSON files AND their legacy text projections.
+const ROUTE_CACHE_PATH = "Tasker/Tesla/Data/TDS_Route_Cache.json";
+const ORDER_CACHE_PATH = "Tasker/Tesla/Data/TDS_Order_Cache.json";
+const TEMP_CACHE_PATH = "Tasker/Tesla/Data/Temp_Route_Cache.json";
+const REQUEST_STATE_PATH = "Tasker/Tesla/Data/TDS_Route_Request_State.json";
+const ROUTE_CACHE_TEXT_PATH = "Tasker/Tesla/Data/RouteCache.txt";
+const TEMP_CACHE_TEXT_PATH = "Tasker/Tesla/Data/Temp_Route_Cache.txt";
+const ORDER_CACHE_TEXT_PATH = "Tasker/Tesla/Data/TDS_Order_Cache.txt";
+// Exact-key membership (never substring): the manager is the only permitted owner.
+const CACHE_FILES = [ROUTE_CACHE_PATH, ORDER_CACHE_PATH, TEMP_CACHE_PATH, REQUEST_STATE_PATH,
+  ROUTE_CACHE_TEXT_PATH, TEMP_CACHE_TEXT_PATH, ORDER_CACHE_TEXT_PATH];
 
 function createSandbox(options) {
   options = options || {};
@@ -154,7 +166,11 @@ function createSandbox(options) {
     }
     return false;
   }
+  function isCacheFile(path) { return CACHE_FILES.indexOf(path) !== -1; }
   function writeFile(path, content) {
+    if (isCacheFile(path) && sandbox.__currentScriptPath !== CACHE_MANAGER_PATH) {
+      throw new Error("CACHE_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
+    }
     if (path === PHASE3_STATE_PATH && sandbox.__currentScriptPath !== REDUCER_PATH) {
       throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
     }
@@ -180,6 +196,9 @@ function createSandbox(options) {
     writeOrder.push(path);
   }
   function deleteFile(path) {
+    if (isCacheFile(path) && sandbox.__currentScriptPath !== CACHE_MANAGER_PATH) {
+      throw new Error("CACHE_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
+    }
     if ((path === OVERRIDE_PATH || path === PREFS_PATH) && sandbox.__currentScriptPath !== OVERRIDE_HANDLER_PATH) {
       throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
     }

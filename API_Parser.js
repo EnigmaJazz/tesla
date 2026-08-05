@@ -11,45 +11,6 @@
         return Math.floor(v); 
     }
 
-    // [SURGICAL UPGRADE: In-Place Sorting]
-    // Phase 4 (REQ-4REORDER-1): producers never write the queue or masters.
-    // The API Parser stages an ENQUEUE_REORDER command; TDS_State_Command owns
-    // the append and the Generation Publisher drains it.
-    function emitReorderCommand(orderedIdsStr, source) {
-        const orderedIds = orderedIdsStr.split(",").filter(function (id) { return id; });
-        if (orderedIds.length === 0) return;
-        setLocal('par1', 'ENQUEUE_REORDER');
-        setLocal('par2', JSON.stringify({
-            generationId: global('TDS_Active_Generation') || null,
-            clusterId: source + "-cluster",
-            orderedEventIds: orderedIds,
-            source: source,
-            emittedAt: Math.floor(Date.now() / 1000)
-        }));
-    }
-    function sortMasterJson(orderedIdsStr) {
-        let orderedIds = orderedIdsStr.split(",");
-        let masterRaw = readFile("Tasker/Tesla/Data/TDS_Master.json") || "[]";
-        let masterArr = JSON.parse(masterRaw);
-        
-        let targetIndices = [];
-        let clusterMap = {};
-        for(let i = 0; i < masterArr.length; i++) {
-            if (orderedIds.indexOf(masterArr[i].id) !== -1) {
-                targetIndices.push(i);
-                clusterMap[masterArr[i].id] = masterArr[i];
-            }
-        }
-        for(let j = 0; j < orderedIds.length; j++) {
-            if (targetIndices[j] !== undefined && clusterMap[orderedIds[j]]) {
-                masterArr[targetIndices[j]] = clusterMap[orderedIds[j]];
-            }
-        }
-        // Phase 2 RULE-8A: do not write the live master directly.
-        // Emit a typed reorder command for the Generation Publisher to apply.
-        emitReorderCommand(orderedIdsStr, 'API_Parser');
-    }
-
     try {
         let rawPayload = readFile("Tasker/Tesla/Data/temp_payload.json");
         if (!rawPayload || rawPayload.indexOf("{") === -1) throw new Error("Missing or empty disk staging payload.");
@@ -72,11 +33,18 @@
             }
             
             let finalOrderStr = orderedIds.join(",");
-            let cacheLine = uLoc + "|" + cluster.destination.id + "|" + wpIdStr + "|" + finalOrderStr;
-            let orderCacheRaw = ""; try { orderCacheRaw = readFile("Tasker/Tesla/Data/TDS_Order_Cache.txt") || ""; } catch(e){}
-            writeFile("Tasker/Tesla/Data/TDS_Order_Cache.txt", orderCacheRaw ? (orderCacheRaw + "\n" + cacheLine) : cacheLine, false);
-            
-            sortMasterJson(finalOrderStr);
+            // Phase 5 Slice B (REQ-5CACHE-1): API Parser never writes the order
+            // cache directly. It stages ORDER_CACHE_UPSERT; Route_Cache_Manager
+            // owns TDS_Order_Cache.json/.txt and re-stages ENQUEUE_REORDER for
+            // TDS_State_Command (which owns the TDS_Reorder_Commands.json append).
+            setLocal('par1', 'ORDER_CACHE_UPSERT');
+            setLocal('par2', JSON.stringify({
+                clusterKey: uLoc + "|" + cluster.destination.id + "|" + wpIdStr,
+                orderedEventIds: orderedIds,
+                generationId: global('TDS_Active_Generation') || null,
+                source: 'API_Parser',
+                emittedAt: Math.floor(Date.now() / 1000)
+            }));
             writeFile("Tasker/Tesla/Data/temp_payload.json", "{}", false);
             return;
         }
@@ -121,16 +89,19 @@
         let resultObj = { durationSecs: dur, distanceMeters: distM, distanceMiles: (distM / 1609.34).toFixed(1), transitSteps: stepsStr.length > 0 ? ("\n" + stepsStr) : "" };
         setLocal('api_return_json', JSON.stringify(resultObj));
         
-        let cacheFile = "Tasker/Tesla/Data/Temp_Route_Cache.txt";
-        let tRaw = ""; try { tRaw = readFile(cacheFile) || ""; } catch(e) {}
-
         let nowSec = Math.floor(Date.now() / 1000);
         let targetSec = forceSeconds(local('par14')) || nowSec;
         let origParam = (local('par11') || "").trim(); let destParam = (local('par12') || "").trim(); let modeParam = (local('par13') || "DRIVE").trim().toUpperCase();
 
         if (origParam && destParam) {
-            let newEntry = origParam + "~" + destParam + "~" + modeParam + "~" + dur + "~" + distM + "~" + nowSec + "~" + targetSec;
-            writeFile(cacheFile, tRaw ? (tRaw + "|" + newEntry) : newEntry, false);
+            // Phase 5 Slice B (REQ-5CACHE-1): the session sample is staged;
+            // Route_Cache_Manager owns Temp_Route_Cache.json/.txt.
+            setLocal('par1', 'SESSION_CACHE_UPSERT');
+            setLocal('par2', JSON.stringify({
+                origin: origParam, destination: destParam, mode: modeParam,
+                durationSecs: dur, distanceMeters: distM,
+                apiUnix: nowSec, targetUnix: targetSec, emittedAt: nowSec
+            }));
         }
 
         writeFile("Tasker/Tesla/Data/temp_payload.json", "{}", false);
