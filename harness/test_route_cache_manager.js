@@ -59,17 +59,17 @@ function readJsonStore(store, filePath) {
   try { return JSON.parse(raw); } catch (e) { return null; }
 }
 
-// Run Alpha with the given files + one seeded legacy temp line, then dispatch
-// the staged ROLLUP_DUE_TEMP through the Route Cache Manager and assert the
-// resulting RouteCache.txt / Temp_Route_Cache.txt bytes.
-function runAlphaRollup(files, tempLine, expected) {
-  const seeded = Object.assign({}, files);
-  seeded[TEMP_TEXT] = tempLine;
+// Run the full production cycle on one sandbox: stage the session sample via
+// the manager, run Alpha (which stages ROLLUP_DUE_TEMP), then dispatch the
+// manager to commit due samples. Asserts the resulting cache text bytes.
+function commitViaAlpha(sample, files, expected) {
   const { sandbox, store } = createSandbox({
     globals: { TIMEMS: String(nowSec * 1000), Auto_Base_Hours: '3' },
-    files: seeded,
+    files: Object.assign({}, files),
     nowMs: nowSec * 1000
   });
+  const upsert = sandbox.cacheManager('SESSION_CACHE_UPSERT', sample);
+  assert(upsert.indexOf('OK') === 0, 'SESSION_CACHE_UPSERT must succeed: ' + upsert);
   runScript(ALPHA, sandbox, store);
   if (store.runError) throw new Error('Alpha crashed: ' + JSON.stringify(store.runError));
   assert.strictEqual(sandbox.local('par1'), 'ROLLUP_DUE_TEMP', 'Alpha must stage ROLLUP_DUE_TEMP');
@@ -81,6 +81,12 @@ function runAlphaRollup(files, tempLine, expected) {
   assert.strictEqual(store.files[ROUTE_TEXT], expected.routeText, 'RouteCache.txt must match the legacy rollup bytes');
   assert.strictEqual(store.files[TEMP_TEXT], expected.tempText, 'Temp_Route_Cache.txt must match the legacy rollup bytes');
   return store;
+}
+function sample(dur, apiUnix) {
+  return {
+    origin: '51.9,-2.1', destination: '51.5,-2.0', mode: 'DRIVE',
+    durationSecs: dur, distanceMeters: 12000, apiUnix: apiUnix, targetUnix: nowSec, emittedAt: apiUnix
+  };
 }
 
 // ---------- Ownership guard (SCN-5CACHE-1 / CACHE_WRITE_REJECTED) ----------
@@ -214,38 +220,38 @@ try {
 // ---------- Welford parity through Alpha (behavior preserved) ----------
 
 try {
-  // A: fresh entry from an expired session measurement.
-  let store = runAlphaRollup({}, '51.9,-2.1~51.5,-2.0~DRIVE~1800~12000~' + nowSec + '~' + nowSec, {
+  // A: fresh entry from a due session measurement.
+  let store = commitViaAlpha(sample(1800, nowSec), {}, {
     routeText: '51.9,-2.1~51.5,-2.0~DRIVE~1800~12000~' + nowSec + '~0~1333~0~1',
     tempText: ''
   });
   // B: Welford update (n 1 -> 2): mean 1950, m2 45000.
-  store = runAlphaRollup(store.files, '51.9,-2.1~51.5,-2.0~DRIVE~2100~12000~' + (nowSec + 1) + '~' + nowSec, {
+  store = commitViaAlpha(sample(2100, nowSec + 1), store.files, {
     routeText: '51.9,-2.1~51.5,-2.0~DRIVE~1950~12000~' + nowSec + '~45000~1333~0~2',
     tempText: ''
   });
   // C: ratio outlier reset (n 2 -> 1): 7000 > 3 * 1950.
-  store = runAlphaRollup(store.files, '51.9,-2.1~51.5,-2.0~DRIVE~7000~12000~' + (nowSec + 2) + '~' + nowSec, {
+  store = commitViaAlpha(sample(7000, nowSec + 2), store.files, {
     routeText: '51.9,-2.1~51.5,-2.0~DRIVE~1950~12000~' + nowSec + '~45000~1333~0~1',
     tempText: ''
   });
   // D: update (n 1 -> 2): mean 1975, m2 46250.
-  store = runAlphaRollup(store.files, '51.9,-2.1~51.5,-2.0~DRIVE~2000~12000~' + (nowSec + 3) + '~' + nowSec, {
+  store = commitViaAlpha(sample(2000, nowSec + 3), store.files, {
     routeText: '51.9,-2.1~51.5,-2.0~DRIVE~1975~12000~' + nowSec + '~46250~1333~0~2',
     tempText: ''
   });
   // E: update (n 2 -> 3): mean 1983, m2 46667.
-  store = runAlphaRollup(store.files, '51.9,-2.1~51.5,-2.0~DRIVE~2000~12000~' + (nowSec + 4) + '~' + nowSec, {
+  store = commitViaAlpha(sample(2000, nowSec + 4), store.files, {
     routeText: '51.9,-2.1~51.5,-2.0~DRIVE~1983~12000~' + nowSec + '~46667~1333~0~3',
     tempText: ''
   });
   // F: z-score path (n 3 -> 4): z = 117/152.75 < 2.0 -> accepted; mean 2012, m2 56934.
-  store = runAlphaRollup(store.files, '51.9,-2.1~51.5,-2.0~DRIVE~2100~12000~' + (nowSec + 5) + '~' + nowSec, {
+  store = commitViaAlpha(sample(2100, nowSec + 5), store.files, {
     routeText: '51.9,-2.1~51.5,-2.0~DRIVE~2012~12000~' + nowSec + '~56934~1333~0~4',
     tempText: ''
   });
-  // Un-expired samples stay in the temp cache (keep-until-event semantics).
-  const keep = runAlphaRollup(store.files, '51.9,-2.1~51.5,-2.0~DRIVE~2400~12000~' + (nowSec + 6) + '~' + (nowSec + 3600), {
+  // G: un-expired samples stay in the temp cache (keep-until-event semantics).
+  const keep = commitViaAlpha(Object.assign(sample(2400, nowSec + 6), { targetUnix: nowSec + 3600 }), store.files, {
     routeText: '51.9,-2.1~51.5,-2.0~DRIVE~2012~12000~' + nowSec + '~56934~1333~0~4',
     tempText: '51.9,-2.1~51.5,-2.0~DRIVE~2400~12000~' + (nowSec + 6) + '~' + (nowSec + 3600)
   });

@@ -565,18 +565,24 @@ function testApiParserEmitsCommand() {
   });
   runScript(API_PARSER, sandbox, store);
   if (store.runError) throw new Error(store.runError.message);
-  // Phase 4 (REQ-4REORDER-1): the producer stages ENQUEUE_REORDER; the State
-  // Command owns the queue append.
-  assert.strictEqual(sandbox.local('par1'), 'ENQUEUE_REORDER', 'API_Parser should stage ENQUEUE_REORDER');
+  // Phase 5 (REQ-5CACHE-1): API_Parser stages ORDER_CACHE_UPSERT; the Route
+  // Cache Manager owns the order cache and re-stages ENQUEUE_REORDER for the
+  // State Command (which owns the queue append).
+  assert.strictEqual(sandbox.local('par1'), 'ORDER_CACHE_UPSERT', 'API_Parser should stage ORDER_CACHE_UPSERT');
   const staged = JSON.parse(sandbox.local('par2'));
   assert.deepStrictEqual(staged.orderedEventIds, ['wp2', 'wp1']);
   assert.strictEqual(staged.generationId, activeGen);
   assert(!store.writeLog.some(function (w) { return w.path === DATA + 'TDS_Reorder_Commands.json'; }), 'API_Parser must not write the queue directly');
-  const result = sandbox.stateCommand('ENQUEUE_REORDER', staged);
+  assert(!store.writeLog.some(function (w) { return w.path === DATA + 'TDS_Order_Cache.txt' || w.path === DATA + 'TDS_Order_Cache.json'; }), 'API_Parser must not write the order cache directly');
+  const cacheResult = sandbox.cacheManager('ORDER_CACHE_UPSERT', staged);
+  assert(cacheResult.indexOf('OK') === 0, 'manager should accept the staged order upsert');
+  assert.strictEqual(sandbox.local('par1'), 'ENQUEUE_REORDER', 'manager should re-stage ENQUEUE_REORDER');
+  const result = sandbox.stateCommand('ENQUEUE_REORDER', JSON.parse(sandbox.local('par2')));
   assert(result.indexOf('OK') === 0, 'router should accept the staged reorder command');
   const queue = JSON.parse(store.files[DATA + 'TDS_Reorder_Commands.json'] || '[]');
   assert.strictEqual(queue.length, 1, 'router should enqueue one reorder command');
   assert.strictEqual(queue[0].type, 'APPLY_CLUSTER_REORDER');
+  assert.deepStrictEqual(queue[0].orderedEventIds, ['wp2', 'wp1']);
   const directMasterWrite = store.writeLog.some(function (w) { return w.path === DATA + 'TDS_Master.json'; });
   assert(!directMasterWrite, 'API_Parser must not write TDS_Master.json');
 }
