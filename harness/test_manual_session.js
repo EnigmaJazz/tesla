@@ -207,18 +207,24 @@ section('return-to-base-opens-session', function () {
 });
 
 section('session-open-collision-safe-ids', function () {
-  // Same second, same ids -> the provided ids collide and are rejected; a
-  // direct SESSION_OPEN without ids mints fresh unique ones (openSession mints).
-  // Each router run gets a fresh sandbox (the vm context is shared per sandbox,
-  // so a script runs at most once per sandbox); file state carries over.
+  // Same second, same provided ids -> the handler re-mints a later second
+  // (bounded retry) instead of failing with SESSION_ID_COLLISION
+  // (REQ-4SESSION-1 collision safety). Each router run gets a fresh sandbox
+  // (vm context is shared per sandbox, so a script runs at most once per
+  // sandbox); file state carries over.
   const s1 = make();
   const r1 = runRouter(s1.sandbox, s1.store, 'RETURN_TO_BASE', retPayload);
   assert(r1.indexOf('OK') === 0, 'first RETURN_TO_BASE must be accepted: ' + r1);
   const s2 = make({ [MANUAL_TRIPS]: s1.store.files[MANUAL_TRIPS], [SESSIONS]: s1.store.files[SESSIONS], [STATE]: s1.store.files[STATE] });
-  const before = s2.store.files[MANUAL_TRIPS];
   const r2 = runRouter(s2.sandbox, s2.store, 'RETURN_TO_BASE', retPayload);
-  assert(r2.indexOf('ERROR') === 0, 're-opening the same ids must be rejected: ' + r2);
-  assert.strictEqual(s2.store.files[MANUAL_TRIPS], before, 'collision must not mutate the manual trips file');
+  assert(r2.indexOf('OK') === 0, 'same-second duplicate ids must be re-minted, not rejected: ' + r2);
+  const s2Trips = JSON.parse(s2.store.files[MANUAL_TRIPS]);
+  assert.strictEqual(Object.keys(s2Trips.trips).length, 2, 'both manual trips must exist after re-mint');
+  const s1Trips = JSON.parse(s1.store.files[MANUAL_TRIPS]);
+  const firstTripId = Object.keys(s1Trips.trips)[0];
+  const secondTripId = Object.keys(s2Trips.trips).filter(function (id) { return id !== firstTripId; })[0];
+  assert(firstTripId && secondTripId, 're-minted trip must have a distinct id');
+  assert.notStrictEqual(secondTripId, firstTripId, 'second trip id must differ from the first');
 
   const mint = make();
   const rm = runRouter(mint.sandbox, mint.store, 'SESSION_OPEN', { type: 'MANUAL_RETURN', at: nowSec,
@@ -255,6 +261,44 @@ section('session-open-first-write-torn', function () {
   assert(r.indexOf('ERROR') === 0, 'a torn first write must fail the open: ' + r);
   assert(!store.files[MANUAL_TRIPS], 'torn first write must leave no manual trips file');
   assert(!store.files[SESSIONS], 'a failed first write must not write the sessions file');
+});
+
+// REQ-4SESSION-1 fidelity: an EXISTING EMPTY file must be restored as
+// present-empty on rollback, never deleted as if it were absent.
+section('session-open-empty-file-rollback-fidelity', function () {
+  // Seed an existing-but-empty sessions file: readFile must report it as
+  // PRESENT (raw ""), so rollback restores presence, not deletion.
+  const { sandbox, store } = make({}, {}, {}, { failures: { tornWrites: ['TDS_Action_Sessions.json'] } });
+  store.files[SESSIONS] = '';
+  const r = runRouter(sandbox, store, 'SESSION_OPEN', { type: 'MANUAL_RETURN', at: nowSec,
+    targetCoords: homeCoords, targetTitle: 'Return to Base', mode: 'DRIVE', durationSecs: 1800, distanceMiles: 3.1 });
+  assert(r.indexOf('ERROR') === 0, 'a torn sessions write must fail: ' + r);
+  assert(store.files[SESSIONS] === '', 'an existing empty sessions file must be restored as present-empty, not deleted');
+  assert(store.files[MANUAL_TRIPS] === undefined || store.files[MANUAL_TRIPS] === null, 'trips file must be absent after rollback of a fresh open');
+});
+
+// REQ-4SESSION-2: a legacy lock carrying a CONFLICTING present identifier
+// must NOT be cleared by a release for a different action/trip.
+section('session-release-conflicting-lock-preserved', function () {
+  const sessions = { schemaVersion: 1, sessions: {
+    action_a: { actionId: 'action_a', tripId: 't_a', status: 'ACTIVE' }
+  } };
+  const trips = { schemaVersion: 1, trips: {
+    t_a: { tripId: 't_a', actionId: 'action_a', lifecycleState: 'IN_PROGRESS' }
+  } };
+  const conflictingLock = JSON.stringify({ type: 'MANUAL_ROUTING', actionId: 'action_OTHER', tripId: 't_a', timestamp: nowSec });
+  const { sandbox, store } = make({ [SESSIONS]: JSON.stringify(sessions), [MANUAL_TRIPS]: JSON.stringify(trips), [LOCK]: conflictingLock });
+  const r = runRouter(sandbox, store, 'RELEASE', { actionId: 'action_a', tripId: 't_a', at: nowSec });
+  assert(r.indexOf('OK') === 0, 'release must be accepted: ' + r);
+  assert.strictEqual(store.files[LOCK], conflictingLock, 'a lock with a conflicting present actionId must NOT be cleared');
+  assert(!JSON.parse(store.files[LOCK] || '{}').actionId === undefined ? false : true, 'lock must still exist');
+
+  const matchingLock = JSON.stringify({ type: 'MANUAL_ROUTING', actionId: 'action_a', tripId: 't_a', timestamp: nowSec });
+  const { sandbox: s2, store: st2 } = make({ [SESSIONS]: JSON.stringify(sessions), [MANUAL_TRIPS]: JSON.stringify(trips), [LOCK]: matchingLock });
+  const r2 = runRouter(s2, st2, 'RELEASE', { actionId: 'action_a', tripId: 't_a', at: nowSec });
+  assert(r2.indexOf('OK') === 0, 'matching release must be accepted: ' + r2);
+  assert.strictEqual(st2.files[LOCK], '{}', 'a lock matching all present identifiers must be cleared to empty');
+  assert(parseLog(st2).some(function (l) { return l.code === 'LOCK_COMPATIBILITY_CLEARED'; }), 'LOCK_COMPATIBILITY_CLEARED must be logged');
 });
 
 // ---------------------------------------------------------------------

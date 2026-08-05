@@ -126,7 +126,10 @@ function createSandbox(options) {
     liveGlobals[key] = stringify(value);
   }
   function readFile(path) {
-    return Object.prototype.hasOwnProperty.call(liveFiles, path) ? liveFiles[path] : "";
+    // Faithful to the Tasker runtime: missing files return null, present
+    // files return their exact bytes (including "" for an empty present
+    // file). Tests that need to distinguish must check against null.
+    return Object.prototype.hasOwnProperty.call(liveFiles, path) ? liveFiles[path] : null;
   }
   function matchesAny(path, patterns) {
     for (let i = 0; i < patterns.length; i++) {
