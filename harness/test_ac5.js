@@ -255,10 +255,10 @@ section('sandbox-synthetic-return-suppression', function () {
 
   const queue = store.locals['block_queue'];
   if (!queue || queue === 'EOF') throw new Error('expected a non-EOF block_queue for an _OUT-only day');
-  const rows = queue.split('~');
+  const env = JSON.parse(queue);
+  const rows = env.rows;
   rows.forEach(function (row, i) {
-    const type = row.split('|')[0];
-    assert.notStrictEqual(type, 'EOD_RETURN', 'row ' + i + ' must not be a synthetic EOD_RETURN');
+    assert.notStrictEqual(row.rowType, 'EOD_RETURN', 'row ' + i + ' must not be a synthetic EOD_RETURN');
   });
 
   const logs = parseLog(store);

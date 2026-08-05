@@ -302,12 +302,13 @@ try {
   if (validStore.runError) fail('Sandbox valid ID runError: ' + validStore.runError);
   if (idParseRejected(validStore)) fail('Sandbox valid ID must not flash ID_PARSE_REJECTED');
   const validQueue = validStore.locals.block_queue || "";
-  if (!validQueue || validQueue === "EOF" || validQueue.indexOf("EVENT") === -1) {
+  const validEnv = validQueue && validQueue !== "EOF" ? JSON.parse(validQueue) : null;
+  const validRows = (validEnv && validEnv.rows) || [];
+  if (!validRows.some(function (row) { return row.rowType === "EVENT"; })) {
     fail('Sandbox valid ID must produce an EVENT queue row');
   }
-  const eventRow = validQueue.split(";").filter(function (row) { return row.indexOf("EVENT") !== -1; })[0];
-  const eventCols = eventRow.split("|");
-  if (eventCols[9] !== VALID_ID) fail('Sandbox EVENT row col 9 must carry the full occurrence ID');
+  const eventRow = validRows.find(function (row) { return row.rowType === "EVENT"; });
+  if (eventRow.evId !== VALID_ID) fail('Sandbox EVENT row evId must carry the full occurrence ID');
 
   const invalidCases = [
     { id: NO_UNDERSCORE_ID, reason: "malformed_format" },
@@ -321,7 +322,8 @@ try {
       fail('Sandbox ' + JSON.stringify(c.id) + ' missing ID_PARSE_REJECTED shape flash (reason ' + c.reason + ')');
     }
     const q = store.locals.block_queue || "";
-    if (q && q !== "EOF" && q.indexOf("EVENT") !== -1) {
+    const env = q && q !== "EOF" ? JSON.parse(q) : null;
+    if (env && !env.eof && env.rows.some(function (row) { return row.rowType === "EVENT"; })) {
       fail('Sandbox rejected ' + JSON.stringify(c.id) + ' must not produce an EVENT queue row');
     }
   });

@@ -16,7 +16,7 @@ process.env.TZ = 'UTC';
 
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { createSandbox } = require('./mock_tasker');
+const { createSandbox, makeEnvelope, makeTypedRow } = require('./mock_tasker');
 const { runScript } = require('./runner');
 
 const nowSec = 1700000000;
@@ -51,19 +51,27 @@ const pendingJson = JSON.stringify([
 ]);
 
 const locals = {
-  block_step1: "EVENT",
-  block_step2: "Leg2",
-  block_step3: "52.1,-2.2",
-  block_step4: "DRIVE",
-  block_step5: String(leg2Start),
-  block_step7: "false",
-  block_step8: "DEPART",
-  block_step9: String(leg2Start),
-  block_step10: "leg2_id",
-  block_step12: "0",
-  block_step14: "",
-  block_step15: "",
-  block_step16: "",
+  block_queue: makeEnvelope([makeTypedRow({
+    rowType: "EVENT",
+    title: "Leg2",
+    coords: "52.1,-2.2",
+    mode: "DRIVE",
+    displayTime: leg2Start,
+    departTime: leg2Start,
+    pitstopState: "false",
+    apiTimeType: "DEPART",
+    apiTimeUnix: leg2Start,
+    evId: "leg2_id",
+    evLoc: "Work",
+    engineLateMins: 0,
+    currentLegStable: false,
+    dropinStatusFlag: "none",
+    safeDesc: "",
+    adHoc: [],
+    departurePolicy: "JIT",
+    planningDay: new Date(leg2Start * 1000).toISOString().slice(0, 10),
+    originSource: "LIVE_BASE"
+  })]),
   api_duration_secs: "1800",
   api_distance_miles: "15",
   api_transit_steps: "",
