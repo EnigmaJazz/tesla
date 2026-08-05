@@ -431,8 +431,9 @@ try {
     GLOBAL_MASTER_ARR = master;
 
     if (idx > master.length) { 
-        setLocal('block_queue', "EOF"); setLocal('skip_idx_until', (master.length + 99).toString());
-        setLocal('step_conflict', ""); setLocal('notif_queue', ""); setLocal('is_drive_block', "false");
+        // REQ-5QUEUE-1: EOF is an empty-row envelope, never a bare token.
+        setLocal('block_queue', JSON.stringify({ schemaVersion: 1, rows: [], eof: true, skipIdxUntil: (master.length + 99), stepConflict: null, notifications: [] }));
+        setLocal('is_drive_block', "false");
     } else {
         let nowSec = Math.floor(Date.now() / 1000);
         let incomingStatus = global('Current_Status') || "Idle";
@@ -638,11 +639,30 @@ try {
         let stateHistory = {};
 
         // INV-0.1 / AC-1: every planned queue row must carry an explicit
-        // departurePolicy as the final | field. Pad missing columns, default
-        // to ASAP with a structured fallback flash, and mirror the head policy
-        // into block_step19 for the Compiler.
-        function enqueuePlannedRow(fields, policy, planningDay, originSource) {
-            let effectivePolicy = (policy || "").toString().toUpperCase().trim();
+        // Phase 5 (REQ-5QUEUE-1): every planned row is a TypedRow object inside
+        // the block_queue JSON envelope; the Compiler JSON.parses it once inside
+        // its JSlet. Policy/day/origin stay explicit row fields — never
+        // reconstructed downstream from location, leg order, or event type.
+        function toPosInt(v) { const n = parseInt(v, 10); return (isNaN(n) || n <= 0) ? null : n; }
+        function toPosNum(v) { const n = parseFloat(v); return (isNaN(n) || n <= 0) ? null : n; }
+        function toNumArr(v) {
+            if (v === null || v === undefined || v === "") return [];
+            const src = Array.isArray(v) ? v : String(v).split(",");
+            const out = [];
+            for (let k = 0; k < src.length; k++) {
+                const n = parseInt(src[k], 10);
+                if (!isNaN(n)) out.push(n);
+            }
+            return out;
+        }
+        function toBool(v) { return (v === true || v === "true"); }
+        function toInt(v) { const n = parseInt(v, 10); return isNaN(n) ? 0 : n; }
+        function toNum(v) { const n = parseFloat(v); return isNaN(n) ? 0 : n; }
+
+        // INV-0.1: the planning engine owns departurePolicy. An empty policy
+        // defaults to ASAP with a structured fallback flash (named code).
+        function buildTypedRow(row) {
+            let effectivePolicy = (row.departurePolicy || "").toString().toUpperCase().trim();
             if (!effectivePolicy) {
                 flash(JSON.stringify({
                     timestamp: nowSec,
@@ -650,34 +670,50 @@ try {
                     component: "Sandbox",
                     severity: "WARN",
                     code: "DEPARTURE_POLICY_FALLBACK_USED",
-                    tripId: fields[9] || null,
-                    details: { block_step19: null, rowType: fields[0] || "UNKNOWN", reconstructed: "ASAP" }
+                    tripId: row.evId || null,
+                    details: { block_step19: null, rowType: row.rowType || "UNKNOWN", reconstructed: "ASAP" }
                 }));
                 effectivePolicy = "ASAP";
             }
-            while (fields.length < 18) fields.push("");
-            fields.push(effectivePolicy);
-            // Slice A: every published row carries the explicit local
-            // planning day (col 20) and the SCH-3 origin source (col 21).
-            // The head leg also publishes block_step20/21 for the Compiler.
-            // No silent inference from event-id suffixes.
-            fields.push(planningDay || chainPlanningDay || "");
-            fields.push(originSource || ((queue.length === 0) ? passOriginSource : "CONFIRMED_LAST_DESTINATION"));
-            queue.push(fields.join("|"));
+            return {
+                rowType: String(row.rowType || ""),
+                title: String(row.title || ""),
+                coords: String(row.coords || ""),
+                mode: String(row.mode || ""),
+                displayTime: toInt(row.displayTime),
+                departTime: toInt(row.departTime),
+                pitstopState: String(row.pitstopState || ""),
+                apiTimeType: String(row.apiTimeType || ""),
+                apiTimeUnix: toInt(row.apiTimeUnix),
+                evId: String(row.evId || ""),
+                evLoc: String(row.evLoc || ""),
+                engineLateMins: toNum(row.engineLateMins),
+                currentLegStable: toBool(row.currentLegStable),
+                dropinStatusFlag: String(row.dropinStatusFlag || ""),
+                safeDesc: String(row.safeDesc || ""),
+                adHoc: toNumArr(row.adHoc),
+                routeDurationSecs: toPosInt(row.routeDurationSecs),
+                routeDistanceMiles: toPosNum(row.routeDistanceMiles),
+                departurePolicy: effectivePolicy,
+                planningDay: String(row.planningDay || chainPlanningDay || ""),
+                originSource: String(row.originSource || ((queue.length === 0) ? passOriginSource : "CONFIRMED_LAST_DESTINATION"))
+            };
+        }
+
+        function enqueueTypedRow(row) {
+            const typed = buildTypedRow(row);
+            queue.push(typed);
             if (queue.length === 1) {
-                // INV-0.7 (C2): export positive Sandbox route metrics for the
-                // head leg as block_step17 (duration seconds) / block_step18
-                // (distance miles). Zero is never exported — the Compiler
-                // rejects missing metrics instead of publishing zero.
-                const sbDur = parseInt(fields[16], 10);
-                const sbDist = parseFloat(fields[17]);
-                if (!isNaN(sbDur) && sbDur > 0 && !isNaN(sbDist) && sbDist > 0) {
-                    setLocal('block_step17', String(sbDur));
-                    setLocal('block_step18', String(sbDist));
+                // REQ-5CUTOVER-1 (shadow phase): mirror the head typed
+                // metrics/policy/day/origin to block_step17-21 so the
+                // pre-cutover Compiler split path sees identical values.
+                if (typed.routeDurationSecs > 0 && typed.routeDistanceMiles > 0) {
+                    setLocal('block_step17', String(typed.routeDurationSecs));
+                    setLocal('block_step18', String(typed.routeDistanceMiles));
                 }
-                setLocal('block_step19', effectivePolicy);
-                setLocal('block_step20', fields[19]);
-                setLocal('block_step21', fields[20]);
+                setLocal('block_step19', typed.departurePolicy);
+                setLocal('block_step20', typed.planningDay);
+                setLocal('block_step21', typed.originSource);
             }
         }
         
@@ -983,11 +1019,11 @@ try {
                     if (carDistB > 200 && eodModeB === "DRIVE") {
                         let recModeB = getRecoveryMode(state.loc, state.carLoc, carDistB);
                         let rTimeB = getCachedTime(state.loc, state.carLoc, recModeB, state.time) || Math.round(carDistB / getSpeed(recModeB));
-                        enqueuePlannedRow(["RECOVERY", "Car", state.carLoc, recModeB, state.time, (state.time + rTimeB), "false", "DEPART", state.time, "REC_BND_" + evId, state.carLoc, "0", "false", "none", "Vehicle Retrieval"], "ASAP", chainPlanningDay);
+                        enqueueTypedRow({ rowType: "RECOVERY", title: "Car", coords: state.carLoc, mode: recModeB, displayTime: state.time, departTime: (state.time + rTimeB), pitstopState: "false", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: "REC_BND_" + evId, evLoc: state.carLoc, engineLateMins: 0, currentLegStable: false, dropinStatusFlag: "none", safeDesc: "Vehicle Retrieval", adHoc: [], departurePolicy: "ASAP", planningDay: chainPlanningDay });
                         state.time += rTimeB;
                         state.loc = state.carLoc;
                     }
-                    enqueuePlannedRow(["EOD_RETURN", activeBase.name, activeBase.coords, eodModeB, state.time, (state.time + 3600), "end_of_day", "DEPART", state.time, "EOD_BND_" + evId, activeBase.name, "0", "true", "none", "Return Journey"], "ASAP", chainPlanningDay);
+                    enqueueTypedRow({ rowType: "EOD_RETURN", title: activeBase.name, coords: activeBase.coords, mode: eodModeB, displayTime: state.time, departTime: (state.time + 3600), pitstopState: "end_of_day", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: "EOD_BND_" + evId, evLoc: activeBase.name, engineLateMins: 0, currentLegStable: true, dropinStatusFlag: "none", safeDesc: "Return Journey", adHoc: [], departurePolicy: "ASAP", planningDay: chainPlanningDay });
                     simAtBase = true;
                     state.loc = activeBase.coords;
                     if (eodModeB === "DRIVE") state.carLoc = activeBase.coords;
@@ -1030,7 +1066,7 @@ try {
                 // observation row (WALK), not a planning instruction. The
                 // pass must still emit a queue so downstream knows the user
                 // moved, but the tail EOD return is suppressed below.
-                enqueuePlannedRow(["WALK", evTitle, evCoords, "WALK", state.time, evEnd, "false", "DEPART", state.time, evId, evLoc, "0", "true", "none", encodeURIComponent(evDesc), ""], "JIT", chainPlanningDay);
+                enqueueTypedRow({ rowType: "WALK", title: evTitle, coords: evCoords, mode: "WALK", displayTime: state.time, departTime: evEnd, pitstopState: "false", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: evId, evLoc: evLoc, engineLateMins: 0, currentLegStable: true, dropinStatusFlag: "none", safeDesc: encodeURIComponent(evDesc), adHoc: [], departurePolicy: "JIT", planningDay: chainPlanningDay });
                 continue;
             }
 
@@ -1054,12 +1090,12 @@ try {
                             let recModeEOD = getRecoveryMode(state.loc, state.carLoc, carDistEOD);
                             let rTimeEOD = getCachedTime(state.loc, state.carLoc, recModeEOD, state.time) || Math.round(carDistEOD / getSpeed(recModeEOD));
                             
-                            enqueuePlannedRow(["RECOVERY", "Car", state.carLoc, recModeEOD, state.time, (state.time + rTimeEOD), "false", "DEPART", state.time, "REC_" + tailInheritedId, state.carLoc, "0", "false", "none", "Vehicle Retrieval"], "ASAP");
+                            enqueueTypedRow({ rowType: "RECOVERY", title: "Car", coords: state.carLoc, mode: recModeEOD, displayTime: state.time, departTime: (state.time + rTimeEOD), pitstopState: "false", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: "REC_" + tailInheritedId, evLoc: state.carLoc, engineLateMins: 0, currentLegStable: false, dropinStatusFlag: "none", safeDesc: "Vehicle Retrieval", adHoc: [], departurePolicy: "ASAP" });
                             state.time += rTimeEOD; 
                             state.loc = state.carLoc;
                         }
 
-                        enqueuePlannedRow(["EOD_RETURN", activeBase.name, activeBase.coords, eodMode, state.time, (state.time + 3600), "end_of_day", "DEPART", state.time, tailInheritedId, activeBase.name, "0", "true", "none", "Return Journey"], "ASAP");
+                        enqueueTypedRow({ rowType: "EOD_RETURN", title: activeBase.name, coords: activeBase.coords, mode: eodMode, displayTime: state.time, departTime: (state.time + 3600), pitstopState: "end_of_day", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: tailInheritedId, evLoc: activeBase.name, engineLateMins: 0, currentLegStable: true, dropinStatusFlag: "none", safeDesc: "Return Journey", adHoc: [], departurePolicy: "ASAP" });
                         state.loc = activeBase.coords;
                         if (eodMode === "DRIVE") state.carLoc = activeBase.coords;
                     } else state.loc = activeBase.coords;
@@ -1255,13 +1291,13 @@ try {
                     if (!blockMode) blockMode = routeToBase.mode;
                     if (routeToBase.mode === "DRIVE" && carDist > 200) {
                         let recMode3 = getRecoveryMode(state.loc, state.carLoc, carDist);
-                        enqueuePlannedRow(["RECOVERY", "Car", state.carLoc, recMode3, state.time, (state.time + recTimeBase), "false", "DEPART", state.time, "REC_PIT_" + evId, state.carLoc, "0", "false", "none", "Vehicle Retrieval"], "ASAP");
+                        enqueueTypedRow({ rowType: "RECOVERY", title: "Car", coords: state.carLoc, mode: recMode3, displayTime: state.time, departTime: (state.time + recTimeBase), pitstopState: "false", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: "REC_PIT_" + evId, evLoc: state.carLoc, engineLateMins: 0, currentLegStable: false, dropinStatusFlag: "none", safeDesc: "Vehicle Retrieval", adHoc: [], departurePolicy: "ASAP" });
                         state.time += recTimeBase; state.loc = state.carLoc;
                     }
                     
                     let currentLegStable = (i === idx) ? state.isStableOrigin.toString() : "true";
                     let stopPolicy = (stopType === "EOD_RETURN" || pitFlag === "forced" || pitstopState === "handled" || pitstopState === "forced") ? "ASAP" : "JIT";
-                    enqueuePlannedRow([stopType, activeBase.name, activeBase.coords, routeToBase.mode, evStart, (state.time + timeToBase), pitFlag, "DEPART", state.time, compositeId, activeBase.name, "0", currentLegStable, "none", stopDesc], stopPolicy);
+                    enqueueTypedRow({ rowType: stopType, title: activeBase.name, coords: activeBase.coords, mode: routeToBase.mode, displayTime: evStart, departTime: (state.time + timeToBase), pitstopState: pitFlag, apiTimeType: "DEPART", apiTimeUnix: state.time, evId: compositeId, evLoc: activeBase.name, engineLateMins: 0, currentLegStable: currentLegStable, dropinStatusFlag: "none", safeDesc: stopDesc, adHoc: [], departurePolicy: stopPolicy });
                     state.loc = activeBase.coords; 
                     state.time += timeToBase + (isOvernight ? 0 : 1800); 
                     if (routeToBase.mode === "DRIVE") state.carLoc = activeBase.coords;
@@ -1539,7 +1575,7 @@ try {
             if (routeToEv.mode === "DRIVE" && carDist > 200) {
                 let recMode5 = getRecoveryMode(state.loc, state.carLoc, carDist);
                 let rTime = getCachedTime(state.loc, state.carLoc, recMode5, state.time) || Math.round(carDist / getSpeed(recMode5));
-                enqueuePlannedRow(["RECOVERY", "Car", state.carLoc, recMode5, state.time, (state.time + rTime), "false", "DEPART", state.time, "REC_EV_" + evId, state.carLoc, "0", "false", "none", "Vehicle Retrieval"], "ASAP");
+                enqueueTypedRow({ rowType: "RECOVERY", title: "Car", coords: state.carLoc, mode: recMode5, displayTime: state.time, departTime: (state.time + rTime), pitstopState: "false", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: "REC_EV_" + evId, evLoc: state.carLoc, engineLateMins: 0, currentLegStable: false, dropinStatusFlag: "none", safeDesc: "Vehicle Retrieval", adHoc: [], departurePolicy: "ASAP" });
                 state.time += rTime; state.loc = state.carLoc; 
             }
 
@@ -1594,7 +1630,7 @@ try {
             let routeDistMiles = parseFloat((actualDriveDist * METERS_TO_MILES).toFixed(1));
             let legDurCol = (routeTimeSecs > 0) ? String(routeTimeSecs) : "";
             let legDistCol = (routeDistMiles > 0) ? String(routeDistMiles) : "";
-            enqueuePlannedRow(["EVENT", evTitle, evCoords, routeToEv.mode, displayTime, trueDepartureTime, pitstopState, apiTimeType, apiTimeUnix, evId, evLoc, engineLateMins, currentLegStable, dropinStatusFlag, safeDesc, adHocObj.arr.join(","), legDurCol, legDistCol], legPolicy);
+            enqueueTypedRow({ rowType: "EVENT", title: evTitle, coords: evCoords, mode: routeToEv.mode, displayTime: displayTime, departTime: trueDepartureTime, pitstopState: pitstopState, apiTimeType: apiTimeType, apiTimeUnix: apiTimeUnix, evId: evId, evLoc: evLoc, engineLateMins: engineLateMins, currentLegStable: currentLegStable, dropinStatusFlag: dropinStatusFlag, safeDesc: safeDesc, adHoc: adHocObj.arr, routeDurationSecs: legDurCol, routeDistanceMiles: legDistCol, departurePolicy: legPolicy });
             plannedEventSeen = true;
 
             if (i === idx) state.isStableOrigin = false;
@@ -1633,21 +1669,28 @@ try {
                 if (eodMode === "DRIVE" && carDistEOD > 200) {
                     let recModeEOD = getRecoveryMode(state.loc, state.carLoc, carDistEOD);
                     let rTimeEOD = getCachedTime(state.loc, state.carLoc, recModeEOD, state.time) || Math.round(carDistEOD / getSpeed(recModeEOD));
-                    enqueuePlannedRow(["RECOVERY", "Car", state.carLoc, recModeEOD, state.time, (state.time + rTimeEOD), "false", "DEPART", state.time, "REC_EOD_FINAL", state.carLoc, "0", "false", "none", "Vehicle Retrieval"], "ASAP");
+                    enqueueTypedRow({ rowType: "RECOVERY", title: "Car", coords: state.carLoc, mode: recModeEOD, displayTime: state.time, departTime: (state.time + rTimeEOD), pitstopState: "false", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: "REC_EOD_FINAL", evLoc: state.carLoc, engineLateMins: 0, currentLegStable: false, dropinStatusFlag: "none", safeDesc: "Vehicle Retrieval", adHoc: [], departurePolicy: "ASAP" });
                     state.time += rTimeEOD; 
                     state.loc = state.carLoc;
                 }
 
-                enqueuePlannedRow(["EOD_RETURN", eodBase.name, eodBase.coords, eodMode, state.time, (state.time + 3600), "end_of_day", "DEPART", state.time, finalAnchorId, eodBase.name, "0", "true", "none", "Return Journey"], "ASAP");
+                enqueueTypedRow({ rowType: "EOD_RETURN", title: eodBase.name, coords: eodBase.coords, mode: eodMode, displayTime: state.time, departTime: (state.time + 3600), pitstopState: "end_of_day", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: finalAnchorId, evLoc: eodBase.name, engineLateMins: 0, currentLegStable: true, dropinStatusFlag: "none", safeDesc: "Return Journey", adHoc: [], departurePolicy: "ASAP" });
                 simAtBase = true;
             }
             }
         }
 
-        setLocal('block_queue', queue.join("~"));
-        setLocal('skip_idx_until', skipIdx.toString());
-        setLocal('step_conflict', stepConflict);
-        setLocal('notif_queue', notifQueue.join("^^"));
+        // REQ-5QUEUE-1: the typed queue envelope — rows, EOF flag and the
+        // skip/conflict/notification controls travel as one JSON document.
+        // Tasker Variable Split never processes it; the Compiler parses it.
+        setLocal('block_queue', JSON.stringify({
+            schemaVersion: 1,
+            rows: queue,
+            eof: false,
+            skipIdxUntil: skipIdx,
+            stepConflict: (stepConflict === "") ? null : stepConflict,
+            notifications: notifQueue
+        }));
         setLocal('is_drive_block', (blockMode === "DRIVE") ? "true" : "false");
     }
 } catch(e) { flash("Sandbox Crash: " + e.message); }
