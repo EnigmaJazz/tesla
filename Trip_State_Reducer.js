@@ -33,6 +33,9 @@ var TRIP_GENERATION_ID_REGEX = /^gen:\d{10}:[0-9a-f]{4}$/;
 var TRIP_ID_COLLISION_RETRY_MAX = 16;
 var ID_RANDOM_RANGE = 0x10000;
 var DEFAULT_RETENTION_DAYS = 30;
+// Slice B: manual action expiry for the unique manual return request
+// (canonical MANUAL-13 manual-action deadline; no magic numbers).
+var MANUAL_ACTION_EXPIRY_SECS = 4 * 3600;
 
 var VALID_POLICIES = { MANUAL: true, RECOVERY: true, EOD: true, SAFETY: true, VEHICLE: true };
 
@@ -120,6 +123,79 @@ function validatePolicy(payload) {
   return { valid: true };
 }
 function stubApply(state, payload, context) { return state; }
+// Slice B (REQ-4ADAPTER-3, SCN-4ADAPTER-3): typed DEPART_NOW. Only the
+// selected trip becomes IN_PROGRESS and records manualDeparture,
+// actualDepartUnix, and a SEPARATE estimatedArrivalUnix; planned values are
+// preserved. Unknown or terminal trips are a no-op (owner-level semantic
+// validation) and other trips are never touched.
+function applyDepartNow(state, payload) {
+  const next = JSON.parse(JSON.stringify(state));
+  const tripId = payload.tripId;
+  const at = payload.at;
+  const tr = next.trips[tripId];
+  if (!tr) return state;
+  if (tr.lifecycleState === 'COMPLETED' || tr.lifecycleState === 'CANCELLED' || tr.lifecycleState === 'EXPIRED') return state;
+  let durationSecs = tr.durationSecs > 0 ? tr.durationSecs : 0;
+  if (durationSecs <= 0 && tr.arriveUnix && tr.departUnix) durationSecs = tr.arriveUnix - tr.departUnix;
+  tr.lifecycleState = 'IN_PROGRESS';
+  tr.manualDeparture = true;
+  tr.actualDepartUnix = at;
+  tr.estimatedArrivalUnix = at + (durationSecs > 0 ? durationSecs : 0);
+  tr.lastActivityUnix = at;
+  next.revision = state.revision + 1;
+  return next;
+}
+// Slice B (REQ-4ADAPTER-4, SCN-4ADAPTER-4): typed RETURN_TO_BASE. Validates an
+// explicit policy and positive route metrics, records the unique manual trip in
+// reducer state (IN_PROGRESS, ACTIVE_MANUAL_TRIP origin, explicit relevance
+// deadline), and stages SESSION_OPEN for the Manual Action Handler — it never
+// serializes or prepends a candidate itinerary.
+function applyReturnToBase(state, payload) {
+  const next = JSON.parse(JSON.stringify(state));
+  const at = payload.at;
+  const tripId = payload.tripId;
+  const durationSecs = payload.durationSecs;
+  const expiry = at + MANUAL_ACTION_EXPIRY_SECS;
+  next.trips[tripId] = {
+    tripId: tripId,
+    actionId: payload.actionId,
+    legType: 'MANUAL_RETURN',
+    lifecycleState: 'IN_PROGRESS',
+    departurePolicy: 'ASAP',
+    originSource: 'ACTIVE_MANUAL_TRIP',
+    planningDay: payload.planningDay || null,
+    originCoords: payload.originCoords || '',
+    targetCoords: payload.targetCoords || '',
+    targetTitle: payload.targetTitle || 'Return to Base',
+    mode: payload.mode || 'DRIVE',
+    actualDepartUnix: null,
+    estimatedArrivalUnix: at + durationSecs,
+    relevanceDeadlineUnix: expiry,
+    durationSecs: durationSecs,
+    distanceMiles: payload.distanceMiles || 0,
+    createdAt: at,
+    lastActivityUnix: at
+  };
+  next.revision = state.revision + 1;
+  return next;
+}
+function buildSessionOpenPayload(payload) {
+  return {
+    type: 'MANUAL_RETURN',
+    actionId: payload.actionId,
+    tripId: payload.tripId,
+    at: payload.at,
+    policy: payload.policy,
+    originCoords: payload.originCoords || '',
+    targetCoords: payload.targetCoords || '',
+    targetTitle: payload.targetTitle || 'Return to Base',
+    mode: payload.mode || 'DRIVE',
+    durationSecs: payload.durationSecs,
+    distanceMiles: payload.distanceMiles || 0,
+    planningDay: payload.planningDay || null,
+    scopes: ['PRESERVE_ACTIVE_TRIP', 'SUPPRESS_REPLAN_REPLACEMENT']
+  };
+}
 function applyCompleteStop(state, payload) {
   const next = JSON.parse(JSON.stringify(state));
   const tripId = payload.tripId;
@@ -220,8 +296,8 @@ function applyCompleteTrip(state, payload) {
 var COMMANDS = [
   { name: "SET_OVERRIDE", validate: function(p) { return validateFields(p, [{name:"key",type:"string",required:true},{name:"value",type:"any",required:true}]); }, apply: stubApply },
   { name: "REMOVE_OVERRIDE", validate: function(p) { return validateFields(p, [{name:"key",type:"string",required:true}]); }, apply: stubApply },
-  { name: "DEPART_NOW", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
-  { name: "RETURN_TO_BASE", validate: function(p) { const base = validateFields(p, [{name:"actionId",type:"string",required:true},{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); if (!base.valid) return base; return validatePolicy(p); }, apply: stubApply },
+  { name: "DEPART_NOW", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: applyDepartNow },
+  { name: "RETURN_TO_BASE", validate: function(p) { const base = validateFields(p, [{name:"actionId",type:"string",required:true},{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); if (!base.valid) return base; const policy = validatePolicy(p); if (!policy.valid) return policy; if (!(p.durationSecs > 0)) return { valid: false, reason: "durationSecs must be positive" }; return { valid: true }; }, apply: applyReturnToBase },
   { name: "COMPLETE_STOP", validate: function(p) { return validateFields(p, [{name:"stopId",type:"string",required:true},{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: applyCompleteStop },
   { name: "START_UNPLANNED_STOP", validate: function(p) { return validateFields(p, [{name:"stopId",type:"string",required:true},{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
   { name: "END_UNPLANNED_STOP", validate: function(p) { return validateFields(p, [{name:"stopId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
@@ -382,6 +458,13 @@ function reduce(command, payload, context) {
   }
   logEvent("info", "TRIP_STATE_COMMAND_ACCEPTED", payload && payload.tripId || null, { generationId: genId, command: command });
   project(commitResult.sideEffects);
+  // Slice B (REQ-4ADAPTER-4): RETURN_TO_BASE stages SESSION_OPEN so the
+  // Manual Action Handler runs next and commits the session + manual trip
+  // records. No candidate itinerary is ever serialized or prepended.
+  if (command === "RETURN_TO_BASE") {
+    setLocal('par1', 'SESSION_OPEN');
+    setLocal('par2', JSON.stringify(buildSessionOpenPayload(payload)));
+  }
   return "OK";
 }
 

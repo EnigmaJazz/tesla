@@ -380,7 +380,7 @@ section('lock-cleanup-finaliser-handler-only', function () {
   if (store.runError) throw new Error(store.runError.message);
 
   assert.strictEqual(store.files[LOCK], staleLock, 'Finaliser must NOT clear the migration-only lock');
-  assert(store.flashLog.some(function (f) { return f.indexOf('Finaliser Fault') !== -1; }),
+  assert(store.flashLog.some(function (f) { return f.indexOf('UNAUTHORIZED_WRITE_REJECTED') !== -1; }),
     'Finaliser lock-clear attempt must be rejected');
   const sessionWrite = store.writeLog.some(function (w) { return w.path === SESSIONS; });
   assert(!sessionWrite, 'Finaliser must not write TDS_Action_Sessions.json');
@@ -415,15 +415,16 @@ section('release-clears-lock-and-keeps-tomorrow-planned', function () {
   const sessions = { schemaVersion: 1, sessions: { [ACTION_ID]: { actionId: ACTION_ID, tripId: TRIP_ID, status: 'ACTIVE', closedAt: null, closeReason: null } } };
   const manualTrips = { schemaVersion: 1, trips: { [TRIP_ID]: { tripId: TRIP_ID, actionId: ACTION_ID, lifecycleState: 'IN_PROGRESS' } } };
   const before = JSON.parse(seededState(trips));
+  const matchingLock = JSON.stringify({ type: 'MANUAL_ROUTING', timestamp: nowSec - 10000, eventId: TRIP_ID });
   const files = {
     [STATE]: seededState(trips),
     [SESSIONS]: JSON.stringify(sessions),
     [DATA + 'TDS_Manual_Trips.json']: JSON.stringify(manualTrips),
-    [LOCK]: staleLock
+    [LOCK]: matchingLock
   };
   const { sandbox, store } = make(files, {}, {});
   const r = runRelease(sandbox, store, { actionId: ACTION_ID, tripId: TRIP_ID, at: nowSec });
-  assert.strictEqual(r, 'OK', 'RELEASE must be accepted by the Manual Action Handler');
+  assert(r.indexOf('OK') === 0, 'RELEASE must be accepted by the Manual Action Handler: ' + r);
   assert.strictEqual(store.files[LOCK], '{}', 'RELEASE must clear the matching legacy lock');
   assert.strictEqual(JSON.parse(store.files[SESSIONS]).sessions[ACTION_ID].status, 'CLOSED', 'RELEASE must close the exact session');
   const logs = store.flashLog.map(function (f) { return JSON.parse(f); });

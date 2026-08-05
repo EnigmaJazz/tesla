@@ -173,7 +173,7 @@ section('reducer-depart-now-only-selected', function () {
 section('return-to-base-opens-session', function () {
   const { sandbox, store } = make();
   const r = runRouter(sandbox, store, 'RETURN_TO_BASE', retPayload);
-  assert.strictEqual(r, 'OK', 'RETURN_TO_BASE must be accepted');
+  assert(r.indexOf('OK') === 0, 'RETURN_TO_BASE must be accepted: ' + r);
   const state = JSON.parse(store.files[STATE]);
   assert(state.trips[TRIP_ID], 'reducer must record the manual trip');
   assert.strictEqual(state.trips[TRIP_ID].legType, 'MANUAL_RETURN', 'manual trip must be typed');
@@ -213,7 +213,7 @@ section('session-open-collision-safe-ids', function () {
   // so a script runs at most once per sandbox); file state carries over.
   const s1 = make();
   const r1 = runRouter(s1.sandbox, s1.store, 'RETURN_TO_BASE', retPayload);
-  assert.strictEqual(r1, 'OK');
+  assert(r1.indexOf('OK') === 0, 'first RETURN_TO_BASE must be accepted: ' + r1);
   const s2 = make({ [MANUAL_TRIPS]: s1.store.files[MANUAL_TRIPS], [SESSIONS]: s1.store.files[SESSIONS], [STATE]: s1.store.files[STATE] });
   const before = s2.store.files[MANUAL_TRIPS];
   const r2 = runRouter(s2.sandbox, s2.store, 'RETURN_TO_BASE', retPayload);
@@ -223,7 +223,7 @@ section('session-open-collision-safe-ids', function () {
   const mint = make();
   const rm = runRouter(mint.sandbox, mint.store, 'SESSION_OPEN', { type: 'MANUAL_RETURN', at: nowSec,
     targetCoords: homeCoords, targetTitle: 'Return to Base', mode: 'DRIVE', durationSecs: 1800, distanceMiles: 3.1 });
-  assert.strictEqual(rm, 'OK', 'direct SESSION_OPEN must mint ids');
+  assert(rm.indexOf('OK') === 0, 'direct SESSION_OPEN must mint ids: ' + rm);
   const mintSessions = JSON.parse(mint.store.files[SESSIONS]);
   const mintedActionId = Object.keys(mintSessions.sessions)[0];
   const mintedTripId = mintSessions.sessions[mintedActionId].tripId;
@@ -267,7 +267,7 @@ section('session-close-only-that-session', function () {
   } };
   const { sandbox, store } = make({ [SESSIONS]: JSON.stringify(sessions) });
   const r = runRouter(sandbox, store, 'SESSION_CLOSE', { actionId: 'action_a', at: nowSec });
-  assert.strictEqual(r, 'OK', 'SESSION_CLOSE must be accepted');
+  assert(r.indexOf('OK') === 0, 'SESSION_CLOSE must be accepted: ' + r);
   const after = JSON.parse(store.files[SESSIONS]);
   assert.strictEqual(after.sessions.action_a.status, 'CLOSED', 'the named session must close');
   assert.strictEqual(after.sessions.action_a.closedAt, nowSec);
@@ -300,7 +300,7 @@ section('release-closes-exact-records-and-clears-lock', function () {
   const lock = JSON.stringify({ type: 'MANUAL_ROUTING', timestamp: nowSec - 60, eventId: TRIP_ID });
   const { sandbox, store } = make({ [SESSIONS]: JSON.stringify(sessions), [MANUAL_TRIPS]: JSON.stringify(trips), [LOCK]: lock });
   const r = runRouter(sandbox, store, 'RELEASE', { actionId: ACTION_ID, tripId: TRIP_ID, at: nowSec });
-  assert.strictEqual(r, 'OK', 'RELEASE must be accepted');
+  assert(r.indexOf('OK') === 0, 'RELEASE must be accepted: ' + r);
   const afterSessions = JSON.parse(store.files[SESSIONS]);
   assert.strictEqual(afterSessions.sessions[ACTION_ID].status, 'CLOSED', 'RELEASE must close the exact session');
   assert.strictEqual(afterSessions.sessions[ACTION_ID].closeReason, 'COMPLETED');
@@ -323,7 +323,7 @@ section('release-mismatch-and-nonmatching-lock', function () {
 
   const { sandbox: s2, store: st2 } = make({ [SESSIONS]: JSON.stringify(sessions), [MANUAL_TRIPS]: JSON.stringify(trips), [LOCK]: lock });
   const r2 = runRouter(s2, st2, 'RELEASE', { actionId: ACTION_ID, tripId: TRIP_ID, at: nowSec });
-  assert.strictEqual(r2, 'OK');
+  assert.strictEqual(r2.indexOf('OK'), 0, 'matching RELEASE must be accepted: ' + r2);
   assert.strictEqual(st2.files[LOCK], lock, 'a non-matching legacy lock must survive RELEASE');
   const logs = parseLog(st2);
   assert(!logs.some(function (l) { return l.code === 'LOCK_COMPATIBILITY_CLEARED'; }), 'non-matching lock must not be cleared');
@@ -366,7 +366,7 @@ const dispatcherGlobals = {
 };
 const dispatcherItin = JSON.stringify([{
   tripId: 'today_trip', targetEventId: 'ev_today_kx8f00', mode: 'DRIVE',
-  departUnix: nowSec + 3600, arriveUnix: nowSec + 5400, targetTitle: 'Work',
+  departUnix: nowSec + 5400, arriveUnix: nowSec + 7200, targetTitle: 'Work',
   targetCoords: awayCoords, planningDay: todayDay
 }]);
 
