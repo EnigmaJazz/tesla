@@ -226,6 +226,21 @@ section('session-open-collision-safe-ids', function () {
   assert(firstTripId && secondTripId, 're-minted trip must have a distinct id');
   assert.notStrictEqual(secondTripId, firstTripId, 'second trip id must differ from the first');
 
+  // Split-brain guard (verify run 2): the re-minted second trip must be
+  // completable through RELEASE — reducer state, sessions, and manual trips
+  // must all agree on the re-minted ids.
+  const s2State = JSON.parse(s2.store.files[STATE]);
+  const s2Sessions = JSON.parse(s2.store.files[SESSIONS]);
+  const secondActionId = Object.keys(s2Sessions.sessions).filter(function (a) { return s2Sessions.sessions[a].tripId === secondTripId; })[0];
+  assert(secondActionId, 're-minted trip must have a session');
+  assert(s2State.trips[secondTripId], 're-minted trip must exist in reducer state');
+  assert.strictEqual(s2State.trips[secondTripId].actionId, secondActionId, 'reducer trip must reference the re-minted action id');
+  const s3 = make({ [MANUAL_TRIPS]: s2.store.files[MANUAL_TRIPS], [SESSIONS]: s2.store.files[SESSIONS], [STATE]: s2.store.files[STATE] });
+  const r3 = runRouter(s3.sandbox, s3.store, 'RELEASE', { actionId: secondActionId, tripId: secondTripId, at: nowSec });
+  assert(r3.indexOf('OK') === 0, 're-minted trip must release successfully: ' + r3);
+  const s3Sessions = JSON.parse(s3.store.files[SESSIONS]);
+  assert.strictEqual(s3Sessions.sessions[secondActionId].status, 'CLOSED', 're-minted session must close');
+
   const mint = make();
   const rm = runRouter(mint.sandbox, mint.store, 'SESSION_OPEN', { type: 'MANUAL_RETURN', at: nowSec,
     targetCoords: homeCoords, targetTitle: 'Return to Base', mode: 'DRIVE', durationSecs: 1800, distanceMiles: 3.1 });

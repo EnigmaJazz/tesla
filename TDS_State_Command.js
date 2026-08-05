@@ -239,6 +239,22 @@ function mintManualId(prefix, existing) {
   }
   throw new Error("MANUAL_ID_COLLISION_RETRY_EXHAUSTED");
 }
+// Single-point id authority (REQ-4SESSION-1): the router re-mints colliding
+// manual ids against the CURRENT sessions/manual-trips files BEFORE routing,
+// so the reducer trip and the staged SESSION_OPEN always share identical ids.
+// The handler's openSession re-mint remains as a pure safety net.
+function ensureUniqueManualIds(payload) {
+  if (!payload || typeof payload !== "object") return payload;
+  const sessions = readSessionsFile();
+  const trips = readManualTripsFile();
+  if (payload.actionId && sessions.sessions[payload.actionId]) {
+    payload.actionId = mintManualId("action", sessions.sessions);
+  }
+  if (payload.tripId && trips.trips[payload.tripId]) {
+    payload.tripId = mintManualId("manual_return", trips.trips);
+  }
+  return payload;
+}
 function openSession(payload) {
   const sessions = readSessionsFile();
   const trips = readManualTripsFile();
@@ -369,6 +385,11 @@ function routeCommand(command, payload) {
   setLocal('tds_state_owner', owner);
   stateCmdLogEvent("info", "STATE_COMMAND_ROUTED", { command: command, owner: owner, tripId: payload.tripId || null });
   try {
+    // Single-point id authority: re-mint colliding manual ids BEFORE the
+    // reducer commits, so reducer state and the staged SESSION_OPEN agree.
+    if (command === "RETURN_TO_BASE" || command === "SESSION_OPEN") {
+      ensureUniqueManualIds(payload);
+    }
     if (command === "ENQUEUE_REORDER") {
       setLocal('return_value', enqueueReorder(payload));
     } else if (owner === "Trip_State_Reducer") {
