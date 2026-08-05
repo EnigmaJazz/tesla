@@ -860,29 +860,61 @@ function publishPar1(store, candidate) {
 }
 
 function testDepartNowCommandAdapter() {
+  // Phase 4 Slice B (REQ-4ADAPTER-3): Depart Now is a typed command adapter.
+  // It stages DEPART_NOW (command name + payload) and never stages a publish
+  // candidate or writes masters; the reducer applies the lifecycle change to
+  // only the selected trip.
   const DEPART_NOW = path.resolve(__dirname, '..', 'Depart_Now.js');
+  const STATE_COMMAND = path.resolve(__dirname, '..', 'TDS_State_Command.js');
+  const activeGen = 'gen:1700000000:ab12';
   const files = activeGenFiles();
   files[DATA + 'Itin_Master.gen_1700000000_ab12.json'] = JSON.stringify([{ tripId: 'leg1', targetEventId: 'evt1', mode: 'DRIVE', departUnix: nowSec + 3600, arriveUnix: nowSec + 5400, durationSecs: 1800, latenessMins: 5, bufferMins: 10, targetTitle: 'Work' }]);
+  files[DATA + 'TDS_Trip_State.json'] = JSON.stringify({
+    schemaVersion: 1, revision: 0, generationId: activeGen, currentOrigin: 'PLANNED',
+    currentPlanningDay: '', userAtBase: false, baseArrivalUnix: null, latenessHalt: false,
+    currentStatus: '', manualReturnCompleted: false,
+    trips: { leg1: { tripId: 'leg1', lifecycleState: 'PLANNED', departUnix: nowSec + 3600, arriveUnix: nowSec + 5400, durationSecs: 1800, currentPlanningDay: '2023-11-14' } },
+    stops: {}, manualSessions: {}
+  });
 
-  const { sandbox: box, store: s } = createSandbox({ files: files, nowMs: nowSec * 1000 });
+  const { sandbox: box, store: s } = createSandbox({ files: files, globals: { TDS_Active_Generation: activeGen }, nowMs: nowSec * 1000 });
   runScript(DEPART_NOW, box, s);
   if (s.runError) throw new Error(s.runError.message);
 
   assert(!s.writeLog.some(function (w) { return w.path === DATA + 'Itin_Master.json'; }), 'Depart_Now.js must not write Itin_Master.json directly');
-  assert(s.locals['par1'], 'Depart_Now.js should stage a publish candidate');
+  assert.strictEqual(box.local('par1'), 'DEPART_NOW', 'Depart Now must stage the typed DEPART_NOW command');
+  const staged = JSON.parse(box.local('par2'));
+  assert.strictEqual(staged.tripId, 'leg1', 'Depart Now must stage the selected leg trip id');
+  assert.strictEqual(staged.at, nowSec, 'Depart Now must stage the departure unix timestamp');
 
-  const pubStore = publishPar1(s, JSON.parse(s.locals['par1']));
-  const m = manifest(pubStore);
-  assert(m && m.state === 'committed', 'Depart_Now candidate should publish a committed generation');
-  const itin = JSON.parse(pubStore.files[m.itineraryPath]);
-  assert.strictEqual(itin[0].departUnix, nowSec, 'depart-now should set departUnix to now');
-  assert.strictEqual(itin[0].arriveUnix, nowSec + 1800, 'depart-now should preserve duration');
-  assert.strictEqual(itin[0].latenessMins, 0, 'depart-now should clear lateness');
-  assert.strictEqual(itin[0].bufferMins, 0, 'depart-now should clear buffer');
+  // The router delivers DEPART_NOW to the reducer, which changes only the
+  // selected trip to IN_PROGRESS and records manual departure + separate
+  // estimated arrival, preserving planned values.
+  const { sandbox: rbox, store: rstore } = createSandbox({ files: s.files, globals: { TDS_Active_Generation: activeGen }, nowMs: nowSec * 1000 });
+  rbox.__currentScriptPath = STATE_COMMAND;
+  rbox.setLocal('par1', box.local('par1'));
+  rbox.setLocal('par2', box.local('par2'));
+  runScript(STATE_COMMAND, rbox, rstore);
+  rbox.__currentScriptPath = '';
+  if (rstore.runError) throw new Error(rstore.runError.message);
+  assert.strictEqual(rbox.local('tds_state_owner'), 'Trip_State_Reducer', 'DEPART_NOW must route to the reducer');
+  const state = JSON.parse(rstore.files[DATA + 'TDS_Trip_State.json']);
+  assert.strictEqual(state.trips.leg1.lifecycleState, 'IN_PROGRESS', 'only the selected trip may become IN_PROGRESS');
+  assert.strictEqual(state.trips.leg1.manualDeparture, true, 'selected trip must record manualDeparture');
+  assert.strictEqual(state.trips.leg1.actualDepartUnix, nowSec, 'selected trip must record actualDepartUnix');
+  assert.strictEqual(state.trips.leg1.estimatedArrivalUnix, nowSec + 1800, 'selected trip must record a separate estimated arrival');
+  assert.strictEqual(state.trips.leg1.departUnix, nowSec + 3600, 'selected trip must preserve its planned departure');
 }
 
 function testReturnToBaseCommandAdapter() {
+  // Phase 4 Slice B (REQ-4ADAPTER-4): Return to Base is a typed command
+  // adapter. It stages RETURN_TO_BASE with an explicit policy and positive
+  // route metrics and NEVER serializes or prepends a candidate itinerary; the
+  // reducer records the unique manual trip and chains SESSION_OPEN to the
+  // Manual Action Handler (sessions + manual trips files).
   const RETURN_TO_BASE = path.resolve(__dirname, '..', 'Return_to_Base.js');
+  const STATE_COMMAND = path.resolve(__dirname, '..', 'TDS_State_Command.js');
+  const activeGen = 'gen:1700000000:ab12';
   const files = activeGenFiles();
   files[DATA + 'Itin_Master.gen_1700000000_ab12.json'] = JSON.stringify([{ tripId: 'leg1', targetEventId: 'evt1', mode: 'DRIVE', departUnix: nowSec + 3600, arriveUnix: nowSec + 5400, targetTitle: 'Work' }]);
 
@@ -890,23 +922,41 @@ function testReturnToBaseCommandAdapter() {
     TDS_Return_Coords: '51.9,-2.1',
     TDS_Return_Mode: 'DRIVE',
     TDS_Return_Name: 'Home',
-    User_Loc: '51.9,-2.1',
-    Car_Loc: '51.9,-2.1'
+    User_Loc: '52.45,-2.1',
+    Car_Loc: '52.45,-2.1',
+    TDS_Active_Generation: activeGen
   };
   const { sandbox: box, store: s } = createSandbox({ files: files, globals: globals, nowMs: nowSec * 1000 });
   runScript(RETURN_TO_BASE, box, s);
   if (s.runError) throw new Error(s.runError.message);
 
   assert(!s.writeLog.some(function (w) { return w.path === DATA + 'Itin_Master.json'; }), 'Return_to_Base.js must not write Itin_Master.json directly');
-  assert(s.locals['par1'], 'Return_to_Base.js should stage a publish candidate');
+  assert.strictEqual(box.local('par1'), 'RETURN_TO_BASE', 'Return to Base must stage the typed RETURN_TO_BASE command');
+  const staged = JSON.parse(box.local('par2'));
+  assert.strictEqual(staged.policy, 'MANUAL', 'RETURN_TO_BASE must carry an explicit return policy');
+  assert(/^(action|manual_return)_[0-9a-z]+$/.test(staged.actionId) && /^manual_return_[0-9a-z]+$/.test(staged.tripId),
+    'RETURN_TO_BASE must carry collision-safe underscore+base-36 ids');
+  assert(staged.durationSecs > 0 && staged.distanceMiles > 0, 'RETURN_TO_BASE must carry positive route metrics');
+  assert.strictEqual(staged.targetCoords, '51.9,-2.1', 'RETURN_TO_BASE must target the base');
+  assert.strictEqual(s.writeLog.length, 0, 'Return to Base must not prepend a candidate or write any file');
 
-  const pubStore = publishPar1(s, JSON.parse(s.locals['par1']));
-  const m = manifest(pubStore);
-  assert(m && m.state === 'committed', 'Return-to-base candidate should publish a committed generation');
-  const itin = JSON.parse(pubStore.files[m.itineraryPath]);
-  assert.strictEqual(itin.length, 2, 'itinerary should prepend return leg');
-  assert.strictEqual(itin[0].targetEventId, 'MANUAL_RETURN', 'return leg should be first');
-  assert.strictEqual(itin[0].mode, 'DRIVE', 'return leg mode should be DRIVE');
+  // Router chain: reducer records the manual trip, then the Manual Action
+  // Handler commits the session + manual trip records. No itinerary changes.
+  const { sandbox: rbox, store: rstore } = createSandbox({ files: s.files, globals: globals, nowMs: nowSec * 1000 });
+  rbox.__currentScriptPath = STATE_COMMAND;
+  rbox.setLocal('par1', box.local('par1'));
+  rbox.setLocal('par2', box.local('par2'));
+  runScript(STATE_COMMAND, rbox, rstore);
+  rbox.__currentScriptPath = '';
+  if (rstore.runError) throw new Error(rstore.runError.message);
+  assert(rbox.local('return_value').indexOf('OK') === 0, 'RETURN_TO_BASE chain must be accepted: ' + rbox.local('return_value'));
+  const state = JSON.parse(rstore.files[DATA + 'TDS_Trip_State.json']);
+  assert(state.trips[staged.tripId] && state.trips[staged.tripId].legType === 'MANUAL_RETURN', 'reducer must record the manual trip');
+  const sessions = JSON.parse(rstore.files[DATA + 'TDS_Action_Sessions.json']);
+  assert(sessions.sessions[staged.actionId] && sessions.sessions[staged.actionId].status === 'ACTIVE', 'handler must open the session');
+  const manualTrips = JSON.parse(rstore.files[DATA + 'TDS_Manual_Trips.json']);
+  assert(manualTrips.trips[staged.tripId], 'handler must commit the manual trip record');
+  assert(!rstore.writeLog.some(function (w) { return w.path.indexOf('TDS_Run_Manifest') !== -1; }), 'no generation may be published by the return flow');
 }
 
 function testEndToEndFlow() {

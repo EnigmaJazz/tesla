@@ -3,13 +3,10 @@
 // Covers: reducer COMPLETE_TRIP (completion, idempotence, exact-trip
 // mutation, tomorrow PLANNED/JIT preservation), Dispatcher future-day
 // rejection (EVT-FUTURE_TRIP_NOT_DUE), Sandbox synthetic-return suppression
-// (EVT-SYNTHETIC_RETURN_SUPPRESSED), and action-lock cleanup gated on
-// successful reducer completion without TDS_Action_Sessions.json writes.
-//
-// RED: against the pre-Slice-B engine, COMPLETE_TRIP is a stub (no state
-// transition), Dispatcher selects tomorrow's trip as bestFuture, Sandbox
-// synthesizes an EOD_RETURN for empty-day movement, and Finaliser/Unlock
-// clear the action lock unconditionally.
+// (EVT-SYNTHETIC_RETURN_SUPPRESSED), and the migration-only action lock
+// (REQ-4SESSION-2): only the Manual Action Handler clears it, via RELEASE
+// after session completion; Finaliser/Unlock can no longer clear it, and the
+// Manual Action Handler is the sole writer of TDS_Action_Sessions.json.
 
 process.env.TZ = 'UTC';
 
@@ -320,9 +317,10 @@ section('sandbox-completion-observer', function () {
 });
 
 // ---------------------------------------------------------------------
-// Section 5: action-lock cleanup gated on successful reducer completion
-// (B3) — Finaliser and Unlock clear TDS_Action_Lock.json only after
-// COMPLETE_TRIP succeeded, and never write TDS_Action_Sessions.json.
+// Section 5: migration-only lock (REQ-4SESSION-2). The Manual Action Handler
+// is the sole lock clearer (via RELEASE after session completion) and the
+// sole writer of TDS_Action_Sessions.json; Finaliser/Unlock can no longer
+// clear the lock and never write sessions.
 // ---------------------------------------------------------------------
 const staleLock = JSON.stringify({ type: 'MANUAL_ROUTING', timestamp: nowSec - 10000, eventId: 'today_ret' });
 const finaliserGlobals = {
@@ -334,6 +332,19 @@ const finaliserGlobals = {
   Engine_Output_Itinerary: '[]',
   TDS_Active_Generation: GEN_ID
 };
+const ACTION_ID = 'action_' + nowSec.toString(36);
+const TRIP_ID = 'manual_return_' + nowSec.toString(36);
+const STATE_COMMAND = path.resolve(__dirname, '..', 'TDS_State_Command.js');
+
+function runRelease(sandbox, store, payload) {
+  sandbox.__currentScriptPath = STATE_COMMAND;
+  sandbox.setLocal('par1', 'RELEASE');
+  sandbox.setLocal('par2', JSON.stringify(payload));
+  runScript(STATE_COMMAND, sandbox, store);
+  sandbox.__currentScriptPath = '';
+  if (store.runError) throw new Error(store.runError.message);
+  return sandbox.local('return_value');
+}
 
 section('lock-cleanup-finaliser-gated', function () {
   // Reducer state WITHOUT completion: the stale lock must NOT be cleared.
@@ -353,9 +364,9 @@ section('lock-cleanup-finaliser-gated', function () {
   assert(!sessionWrite, 'Finaliser must not write TDS_Action_Sessions.json');
 });
 
-section('lock-cleanup-finaliser-after-completion', function () {
-  // After COMPLETE_TRIP succeeded (manualReturnCompleted), the stale lock
-  // IS cleared to an empty object; still no session file write.
+section('lock-cleanup-finaliser-handler-only', function () {
+  // After COMPLETE_TRIP succeeded (manualReturnCompleted), Finaliser STILL
+  // cannot clear the migration-only lock — only the Manual Action Handler may.
   const completedState = JSON.parse(seededState({}));
   completedState.manualReturnCompleted = true;
   const files = {
@@ -368,30 +379,59 @@ section('lock-cleanup-finaliser-after-completion', function () {
   runScript(FINALISER, sandbox, store);
   if (store.runError) throw new Error(store.runError.message);
 
-  const after = store.files[LOCK];
-  assert.strictEqual(after, '{}', 'Finaliser must clear the lock after successful reducer completion');
+  assert.strictEqual(store.files[LOCK], staleLock, 'Finaliser must NOT clear the migration-only lock');
+  assert(store.flashLog.some(function (f) { return f.indexOf('UNAUTHORIZED_WRITE_REJECTED') !== -1; }),
+    'Finaliser lock-clear attempt must be rejected');
   const sessionWrite = store.writeLog.some(function (w) { return w.path === SESSIONS; });
   assert(!sessionWrite, 'Finaliser must not write TDS_Action_Sessions.json');
 });
 
-section('lock-cleanup-unlock-gated', function () {
+section('unlock-cannot-clear-lock', function () {
   // Unlock without reducer completion: lock must survive.
   const { sandbox: s1, store: st1 } = make({ [LOCK]: staleLock, [STATE]: seededState({}) }, {}, {});
   runScript(UNLOCK, s1, st1);
   if (st1.runError) throw new Error(st1.runError.message);
   assert.strictEqual(st1.files[LOCK], staleLock, 'Unlock must not clear the lock without reducer completion');
-  const sessionWrite1 = st1.writeLog.some(function (w) { return w.path === SESSIONS; });
-  assert(!sessionWrite1, 'Unlock must not write TDS_Action_Sessions.json');
+  assert(!st1.writeLog.some(function (w) { return w.path === SESSIONS; }), 'Unlock must not write TDS_Action_Sessions.json');
 
-  // Unlock after completion: lock cleared to empty object; no session write.
+  // Unlock after completion: the lock STILL survives — handler-only clearing.
   const completedState = JSON.parse(seededState({}));
   completedState.manualReturnCompleted = true;
   const { sandbox: s2, store: st2 } = make({ [LOCK]: staleLock, [STATE]: JSON.stringify(completedState) }, {}, {});
   runScript(UNLOCK, s2, st2);
   if (st2.runError) throw new Error(st2.runError.message);
-  assert.strictEqual(st2.files[LOCK], '{}', 'Unlock must clear the lock after successful reducer completion');
-  const sessionWrite2 = st2.writeLog.some(function (w) { return w.path === SESSIONS; });
-  assert(!sessionWrite2, 'Unlock must not write TDS_Action_Sessions.json');
+  assert.strictEqual(st2.files[LOCK], staleLock, 'Unlock must NOT clear the migration-only lock');
+  assert(!st2.writeLog.some(function (w) { return w.path === SESSIONS; }), 'Unlock must not write TDS_Action_Sessions.json');
+});
+
+section('release-clears-lock-and-keeps-tomorrow-planned', function () {
+  // RELEASE (Manual Action Handler) closes the exact session/manual trip and
+  // clears the matching legacy lock with EVT LOCK_COMPATIBILITY_CLEARED;
+  // tomorrow's trip in reducer state stays byte-identical PLANNED.
+  const trips = {
+    today_ret: { tripId: 'today_ret', actionId: ACTION_ID, lifecycleState: 'IN_PROGRESS', departures: [{ at: nowSec - 1800, planningDay: todayDay }], currentPlanningDay: todayDay },
+    tomorrow_trip: { tripId: 'tomorrow_trip', lifecycleState: 'PLANNED', departures: [], currentPlanningDay: tomorrowDay }
+  };
+  const sessions = { schemaVersion: 1, sessions: { [ACTION_ID]: { actionId: ACTION_ID, tripId: TRIP_ID, status: 'ACTIVE', closedAt: null, closeReason: null } } };
+  const manualTrips = { schemaVersion: 1, trips: { [TRIP_ID]: { tripId: TRIP_ID, actionId: ACTION_ID, lifecycleState: 'IN_PROGRESS' } } };
+  const before = JSON.parse(seededState(trips));
+  const matchingLock = JSON.stringify({ type: 'MANUAL_ROUTING', timestamp: nowSec - 10000, eventId: TRIP_ID });
+  const files = {
+    [STATE]: seededState(trips),
+    [SESSIONS]: JSON.stringify(sessions),
+    [DATA + 'TDS_Manual_Trips.json']: JSON.stringify(manualTrips),
+    [LOCK]: matchingLock
+  };
+  const { sandbox, store } = make(files, {}, {});
+  const r = runRelease(sandbox, store, { actionId: ACTION_ID, tripId: TRIP_ID, at: nowSec });
+  assert(r.indexOf('OK') === 0, 'RELEASE must be accepted by the Manual Action Handler: ' + r);
+  assert.strictEqual(store.files[LOCK], '{}', 'RELEASE must clear the matching legacy lock');
+  assert.strictEqual(JSON.parse(store.files[SESSIONS]).sessions[ACTION_ID].status, 'CLOSED', 'RELEASE must close the exact session');
+  const logs = store.flashLog.map(function (f) { return JSON.parse(f); });
+  assert(logs.some(function (l) { return l.code === 'LOCK_COMPATIBILITY_CLEARED'; }), 'RELEASE must log LOCK_COMPATIBILITY_CLEARED');
+  const state = JSON.parse(store.files[STATE]);
+  assert.strictEqual(state.trips.today_ret.lifecycleState, 'IN_PROGRESS', 'RELEASE must not touch reducer trip lifecycle');
+  assert.deepStrictEqual(state.trips.tomorrow_trip, before.trips.tomorrow_trip, 'tomorrow trip must stay byte-identical PLANNED');
 });
 
 // ---------------------------------------------------------------------
@@ -401,7 +441,7 @@ try {
     console.log('FAILED SECTIONS: ' + failures.length);
     fail(failures[0]);
   }
-  console.log('PASS: AC-5 — completion isolation, future-day rejection, suppression, lock cleanup');
+  console.log('PASS: AC-5 — completion isolation, future-day rejection, suppression, handler-only lock cleanup');
   process.exit(0);
 } catch (e) {
   fail(e.message);

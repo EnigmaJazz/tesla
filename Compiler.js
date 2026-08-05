@@ -19,6 +19,9 @@ const METERS_TO_MILES = 0.000621371;
 // Actionability relevance window: departures more than 18 hours out are not
 // candidates for the depart-changed signal (named deadline, never a raw delta).
 const RELEVANCE_WINDOW_SECS = 64800;
+// Phase 4 Slice B (REQ-4SESSION-2): legacy lock freshness window for the
+// migration-only fallback when the session store is absent/unreadable.
+const LOCK_FRESH_SECS = 7200;
 
 // Exact-token membership over a CSV row list (OVR-10): a row matches only when
 // it equals the id or starts with "<id>~" — never a bare substring, so decoy
@@ -72,6 +75,22 @@ function getSpeed(mode) {
 // runs the publisher; in the test harness a sandbox.publish callback is
 // available, so use it when present.
 function publishCandidate(candidate) {
+    // Phase 4 Slice B (REQ-4SESSION-2): sessions are authoritative. An active
+    // session suppresses the heartbeat candidate; the legacy lock is honoured
+    // only when the session store is absent/unreadable; an empty session map
+    // means unlocked.
+    if (actionLockActive()) {
+        flash(JSON.stringify({
+            timestamp: Math.floor(Date.now() / 1000),
+            generationId: global('TDS_Active_Generation') || null,
+            component: "Compiler",
+            severity: "INFO",
+            code: "ACTION_LOCKED",
+            tripId: null,
+            details: { reason: "active manual session suppresses heartbeat build" }
+        }));
+        return null;
+    }
     setLocal('par1', JSON.stringify(candidate));
     if (typeof publish === 'function') {
         return publish(candidate);
@@ -114,6 +133,35 @@ function readActiveGeneration(kind) {
         if (legacyItin !== null) return legacyItin;
     }
     return [];
+}
+// Phase 4 Slice B: session-primary action lock. Shared by the Compiler and
+// Dispatcher readers (standalone copies). Active sessions/manual trips are
+// authoritative; only absent/unreadable sessions permit honouring an
+// unexpired legacy lock; a readable empty session map means unlocked.
+function actionLockActive() {
+    const now = Math.floor(Date.now() / 1000);
+    const sessionsRaw = readFile("Tasker/Tesla/Data/TDS_Action_Sessions.json") || "";
+    if (sessionsRaw && sessionsRaw.indexOf("%") !== 0) {
+        try {
+            const sessions = JSON.parse(sessionsRaw);
+            if (sessions && sessions.sessions && typeof sessions.sessions === "object") {
+                const keys = Object.keys(sessions.sessions);
+                for (let i = 0; i < keys.length; i++) {
+                    const s = sessions.sessions[keys[i]];
+                    if (s && s.status === "ACTIVE" && now <= parseInt(s.expiresAt, 10)) return true;
+                }
+                return false; // readable session map is authoritative: unlocked
+            }
+        } catch (e) { /* unreadable sessions fall through to the legacy lock */ }
+    }
+    try {
+        const lockRaw = readFile("Tasker/Tesla/Data/TDS_Action_Lock.json") || "";
+        if (lockRaw && lockRaw.indexOf("%") !== 0 && lockRaw !== "{}") {
+            const lock = JSON.parse(lockRaw);
+            if (now - parseInt(lock.timestamp || 0, 10) < LOCK_FRESH_SECS) return true;
+        }
+    } catch (e) { /* no lock: unlocked */ }
+    return false;
 }
 
 try {
