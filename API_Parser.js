@@ -31,11 +31,12 @@
 
     // Exact correlation (REQ-5REQID-2): generation MUST equal the active
     // generation AND the latest-by-cluster record MUST match generation +
-    // requestId exactly. Superseded (older) requestIds and unknown clusters
-    // are stale. A pre-correlation legacy callback carries no correlation and
-    // keeps the historical path (Slice C migration stance).
+    // requestId exactly. Superseded (older) requestIds, unknown clusters, and
+    // callbacks carrying NO correlation are stale. Post-migration every
+    // callback MUST carry the staged correlation envelope; an absent or
+    // malformed one is discarded (never falls back to local staging state).
     function correlationOk(correlation) {
-        if (!correlation) return true;
+        if (!correlation) return false;
         let activeGen = global('TDS_Active_Generation') || null;
         let corrGen = correlation.generationId || null;
         if (corrGen !== activeGen) return false;
@@ -60,9 +61,14 @@
             // Callback envelope {correlation, response} retained by staging.
             correlation = staged.correlation;
             res = staged.response;
+        } else if (staged && typeof staged === "object" && !Array.isArray(staged) && staged.response !== undefined) {
+            // A callback carrying a response but NO valid correlation envelope is
+            // stale — never fall back to local staging state (REQ-5REQID-2).
+            correlation = null;
+            res = staged.response;
         } else {
-            // Raw Google response: the builder's api_correlation local is the
-            // correlation source for the callback.
+            // Raw Google response (no envelope): the builder's api_correlation
+            // local is the correlation source for the callback.
             let corrRaw = local('api_correlation');
             if (corrRaw) { try { correlation = JSON.parse(corrRaw); } catch (e2) { correlation = null; } }
         }
@@ -75,6 +81,25 @@
             return; // REQ-5REQID-2: no cache/reorder mutation on mismatch.
         }
         if (correlation) logEvt("ROUTE_RESPONSE_ACCEPTED", "info", { clusterId: correlation.clusterId, requestId: correlation.requestId });
+        // REQ-5REQID-3: consume the accepted request so a replay of this
+        // callback is stale. Mid-chain rule: par1/par2 MUST stay the staged
+        // cache command, so the consume is staged into dedicated locals
+        // (tds_consume_par1/par2) that the serial router consumes AFTER the
+        // cache manager; the harness shim delivers directly.
+        if (correlation) {
+            // Mid-chain rule: save par1/par2 before the shim delivery (the
+            // cacheManager shim sets par1/par2 to the staged consume entry),
+            // then restore so the cache command stays staged.
+            const savedP1 = local('par1');
+            const savedP2 = local('par2');
+            setLocal('tds_consume_par1', 'REQUEST_STATE_CONSUME');
+            setLocal('tds_consume_par2', JSON.stringify({ clusterId: correlation.clusterId, requestId: correlation.requestId }));
+            if (typeof cacheManager === "function") {
+                cacheManager("REQUEST_STATE_CONSUME", { clusterId: correlation.clusterId, requestId: correlation.requestId });
+            }
+            setLocal('par1', savedP1);
+            setLocal('par2', savedP2);
+        }
         
         if (local('api_route_mode') === "CLUSTER") {
             let clusterRaw = local('api_cluster_json') || local('par1');

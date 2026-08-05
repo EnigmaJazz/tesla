@@ -563,6 +563,12 @@ function testApiParserEmitsCommand() {
     files: files,
     nowMs: nowSec * 1000
   });
+  // Slice C correlation: register the request, then stage {correlation, response}.
+  const corr = { generationId: activeGen, clusterId: '51.9,-2.1|dest1|wp1,wp2', requestId: 'req_cluster', emittedAt: nowSec };
+  const reg = sandbox.cacheManager('REQUEST_STATE_REGISTER', corr);
+  assert(reg.indexOf('OK') === 0, 'REQUEST_STATE_REGISTER must succeed: ' + reg);
+  sandbox.setLocal('par1', JSON.stringify(cluster));
+  sandbox.writeFile(DATA + 'temp_payload.json', JSON.stringify({ correlation: { generationId: activeGen, clusterId: '51.9,-2.1|dest1|wp1,wp2', requestId: 'req_cluster' }, response: payload }));
   runScript(API_PARSER, sandbox, store);
   if (store.runError) throw new Error(store.runError.message);
   // Phase 5 (REQ-5CACHE-1): API_Parser stages ORDER_CACHE_UPSERT; the Route
