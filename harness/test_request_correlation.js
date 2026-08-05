@@ -200,6 +200,37 @@ try {
   assert.strictEqual(accepted[0].component, 'API_Parser', 'LOG-17 component');
   assert(!store.writeLog.some(function (w) { return w.path.indexOf('TDS_Order_Cache') !== -1 || w.path.indexOf('Temp_Route_Cache') !== -1; }),
     'parser must not write cache files directly');
+
+  // REQ-5REQID-3: replaying the SAME accepted callback is stale — the
+  // accepted request was consumed (REQUEST_STATE_CONSUME) so it is no longer
+  // the latest-by-cluster record.
+  const replay = sandbox.cacheManager('CACHE_READ', { kind: 'request' });
+  assert(replay.indexOf('OK') === 0, 'CACHE_READ request must succeed after consume');
+  const stateAfter = JSON.parse(sandbox.local('cache_read_result'));
+  assert(!stateAfter.latestByCluster[correlation.clusterId], 'accepted request must be consumed (no latest record)');
+  sandbox.writeFile(TEMP_PAYLOAD, JSON.stringify(callback));
+  runScript(PARSER, sandbox, store);
+  if (store.runError) throw new Error('API_Parser crashed on replay: ' + JSON.stringify(store.runError));
+  assert.strictEqual(sandbox.local('par1'), '', 'replay must stage no mutation');
+  const staleReplay = logsWithCode(store, 'STALE_API_RESPONSE_DISCARDED');
+  assert(staleReplay.length === 1, 'replayed accepted callback must be discarded (got ' + staleReplay.length + ')');
+
+  // REQ-5REQID-2: a callback with NO correlation is stale (never applies).
+  const missing = runRegisteredClusterFlow();
+  missing.sandbox.writeFile(TEMP_PAYLOAD, JSON.stringify({ response: { routes: [{ optimizedIntermediateWaypointIndex: [1, 0] }] } }));
+  runScript(PARSER, missing.sandbox, missing.store);
+  if (missing.store.runError) throw new Error('API_Parser crashed on missing correlation: ' + JSON.stringify(missing.store.runError));
+  assert.strictEqual(missing.sandbox.local('par1'), '', 'missing-correlation callback must stage no mutation');
+  assert(logsWithCode(missing.store, 'STALE_API_RESPONSE_DISCARDED').length === 1, 'missing correlation must be discarded');
+
+  // REQ-5REQID-2: a malformed envelope that CLAIMS a correlation field is
+  // stale (never falls back to the api_correlation local).
+  const malformed = runRegisteredClusterFlow();
+  malformed.sandbox.writeFile(TEMP_PAYLOAD, JSON.stringify({ correlation: 'not-an-object', response: { routes: [{ optimizedIntermediateWaypointIndex: [1, 0] }] } }));
+  runScript(PARSER, malformed.sandbox, malformed.store);
+  if (malformed.store.runError) throw new Error('API_Parser crashed on malformed envelope: ' + JSON.stringify(malformed.store.runError));
+  assert.strictEqual(malformed.sandbox.local('par1'), '', 'malformed-envelope callback must stage no mutation');
+  assert(logsWithCode(malformed.store, 'STALE_API_RESPONSE_DISCARDED').length === 1, 'malformed correlation envelope must be discarded');
 } catch (e) {
   fail('accepted correlation section threw: ' + (e && e.message ? e.message : e));
 }
