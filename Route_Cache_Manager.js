@@ -29,6 +29,8 @@
 //       Upsert one cluster order; then re-stages ENQUEUE_REORDER for
 //       TDS_State_Command (which owns the TDS_Reorder_Commands.json append).
 //   REQUEST_STATE_REGISTER {generationId,clusterId,requestId,emittedAt}
+//   REQUEST_STATE_CONSUME  {clusterId,requestId} — marks one accepted
+//                          response consumed so its replay is stale
 //       Record the latest request correlation per cluster (Slice C wires the
 //       API builder to this command).
 //   CACHE_READ            {kind: "route"|"temp"|"order"|"request"}
@@ -586,11 +588,13 @@ function rcmHandleRegister(payload) {
   if (typeof payload.emittedAt !== "number") return "emittedAt must be a number";
   const now = rcmNowSec();
   const state = rcmReadRequestState(now);
+  const payloadGen = payload.generationId === undefined ? null : payload.generationId;
   const latestByCluster = {};
   const sKeys = Object.keys(state.latestByCluster);
   for (let i = 0; i < sKeys.length; i++) {
     const rec = state.latestByCluster[sKeys[i]];
     if (rec.emittedAt && rec.emittedAt < now - RCM_REQUEST_TTL_SECS) continue; // TTL 2h
+    if ((rec.generationId === undefined ? null : rec.generationId) !== payloadGen) continue; // other generation
     latestByCluster[sKeys[i]] = rec;
   }
   latestByCluster[payload.clusterId] = {
@@ -607,6 +611,39 @@ function rcmHandleRegister(payload) {
   }
   rcmLog("info", "ROUTE_REQUEST_REGISTERED", { clusterId: payload.clusterId, requestId: payload.requestId });
   return "OK: REQUEST_STATE_REGISTER " + payload.clusterId;
+}
+
+// REQ-5REQID-3: an ACCEPTED response consumes its request record so replaying
+// the same callback is stale (the consumed request is no longer the latest).
+function rcmHandleConsume(payload) {
+  if (!rcmIsNonEmptyString(payload.clusterId) || !rcmIsNonEmptyString(payload.requestId)) {
+    return "clusterId/requestId must be non-empty strings";
+  }
+  const now = rcmNowSec();
+  const state = rcmReadRequestState(now);
+  const rec = state.latestByCluster[payload.clusterId];
+  // Revalidate: only the request that is currently the latest for the cluster
+  // may be consumed; a superseded or already-consumed request cannot consume.
+  if (!rec || rec.requestId !== payload.requestId) {
+    return "no matching latest request to consume";
+  }
+  const latestByCluster = {};
+  const sKeys = Object.keys(state.latestByCluster);
+  for (let i = 0; i < sKeys.length; i++) {
+    const r = state.latestByCluster[sKeys[i]];
+    if (sKeys[i] === payload.clusterId && r.requestId === payload.requestId) continue; // consumed
+    latestByCluster[sKeys[i]] = r;
+  }
+  const next = { schemaVersion: RCM_SCHEMA_VERSION, updatedAt: now, latestByCluster: latestByCluster };
+  const snap = rcmSnapshot(RCM_REQUEST_JSON);
+  try {
+    rcmWriteWithReadback(RCM_REQUEST_JSON, JSON.stringify(next));
+  } catch (e) {
+    rcmRestore(snap);
+    throw new Error("REQUEST_STATE_COMMIT_FAILED: " + e.message);
+  }
+  rcmLog("info", "ROUTE_REQUEST_CONSUMED", { clusterId: payload.clusterId, requestId: payload.requestId });
+  return "OK: REQUEST_STATE_CONSUME " + payload.clusterId;
 }
 
 function rcmHandleRead(payload) {
@@ -691,6 +728,7 @@ if (!RCM_COMMAND) {
   else if (RCM_COMMAND === "ORDER_CACHE_UPSERT") result = rcmHandleOrderUpsert(RCM_PAYLOAD);
   else if (RCM_COMMAND === "ROLLUP_DUE_TEMP") result = rcmHandleRollup(RCM_PAYLOAD);
   else if (RCM_COMMAND === "REQUEST_STATE_REGISTER") result = rcmHandleRegister(RCM_PAYLOAD);
+  else if (RCM_COMMAND === "REQUEST_STATE_CONSUME") result = rcmHandleConsume(RCM_PAYLOAD);
   else if (RCM_COMMAND === "CACHE_READ") result = rcmHandleRead(RCM_PAYLOAD);
   else if (RCM_COMMAND === "PRUNE") result = rcmHandlePrune(RCM_PAYLOAD);
   else result = "unknown command: " + RCM_COMMAND;
