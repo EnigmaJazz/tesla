@@ -420,6 +420,24 @@ section('finaliser-midchain-preserves-par1-and-stages-release', function () {
   assert.strictEqual(stagedRelease.tripId, TRIP_ID, 'staged release must carry the exact trip id');
   assert.strictEqual(store.files[LOCK], staleLock, 'Finaliser must NOT clear the migration-only lock itself');
   assert(!store.writeLog.some(function (w) { return w.path === LOCK; }), 'Finaliser must not write the lock');
+
+  // No-lock path (verify run 2): an ACTIVE session must release even when NO
+  // legacy lock exists — the modern session-authoritative path. The release
+  // must not be nested under the lock-presence gate.
+  const noLockFiles = {
+    [DATA + 'Itin_Master.json']: '[]',
+    [DATA + 'TDS_Overrides.json']: '{}',
+    [STATE]: JSON.stringify(completedState),
+    [SESSIONS]: JSON.stringify(sessions)
+  };
+  const { sandbox: s2, store: st2 } = make(noLockFiles, finaliserGlobals, { tds_temp_json: '[]', raw_base_data: '' });
+  runScript(FINALISER, s2, st2);
+  if (st2.runError) throw new Error(st2.runError.message);
+  assert.strictEqual(s2.local('tds_release_par1'), 'RELEASE', 'no-lock path must still stage the deferred RELEASE');
+  const stagedNoLock = JSON.parse(s2.local('tds_release_par2') || '{}');
+  assert.strictEqual(stagedNoLock.actionId, ACTION_ID, 'no-lock staged release must carry the exact action id');
+  assert.strictEqual(stagedNoLock.tripId, TRIP_ID, 'no-lock staged release must carry the exact trip id');
+  assert.notStrictEqual(s2.local('par1'), 'RELEASE', 'no-lock path must never clobber %par1');
 });
 
 section('unlock-cannot-clear-lock', function () {
