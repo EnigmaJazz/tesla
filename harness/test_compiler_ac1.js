@@ -11,7 +11,7 @@ process.env.TZ = 'UTC';
 
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { createSandbox } = require('./mock_tasker');
+const { createSandbox, makeEnvelope, makeTypedRow } = require('./mock_tasker');
 const { runScript } = require('./runner');
 
 const nowSec = 1700000000;
@@ -47,21 +47,27 @@ const masterJson = JSON.stringify([
 
 function runWithPolicy(policy) {
   const locals = {
-    block_step1: "EVENT",
-    block_step2: "Future Event",
-    block_step3: destCoords,
-    block_step4: "DRIVE",
-    block_step5: String(futureEventStart),
-    block_step7: "false",
-    block_step8: "DEPART",
-    block_step9: String(futureEventStart),
-    block_step10: "abc123_kx8f00",
-    block_step14: "",
-    block_step15: "",
-    block_step16: "",
-    block_step19: policy,
-    block_step20: "2026-10-24",
-    block_step21: "LIVE_BASE",
+    block_queue: makeEnvelope([makeTypedRow({
+      rowType: "EVENT",
+      title: "Future Event",
+      coords: destCoords,
+      mode: "DRIVE",
+      displayTime: futureEventStart,
+      departTime: futureEventStart,
+      pitstopState: "false",
+      apiTimeType: "DEPART",
+      apiTimeUnix: futureEventStart,
+      evId: "abc123_kx8f00",
+      evLoc: "Work",
+      engineLateMins: 0,
+      currentLegStable: false,
+      dropinStatusFlag: "none",
+      safeDesc: "",
+      adHoc: [],
+      departurePolicy: policy,
+      planningDay: "2026-10-24",
+      originSource: "LIVE_BASE"
+    })]),
     api_duration_secs: String(durationSecs),
     api_distance_miles: "15",
     api_transit_steps: "",
@@ -165,28 +171,43 @@ try {
   // else the leg is rejected as zero-duration. Every fallback logs
   // DEPARTURE_POLICY_FALLBACK_USED with {from,to,durationSecs,distanceMiles}.
   function runWithMetrics(overrides) {
-    const base = {
-      block_step1: "EVENT",
-      block_step2: "Future Event",
-      block_step3: destCoords,
-      block_step4: "DRIVE",
-      block_step5: String(futureEventStart),
-      block_step7: "false",
-      block_step8: "DEPART",
-      block_step9: String(futureEventStart),
-      block_step10: "abc123_kx8f00",
-      block_step14: "",
-      block_step15: "",
-      block_step16: "",
-      block_step19: "JIT",
-      block_step20: "2026-10-24",
-      block_step21: "LIVE_BASE",
+    const row = makeTypedRow({
+      rowType: "EVENT",
+      title: "Future Event",
+      coords: destCoords,
+      mode: "DRIVE",
+      displayTime: futureEventStart,
+      departTime: futureEventStart,
+      pitstopState: "false",
+      apiTimeType: "DEPART",
+      apiTimeUnix: futureEventStart,
+      evId: "abc123_kx8f00",
+      evLoc: "Work",
+      engineLateMins: 0,
+      currentLegStable: false,
+      dropinStatusFlag: "none",
+      safeDesc: "",
+      adHoc: [],
+      departurePolicy: "JIT",
+      planningDay: "2026-10-24",
+      originSource: "LIVE_BASE"
+    });
+    const rowOverrides = {};
+    const localOverrides = {};
+    Object.keys(overrides).forEach(function (k) {
+      if (k === "block_step17") rowOverrides.routeDurationSecs = parseInt(overrides[k], 10);
+      else if (k === "block_step18") rowOverrides.routeDistanceMiles = parseFloat(overrides[k]);
+      else if (k === "block_step8") rowOverrides.apiTimeType = overrides[k];
+      else if (k === "block_step3") rowOverrides.coords = overrides[k];
+      else localOverrides[k] = overrides[k];
+    });
+    const locals = Object.assign({
+      block_queue: makeEnvelope([Object.assign(row, rowOverrides)]),
       api_duration_secs: "",
       api_distance_miles: "",
       api_transit_steps: "",
       virtual_time: String(nowSec - 60)
-    };
-    const locals = Object.assign({}, base, overrides);
+    }, localOverrides);
     const { sandbox, store } = createSandbox({
       locals: locals,
       globals: {

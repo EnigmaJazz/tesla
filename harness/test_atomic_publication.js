@@ -2,7 +2,7 @@
 process.env.TZ = 'UTC';
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { createSandbox } = require('./mock_tasker');
+const { createSandbox, makeEnvelope, makeTypedRow } = require('./mock_tasker');
 const { runScript } = require('./runner');
 
 const nowSec = 1700000000;
@@ -267,19 +267,27 @@ function testCompilerCutover() {
     }
   ]);
   const locals = {
-    block_step1: 'EVENT',
-    block_step2: 'Future Event',
-    block_step3: '52.1,-2.2',
-    block_step4: 'DRIVE',
-    block_step5: String(futureEventStart),
-    block_step7: 'false',
-    block_step8: 'DEPART',
-    block_step9: String(futureEventStart),
-    block_step10: 'abc123_kx8f00',
-    block_step14: '',
-    block_step15: '',
-    block_step16: '',
-    block_step19: 'JIT',
+    block_queue: makeEnvelope([makeTypedRow({
+      rowType: 'EVENT',
+      title: 'Future Event',
+      coords: '52.1,-2.2',
+      mode: 'DRIVE',
+      displayTime: futureEventStart,
+      departTime: futureEventStart,
+      pitstopState: 'false',
+      apiTimeType: 'DEPART',
+      apiTimeUnix: futureEventStart,
+      evId: 'abc123_kx8f00',
+      evLoc: 'Work',
+      engineLateMins: 0,
+      currentLegStable: false,
+      dropinStatusFlag: 'none',
+      safeDesc: '',
+      adHoc: [],
+      departurePolicy: 'JIT',
+      planningDay: '2023-11-14',
+      originSource: 'LIVE_BASE'
+    })]),
     api_duration_secs: String(durationSecs),
     api_distance_miles: '15',
     api_transit_steps: '',
@@ -749,19 +757,27 @@ function testCompilerRejectsZeroDurationLeg() {
     coords: '52.1,-2.2'
   }]);
   const locals = {
-    block_step1: 'EVENT',
-    block_step2: 'Zero Event',
-    block_step3: '52.1,-2.2',
-    block_step4: 'DRIVE',
-    block_step5: String(futureEventStart),
-    block_step7: 'false',
-    block_step8: 'DEPART',
-    block_step9: String(futureEventStart),
-    block_step10: 'zero_abc123',
-    block_step14: '',
-    block_step15: '',
-    block_step16: '',
-    block_step19: 'JIT',
+    block_queue: makeEnvelope([makeTypedRow({
+      rowType: 'EVENT',
+      title: 'Zero Event',
+      coords: '52.1,-2.2',
+      mode: 'DRIVE',
+      displayTime: futureEventStart,
+      departTime: futureEventStart,
+      pitstopState: 'false',
+      apiTimeType: 'DEPART',
+      apiTimeUnix: futureEventStart,
+      evId: 'zero_abc123',
+      evLoc: 'Work',
+      engineLateMins: 0,
+      currentLegStable: false,
+      dropinStatusFlag: 'none',
+      safeDesc: '',
+      adHoc: [],
+      departurePolicy: 'JIT',
+      planningDay: '2023-11-14',
+      originSource: 'LIVE_BASE'
+    })]),
     api_duration_secs: '0',
     api_distance_miles: '0',
     api_transit_steps: '',
@@ -1019,19 +1035,27 @@ function testEndToEndFlow() {
   assert(m && m.state === 'committed', 'Finaliser should publish a committed generation');
 
   const compilerLocals = {
-    block_step1: 'EVENT',
-    block_step2: 'Work',
-    block_step3: '52.1,-2.2',
-    block_step4: 'DRIVE',
-    block_step5: String(futureEventStart),
-    block_step7: 'false',
-    block_step8: 'DEPART',
-    block_step9: String(futureEventStart),
-    block_step10: 'evt1_lkj000',
-    block_step14: '',
-    block_step15: '',
-    block_step16: '',
-    block_step19: 'JIT',
+    block_queue: makeEnvelope([makeTypedRow({
+      rowType: 'EVENT',
+      title: 'Work',
+      coords: '52.1,-2.2',
+      mode: 'DRIVE',
+      displayTime: futureEventStart,
+      departTime: futureEventStart,
+      pitstopState: 'false',
+      apiTimeType: 'DEPART',
+      apiTimeUnix: futureEventStart,
+      evId: 'evt1_lkj000',
+      evLoc: 'Work',
+      engineLateMins: 0,
+      currentLegStable: false,
+      dropinStatusFlag: 'none',
+      safeDesc: '',
+      adHoc: [],
+      departurePolicy: 'JIT',
+      planningDay: '2023-11-14',
+      originSource: 'LIVE_BASE'
+    })]),
     api_duration_secs: String(durationSecs),
     api_distance_miles: '15',
     api_transit_steps: '',

@@ -105,10 +105,9 @@ function runScenario(virtualLoc) {
 
 function assertRowsHavePolicy(rows, label) {
   rows.forEach(function (row, idx) {
-    const cols = row.split("|");
-    const policy = cols[18];
+    const policy = row.departurePolicy;
     if (policy !== "ASAP" && policy !== "JIT") {
-      throw new Error(label + ' row ' + idx + ' missing explicit ASAP/JIT policy at col 19 (got ' + JSON.stringify(policy) + ')');
+      throw new Error(label + ' row ' + idx + ' missing explicit ASAP/JIT departurePolicy (got ' + JSON.stringify(policy) + ')');
     }
   });
 }
@@ -125,10 +124,11 @@ try {
 
   const queueHome = storeHome.locals['block_queue'];
   if (!queueHome || queueHome === "EOF") fail('control fixture expected non-empty block_queue');
-  const rowsHome = queueHome.split("~");
-  const headHome = rowsHome[0].split("|");
-  if (headHome.length < 18) fail('control head expected at least 18 columns, got ' + headHome.length);
-  if (headHome[18] !== "JIT") fail('control head policy (col 19) should be JIT, got ' + headHome[18]);
+  const envHome = JSON.parse(queueHome);
+  const rowsHome = envHome.rows;
+  const headHome = rowsHome[0];
+  if (!headHome) fail('control fixture expected a head row');
+  if (headHome.departurePolicy !== "JIT") fail('control head departurePolicy should be JIT, got ' + headHome.departurePolicy);
   assertRowsHavePolicy(rowsHome, 'control');
 
   const overrideHome = storeHome.flashLog.some(function (m) {
@@ -147,26 +147,27 @@ try {
 
   const queueAway = storeAway.locals['block_queue'];
   if (!queueAway || queueAway === "EOF") fail('stale-away fixture expected non-empty block_queue');
-  const rowsAway = queueAway.split("~");
-  const headAway = rowsAway[0].split("|");
-  if (headAway.length < 18) fail('stale-away head expected at least 18 columns, got ' + headAway.length);
+  const envAway = JSON.parse(queueAway);
+  const rowsAway = envAway.rows;
+  const headAway = rowsAway[0];
+  if (!headAway) fail('stale-away fixture expected a head row');
 
   // Direct origin assertion: the head EVENT row is the future event, so its
-  // destination coords (column 2) are the event coords, not the stale-away
-  // virtual_loc. The EOD_RETURN row's destination is the configured home
-  // coords, proving the queue is anchored to the live base rather than away.
-  const headAwayDestCoords = headAway[2];
+  // destination coords are the event coords, not the stale-away virtual_loc.
+  // The EOD_RETURN row's destination is the configured home coords, proving
+  // the queue is anchored to the live base rather than away.
+  const headAwayDestCoords = headAway.coords;
   if (headAwayDestCoords !== eventCoords) {
     fail('stale-away head destination coords should be eventCoords (' + eventCoords + '), got ' + headAwayDestCoords);
   }
   const awayCoordsLeaked = rowsAway.some(function (row) {
-    return row.split("|")[2] === awayCoords;
+    return row.coords === awayCoords;
   });
   if (awayCoordsLeaked) fail('stale-away virtual_loc (' + awayCoords + ') leaked into a queue row destination');
 
-  const eodReturnRow = rowsAway.find(function (row) { return row.split("|")[0] === "EOD_RETURN"; });
+  const eodReturnRow = rowsAway.find(function (row) { return row.rowType === "EOD_RETURN"; });
   if (!eodReturnRow) fail('stale-away fixture expected an EOD_RETURN row');
-  const eodReturnDestCoords = eodReturnRow.split("|")[2];
+  const eodReturnDestCoords = eodReturnRow.coords;
   if (eodReturnDestCoords !== homeCoords) {
     fail('stale-away EOD_RETURN destination coords should be homeCoords (' + homeCoords + '), got ' + eodReturnDestCoords);
   }
@@ -178,18 +179,14 @@ try {
     fail('stale-away queue should match control queue after live-base override;\n  away:   ' + queueAway + '\n  home:   ' + queueHome);
   }
 
-  const headPolicy = headAway[18];
-  if (headPolicy !== "JIT") fail('stale-away head policy (col 19) should be JIT, got ' + headPolicy);
-
-  const blockStep19 = storeAway.locals['block_step19'];
-  if (blockStep19 !== "JIT") fail('stale-away block_step19 should be JIT, got ' + blockStep19);
+  const headPolicy = headAway.departurePolicy;
+  if (headPolicy !== "JIT") fail('stale-away head departurePolicy should be JIT, got ' + headPolicy);
 
   assertRowsHavePolicy(rowsAway, 'stale-away');
 
-  // Slice A: every queue row must carry planningDay (col 20, YYYY-MM-DD) and
-  // originSource (col 21, SCH-3 enum). The live base override must surface as
-  // originSource = LIVE_BASE on the head row, and block_step20/21 mirror the
-  // head planningDay/originSource for the Compiler.
+  // Slice A: every queue row must carry planningDay (YYYY-MM-DD) and
+  // originSource (SCH-3 enum). The live base override must surface as
+  // originSource = LIVE_BASE on the head row.
   const SCH3_ORIGIN_SOURCES = [
     "ACTIVE_MANUAL_TRIP",
     "ACTIVE_PLANNED_TRIP",
@@ -203,68 +200,46 @@ try {
   const todayLabel = new Date(nowSec * 1000).toISOString().slice(0, 10);
 
   rowsAway.forEach(function (row, idx) {
-    const cols = row.split("|");
-    if (cols.length < 21) fail('stale-away row ' + idx + ' expected >= 21 columns (Slice A), got ' + cols.length);
-    if (!DAY_RE.test(cols[19] || '')) {
-      fail('stale-away row ' + idx + ' col 20 planningDay must be YYYY-MM-DD, got ' + JSON.stringify(cols[19]));
+    if (!DAY_RE.test(row.planningDay || '')) {
+      fail('stale-away row ' + idx + ' planningDay must be YYYY-MM-DD, got ' + JSON.stringify(row.planningDay));
     }
-    if (SCH3_ORIGIN_SOURCES.indexOf(cols[20]) === -1) {
-      fail('stale-away row ' + idx + ' col 21 originSource must be in SCH-3 enum, got ' + JSON.stringify(cols[20]));
+    if (SCH3_ORIGIN_SOURCES.indexOf(row.originSource) === -1) {
+      fail('stale-away row ' + idx + ' originSource must be in SCH-3 enum, got ' + JSON.stringify(row.originSource));
     }
   });
 
-  const headAwayCols = headAway;
-  if (headAwayCols[19] !== todayLabel) {
-    fail('stale-away head planningDay should be ' + todayLabel + ', got ' + JSON.stringify(headAwayCols[19]));
+  if (headAway.planningDay !== todayLabel) {
+    fail('stale-away head planningDay should be ' + todayLabel + ', got ' + JSON.stringify(headAway.planningDay));
   }
-  if (headAwayCols[20] !== "LIVE_BASE") {
-    fail('stale-away head originSource should be LIVE_BASE, got ' + JSON.stringify(headAwayCols[20]));
-  }
-
-  const eodCols = eodReturnRow.split("|");
-  if (eodCols[19] !== todayLabel) {
-    fail('EOD_RETURN planningDay should be ' + todayLabel + ', got ' + JSON.stringify(eodCols[19]));
-  }
-  if (eodCols[20] !== "CONFIRMED_LAST_DESTINATION") {
-    fail('EOD_RETURN originSource should be CONFIRMED_LAST_DESTINATION, got ' + JSON.stringify(eodCols[20]));
+  if (headAway.originSource !== "LIVE_BASE") {
+    fail('stale-away head originSource should be LIVE_BASE, got ' + JSON.stringify(headAway.originSource));
   }
 
-  if (storeAway.locals['block_step20'] !== todayLabel) {
-    fail('stale-away block_step20 should be ' + todayLabel + ', got ' + JSON.stringify(storeAway.locals['block_step20']));
+  if (eodReturnRow.planningDay !== todayLabel) {
+    fail('EOD_RETURN planningDay should be ' + todayLabel + ', got ' + JSON.stringify(eodReturnRow.planningDay));
   }
-  if (storeAway.locals['block_step21'] !== "LIVE_BASE") {
-    fail('stale-away block_step21 should be LIVE_BASE, got ' + JSON.stringify(storeAway.locals['block_step21']));
+  if (eodReturnRow.originSource !== "CONFIRMED_LAST_DESTINATION") {
+    fail('EOD_RETURN originSource should be CONFIRMED_LAST_DESTINATION, got ' + JSON.stringify(eodReturnRow.originSource));
   }
 
-  // INV-0.7 (C1): the Sandbox exports positive route metrics for the head leg
-  // as block_step17 (route duration seconds) / block_step18 (route distance
-  // miles), and the head queue row carries them in columns 17/18. Zero is never
-  // exported — the Compiler rejects missing metrics instead.
-  const headMetricDur = parseInt(headAwayCols[16], 10);
-  const headMetricDist = parseFloat(headAwayCols[17]);
-  if (isNaN(headMetricDur) || headMetricDur <= 0) {
-    fail('stale-away head col 17 (durationSecs) should be positive, got ' + JSON.stringify(headAwayCols[16]));
+  // INV-0.7 tier 2: the head row carries positive typed route metrics
+  // (routeDurationSecs / routeDistanceMiles). Zero is never exported — the
+  // Compiler rejects missing metrics instead of publishing zero.
+  const headMetricDur = headAway.routeDurationSecs;
+  const headMetricDist = headAway.routeDistanceMiles;
+  if (headMetricDur === null || headMetricDur <= 0) {
+    fail('stale-away head routeDurationSecs should be positive, got ' + JSON.stringify(headMetricDur));
   }
-  if (isNaN(headMetricDist) || headMetricDist <= 0) {
-    fail('stale-away head col 18 (distanceMiles) should be positive, got ' + JSON.stringify(headAwayCols[17]));
+  if (headMetricDist === null || headMetricDist <= 0) {
+    fail('stale-away head routeDistanceMiles should be positive, got ' + JSON.stringify(headMetricDist));
   }
-  const blockStep17 = parseInt(storeAway.locals['block_step17'], 10);
-  const blockStep18 = parseFloat(storeAway.locals['block_step18']);
-  if (isNaN(blockStep17) || blockStep17 <= 0) {
-    fail('stale-away block_step17 should be a positive route duration (seconds), got ' + JSON.stringify(storeAway.locals['block_step17']));
-  }
-  if (isNaN(blockStep18) || blockStep18 <= 0) {
-    fail('stale-away block_step18 should be a positive route distance (miles), got ' + JSON.stringify(storeAway.locals['block_step18']));
-  }
-  if (blockStep17 !== headMetricDur) fail('stale-away block_step17 should mirror head col 17');
-  if (blockStep18 !== headMetricDist) fail('stale-away block_step18 should mirror head col 18');
 
   console.log('PASS: AC-6 Sandbox: stale-away itinerary loses to live base; future trip JIT');
-  console.log('  control: head policy = ' + headHome[18]);
+  console.log('  control: head policy = ' + headHome.departurePolicy);
   console.log('  stale-away: queue identical to control (origin rebound to home), head policy = ' + headPolicy);
-  console.log('  block_step19 = ' + blockStep19);
+  console.log('  head departurePolicy = ' + headAway.departurePolicy);
   console.log('  all ' + rowsAway.length + ' stale-away queue rows carry an explicit ASAP/JIT policy');
-  console.log('  head planningDay = ' + headAwayCols[19] + ', originSource = ' + headAwayCols[20] + ', block_step20/21 mirrored');
+  console.log('  head planningDay = ' + headAway.planningDay + ', originSource = ' + headAway.originSource);
   process.exit(0);
 } catch (e) {
   fail(e.message);

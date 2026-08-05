@@ -122,14 +122,14 @@ try {
 
   const queue = store.locals['block_queue'];
   if (!queue || queue === "EOF") fail('pass 1 expected non-empty block_queue');
-  const rows = queue.split("~");
+  const env = JSON.parse(queue);
+  if (env.schemaVersion !== 1 || env.eof !== false) fail('pass 1 block_queue must be a schemaVersion-1 non-EOF envelope');
+  const rows = env.rows;
 
   rows.forEach(function (row, i) {
-    const cols = row.split("|");
-    if (cols.length < 21) fail('row ' + i + ' expected >= 21 columns (Slice A), got ' + cols.length);
-    if (!DAY_RE.test(cols[19] || '')) fail('row ' + i + ' col 20 planningDay must be YYYY-MM-DD, got ' + JSON.stringify(cols[19]));
-    if (SCH3_ORIGIN_SOURCES.indexOf(cols[20]) === -1) {
-      fail('row ' + i + ' col 21 originSource must be in SCH-3 enum, got ' + JSON.stringify(cols[20]));
+    if (!row.planningDay || !DAY_RE.test(row.planningDay)) fail('row ' + i + ' planningDay must be YYYY-MM-DD, got ' + JSON.stringify(row.planningDay));
+    if (SCH3_ORIGIN_SOURCES.indexOf(row.originSource) === -1) {
+      fail('row ' + i + ' originSource must be in SCH-3 enum, got ' + JSON.stringify(row.originSource));
     }
   });
 
@@ -143,20 +143,18 @@ try {
   });
   if (!crossDayFlash) fail('expected EVT-CROSS_DAY_CHAIN_REJECTED flash');
 
-  const skip = store.locals['skip_idx_until'];
-  if (skip !== "2") fail('skip_idx_until should be 2 (first next-day index), got ' + JSON.stringify(skip));
+  const skip = env.skipIdxUntil;
+  if (skip !== 2) fail('skipIdxUntil should be 2 (first next-day index), got ' + JSON.stringify(skip));
 
-  const head = rows[0].split("|");
-  if (head[19] !== "2023-11-14") fail('head planningDay should be 2023-11-14, got ' + head[19]);
-  if (head[20] !== "LIVE_BASE") fail('head originSource should be LIVE_BASE, got ' + head[20]);
-  if (head[18] !== "JIT") fail('head policy (col 19) should be JIT, got ' + head[18]);
+  const head = rows[0];
+  if (head.planningDay !== "2023-11-14") fail('head planningDay should be 2023-11-14, got ' + head.planningDay);
+  if (head.originSource !== "LIVE_BASE") fail('head originSource should be LIVE_BASE, got ' + head.originSource);
+  if (head.departurePolicy !== "JIT") fail('head departurePolicy should be JIT, got ' + head.departurePolicy);
 
-  if (store.locals['block_step20'] !== "2023-11-14") {
-    fail('block_step20 should be 2023-11-14, got ' + JSON.stringify(store.locals['block_step20']));
+  if (env.stepConflict !== null && env.stepConflict !== "") {
+    fail('pass 1 stepConflict should be null/empty, got ' + JSON.stringify(env.stepConflict));
   }
-  if (store.locals['block_step21'] !== "LIVE_BASE") {
-    fail('block_step21 should be LIVE_BASE, got ' + JSON.stringify(store.locals['block_step21']));
-  }
+  if (!Array.isArray(env.notifications)) fail('pass 1 notifications must be an array');
 
   // -----------------------------------------------------------------
   // Pass 2: next invocation starts at tomorrow's index with an itinerary tail
@@ -187,18 +185,19 @@ try {
 
   const queue2 = store2.locals['block_queue'];
   if (!queue2 || queue2 === "EOF") fail('pass 2 expected non-empty block_queue');
-  const head2 = queue2.split("~")[0].split("|");
-  if (head2.length < 21) fail('pass 2 head expected >= 21 columns, got ' + head2.length);
-  if (head2[19] !== "2023-11-15") fail('pass 2 head planningDay should be 2023-11-15, got ' + head2[19]);
-  if (SCH3_ORIGIN_SOURCES.indexOf(head2[20]) === -1) {
-    fail('pass 2 head originSource must be in SCH-3 enum, got ' + JSON.stringify(head2[20]));
+  const env2 = JSON.parse(queue2);
+  const head2 = env2.rows[0];
+  if (!head2) fail('pass 2 expected a head row');
+  if (head2.planningDay !== "2023-11-15") fail('pass 2 head planningDay should be 2023-11-15, got ' + head2.planningDay);
+  if (SCH3_ORIGIN_SOURCES.indexOf(head2.originSource) === -1) {
+    fail('pass 2 head originSource must be in SCH-3 enum, got ' + JSON.stringify(head2.originSource));
   }
-  if (head2[18] !== "JIT") fail('pass 2 head policy (col 19) should be JIT, got ' + head2[18]);
+  if (head2.departurePolicy !== "JIT") fail('pass 2 head departurePolicy should be JIT, got ' + head2.departurePolicy);
 
   console.log('PASS: AC-3 Sandbox: same-location overnight terminates today; tomorrow survives base/JIT');
-  console.log('  pass 1: rows = ' + rows.length + ', skip_idx_until = ' + skip);
-  console.log('  pass 1: head planningDay = ' + head[19] + ', originSource = ' + head[20] + ', policy = ' + head[18]);
-  console.log('  pass 2: head planningDay = ' + head2[19] + ', originSource = ' + head2[20] + ', policy = ' + head2[18]);
+  console.log('  pass 1: rows = ' + rows.length + ', skipIdxUntil = ' + skip);
+  console.log('  pass 1: head planningDay = ' + head.planningDay + ', originSource = ' + head.originSource + ', policy = ' + head.departurePolicy);
+  console.log('  pass 2: head planningDay = ' + head2.planningDay + ', originSource = ' + head2.originSource + ', policy = ' + head2.departurePolicy);
   process.exit(0);
 } catch (e) {
   fail(e.message);

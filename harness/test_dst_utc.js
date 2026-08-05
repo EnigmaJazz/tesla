@@ -227,13 +227,11 @@ try {
 
     const dstQueue = dstStore.locals['block_queue'];
     if (!dstQueue || dstQueue === 'EOF') fail('DST Sandbox expected non-empty block_queue');
-    const dstHead = dstQueue.split('~')[0].split('|');
-    if (dstHead.length < 21) fail('DST head expected >= 21 columns (Slice A), got ' + dstHead.length);
-    if (dstHead[19] !== dstDayLabel) {
-        fail('DST planningDay (col 20) should be local ' + dstDayLabel + ', got ' + JSON.stringify(dstHead[19]) + ' (UTC day is 2026-10-24)');
-    }
-    if (dstStore.locals['block_step20'] !== dstDayLabel) {
-        fail('DST block_step20 should be local ' + dstDayLabel + ', got ' + JSON.stringify(dstStore.locals['block_step20']));
+    const dstEnv = JSON.parse(dstQueue);
+    const dstHead = dstEnv.rows[0];
+    if (!dstHead) fail('DST Sandbox expected a head row');
+    if (dstHead.planningDay !== dstDayLabel) {
+        fail('DST planningDay should be local ' + dstDayLabel + ', got ' + JSON.stringify(dstHead.planningDay) + ' (UTC day is 2026-10-24)');
     }
 
     console.log('PASS: ' + testName);
@@ -244,7 +242,7 @@ try {
     console.log('  UTC midnight boundary = false');
     console.log('  utcDayBoundaryUnix(1700000000) = ' + boundaryForT1);
     console.log('  Dispatcher chain-break waypoints = ' + waypoints.length);
-    console.log('  DST-local planningDay = ' + dstHead[19] + ' (local), block_step20 = ' + dstStore.locals['block_step20']);
+    console.log('  DST-local planningDay = ' + dstHead.planningDay + ' (local, typed envelope)');
     process.exit(0);
 } catch (e) {
     fail(e.message);
