@@ -205,6 +205,13 @@ function writeWithReadback(path, content) {
     throw new Error("READ_BACK_MISMATCH: " + path);
   }
 }
+function snapshotFile(path) {
+  // Faithful existence snapshot: a present empty file (raw "") must be
+  // restored as present-empty, never deleted as if absent. readFile returns
+  // null ONLY for a missing file (Tasker-faithful mock + runtime).
+  const raw = readFile(path);
+  return { existed: raw !== null, raw: raw === null ? "" : raw };
+}
 function restoreSnapshot(path, snap) {
   try {
     if (snap.existed) {
@@ -221,7 +228,9 @@ function restoreSnapshot(path, snap) {
 }
 // Collision-safe manual ids: <core>_<base36Unix> via the lastIndexOf("_") and
 // base-36 suffix convention (ID-2). Bounded retry re-encodes a later second
-// when the candidate already exists.
+// when the candidate already exists. Callers may provide IDs (e.g. the
+// adapter) or omit them to let the handler mint; in BOTH cases the handler
+// re-mints on collision so a same-second duplicate cannot fail.
 function mintManualId(prefix, existing) {
   const base = nowSec();
   for (let i = 0; i < HANDLER_ID_RETRY_MAX; i++) {
@@ -233,12 +242,13 @@ function mintManualId(prefix, existing) {
 function openSession(payload) {
   const sessions = readSessionsFile();
   const trips = readManualTripsFile();
-  let actionId = payload.actionId;
-  let tripId = payload.tripId;
-  if (!actionId) actionId = mintManualId("action", sessions.sessions);
-  if (!tripId) tripId = mintManualId("manual_return", trips.trips);
-  if (sessions.sessions[actionId]) throw new Error("SESSION_ID_COLLISION: " + actionId);
-  if (trips.trips[tripId]) throw new Error("MANUAL_TRIP_ID_COLLISION: " + tripId);
+  let actionId = payload.actionId || mintManualId("action", sessions.sessions);
+  let tripId = payload.tripId || mintManualId("manual_return", trips.trips);
+  // Even when the caller supplied IDs, they must be unique in the current
+  // files: re-mint (bounded retry) instead of throwing on a same-second
+  // duplicate (REQ-4SESSION-1 collision safety).
+  if (sessions.sessions[actionId]) actionId = mintManualId("action", sessions.sessions);
+  if (trips.trips[tripId]) tripId = mintManualId("manual_return", trips.trips);
   const at = payload.at;
   const expiry = at + HANDLER_EXPIRY_SECS;
   const trip = {
@@ -256,8 +266,8 @@ function openSession(payload) {
     scopes: Array.isArray(payload.scopes) && payload.scopes.length > 0 ? payload.scopes : HANDLER_SCOPES.slice(),
     closedAt: null, closeReason: null
   };
-  const tripsSnap = { existed: !!readFile(MANUAL_TRIPS_PATH), raw: readFile(MANUAL_TRIPS_PATH) || "" };
-  const sessionsSnap = { existed: !!readFile(MANUAL_SESSIONS_PATH), raw: readFile(MANUAL_SESSIONS_PATH) || "" };
+  const tripsSnap = snapshotFile(MANUAL_TRIPS_PATH);
+  const sessionsSnap = snapshotFile(MANUAL_SESSIONS_PATH);
   const newTrips = { schemaVersion: HANDLER_SCHEMA_VERSION, trips: Object.assign({}, trips.trips) };
   newTrips.trips[tripId] = trip;
   const newSessions = { schemaVersion: HANDLER_SCHEMA_VERSION, sessions: Object.assign({}, sessions.sessions) };
@@ -295,8 +305,8 @@ function releaseSession(payload) {
   const trips = readManualTripsFile();
   const session = sessions.sessions[actionId];
   if (!session || session.tripId !== tripId) throw new Error("RELEASE_MISMATCH: " + actionId + "/" + tripId);
-  const tripsSnap = { existed: !!readFile(MANUAL_TRIPS_PATH), raw: readFile(MANUAL_TRIPS_PATH) || "" };
-  const sessionsSnap = { existed: !!readFile(MANUAL_SESSIONS_PATH), raw: readFile(MANUAL_SESSIONS_PATH) || "" };
+  const tripsSnap = snapshotFile(MANUAL_TRIPS_PATH);
+  const sessionsSnap = snapshotFile(MANUAL_SESSIONS_PATH);
   const newTrips = { schemaVersion: HANDLER_SCHEMA_VERSION, trips: Object.assign({}, trips.trips) };
   const newSessions = { schemaVersion: HANDLER_SCHEMA_VERSION, sessions: Object.assign({}, sessions.sessions) };
   if (newSessions.sessions[actionId].status === "ACTIVE") {
@@ -323,8 +333,16 @@ function releaseSession(payload) {
     let lock = null;
     try { lock = JSON.parse(lockRaw); } catch (e) { lock = null; }
     if (lock && (lock.actionId === actionId || lock.eventId === tripId || lock.tripId === tripId)) {
-      writeWithReadback(MANUAL_LOCK_PATH, "{}");
-      stateCmdLogEvent("info", "LOCK_COMPATIBILITY_CLEARED", { actionId: actionId, tripId: tripId });
+      // REQ-4SESSION-2: the compatibility clear must match the release
+      // exactly. If the lock carries ANY present identifier that CONFLICTS
+      // with this action/trip, it is a different lock — do not clear it.
+      const actionMatch = lock.actionId === undefined || lock.actionId === null || lock.actionId === actionId;
+      const eventMatch = lock.eventId === undefined || lock.eventId === null || lock.eventId === tripId;
+      const tripMatch = lock.tripId === undefined || lock.tripId === null || lock.tripId === tripId;
+      if (actionMatch && eventMatch && tripMatch) {
+        writeWithReadback(MANUAL_LOCK_PATH, "{}");
+        stateCmdLogEvent("info", "LOCK_COMPATIBILITY_CLEARED", { actionId: actionId, tripId: tripId });
+      }
     }
   }
   stateCmdLogEvent("info", "SESSION_CLOSED", { actionId: actionId, tripId: tripId, closeReason: "COMPLETED" });
