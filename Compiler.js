@@ -60,6 +60,13 @@ function parseQueueEnvelope(raw) {
     let env = null;
     try { env = JSON.parse(raw); } catch (e) { env = null; }
     if (!env || env.schemaVersion !== TYPED_QUEUE_SCHEMA_VERSION || !Array.isArray(env.rows)) return null;
+    // REQ-5QUEUE-1 (SCN-5QUEUE-1): controls MUST retain exact values.
+    // eof is a boolean; skipIdxUntil is a non-negative integer;
+    // stepConflict is null or a non-empty string; notifications is an array.
+    if (typeof env.eof !== "boolean") return null;
+    if (typeof env.skipIdxUntil !== "number" || !isFinite(env.skipIdxUntil) || env.skipIdxUntil < 0 || Math.floor(env.skipIdxUntil) !== env.skipIdxUntil) return null;
+    if (env.stepConflict !== null && (typeof env.stepConflict !== "string" || env.stepConflict === "")) return null;
+    if (!Array.isArray(env.notifications)) return null;
     for (let r = 0; r < env.rows.length; r++) {
         if (!isValidTypedRow(env.rows[r])) return null;
     }
@@ -230,7 +237,7 @@ try {
             severity: "INFO",
             code: "TYPED_QUEUE_ACCEPTED",
             tripId: null,
-            details: { rows: envelope.rows.length, eof: envelope.eof, skipIdxUntil: envelope.skipIdxUntil, hasStepConflict: (envelope.stepConflict !== null && envelope.stepConflict !== ""), notifications: (envelope.notifications || []).length }
+            details: { rows: envelope.rows.length, eof: envelope.eof, skipIdxUntil: envelope.skipIdxUntil, stepConflict: envelope.stepConflict, notifications: envelope.notifications }
         }));
         const queueRows = envelope.rows || [];
         // REQ-5CUTOVER-2: the typed row fields are authoritative — the legacy

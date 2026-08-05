@@ -217,6 +217,16 @@ try {
   if (!findFlash(badSchema, 'TYPED_QUEUE_REJECTED')) fail('unsupported schemaVersion must log TYPED_QUEUE_REJECTED');
   if (badSchema.files[DATA + 'TDS_Run_Manifest.json']) fail('unsupported schemaVersion must not publish a generation');
 
+  // REQ-5QUEUE-1: malformed CONTROLS reject the envelope atomically.
+  const badEof = runCompiler(baseRow, { extraLocals: { block_queue: JSON.stringify({ schemaVersion: 1, rows: [baseRow], eof: 'yes', skipIdxUntil: 0, stepConflict: null, notifications: [] }) } });
+  if (!findFlash(badEof, 'TYPED_QUEUE_REJECTED')) fail('non-boolean eof must log TYPED_QUEUE_REJECTED');
+  const badSkip = runCompiler(baseRow, { extraLocals: { block_queue: JSON.stringify({ schemaVersion: 1, rows: [baseRow], eof: true, skipIdxUntil: -1, stepConflict: null, notifications: [] }) } });
+  if (!findFlash(badSkip, 'TYPED_QUEUE_REJECTED')) fail('negative skipIdxUntil must log TYPED_QUEUE_REJECTED');
+  const badConflict = runCompiler(baseRow, { extraLocals: { block_queue: JSON.stringify({ schemaVersion: 1, rows: [baseRow], eof: true, skipIdxUntil: 0, stepConflict: '', notifications: [] }) } });
+  if (!findFlash(badConflict, 'TYPED_QUEUE_REJECTED')) fail('empty stepConflict must log TYPED_QUEUE_REJECTED');
+  const badNotif = runCompiler(baseRow, { extraLocals: { block_queue: JSON.stringify({ schemaVersion: 1, rows: [baseRow], eof: true, skipIdxUntil: 0, stepConflict: null, notifications: 'oops' }) } });
+  if (!findFlash(badNotif, 'TYPED_QUEUE_REJECTED')) fail('non-array notifications must log TYPED_QUEUE_REJECTED');
+
   // Two rows where the SECOND is invalid: the whole queue is rejected and
   // even the valid first row must not compile (no partial rows).
   const invalidRow = makeTypedRow(Object.assign({}, baseRow, { departurePolicy: 'SOON' }));
