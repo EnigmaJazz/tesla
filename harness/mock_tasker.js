@@ -26,6 +26,7 @@ const PUBLISHER_PATH = path.resolve(__dirname, '..', 'Generation_Publisher.js');
 const REDUCER_PATH = path.resolve(__dirname, '..', 'Trip_State_Reducer.js');
 const OVERRIDE_HANDLER_PATH = path.resolve(__dirname, '..', 'Override_Handler.js');
 const STATE_COMMAND_PATH = path.resolve(__dirname, '..', 'TDS_State_Command.js');
+const CACHE_MANAGER_PATH = path.resolve(__dirname, '..', 'Route_Cache_Manager.js');
 const PHASE3_STATE_PATH = "Tasker/Tesla/Data/TDS_Trip_State.json";
 const REORDER_QUEUE_PATH = "Tasker/Tesla/Data/TDS_Reorder_Commands.json";
 const OVERRIDE_PATH = "Tasker/Tesla/Data/TDS_Overrides.json";
@@ -112,6 +113,20 @@ function createSandbox(options) {
     sandbox.__currentScriptPath = STATE_COMMAND_PATH;
     runScript(STATE_COMMAND_PATH, sandbox, store);
     sandbox.__currentScriptPath = '';
+    return local('return_value');
+  }
+
+  // cacheManager(command, payload): runs Route_Cache_Manager through its staged
+  // entry (par1 command / par2 JSON payload) with __currentScriptPath set so its
+  // four cache JSON files + legacy text projections pass the ownership guard.
+  // Mirrors reducer()/handler()/stateCommand().
+  function cacheManager(command, payload) {
+    const outer = sandbox.__currentScriptPath;
+    setLocal('par1', command);
+    setLocal('par2', JSON.stringify(payload));
+    sandbox.__currentScriptPath = CACHE_MANAGER_PATH;
+    runScript(CACHE_MANAGER_PATH, sandbox, store);
+    sandbox.__currentScriptPath = outer;
     return local('return_value');
   }
 
@@ -227,7 +242,8 @@ function createSandbox(options) {
     publish: publish,
     reducer: reducer,
     handler: handler,
-    stateCommand: stateCommand
+    stateCommand: stateCommand,
+    cacheManager: cacheManager
   };
 
   const store = {

@@ -352,15 +352,9 @@ try {
 // ---------- Legacy text migration + TTL pruning (PRUNE) ----------
 
 try {
-  const legacyRoute = '52.0,-2.3~51.7,-2.1~DRIVE~1200~8000~' + (nowSec - 100) + '~500~1000~0~5';
-  const legacyTemp = '52.0,-2.3~51.7,-2.1~DRIVE~1200~8000~' + (nowSec - 100) + '~' + (nowSec + 3600);
-  const legacyOrder = '52.0,-2.3|dest2|wp1,wp2|wp2,wp1';
+  // TTL prune: an expired JSON entry is dropped; fresh entries survive.
   const { sandbox, store } = createSandbox({
     files: {
-      [ROUTE_TEXT]: legacyRoute,
-      [TEMP_TEXT]: legacyTemp,
-      [ORDER_TEXT]: legacyOrder,
-      // One already-expired JSON route entry (TTL 30d) for PRUNE to drop.
       [ROUTE_JSON]: JSON.stringify({ schemaVersion: 1, updatedAt: nowSec - 100, entries: {
         'old~~key~~DRIVE~~900~~0': {
           originCell: '1,1', destinationCell: '2,2', mode: 'DRIVE', dayClass: 0, bucket: 900,
@@ -373,18 +367,31 @@ try {
   });
   const prune = sandbox.cacheManager('PRUNE', { nowSec: nowSec });
   assert(prune.indexOf('OK') === 0, 'PRUNE must succeed: ' + prune);
-  const route = readJsonStore(store, ROUTE_JSON);
+  const pruned = readJsonStore(store, ROUTE_JSON);
+  assert(pruned, 'route cache must be persisted after PRUNE');
+  assert(!pruned.entries['old~~key~~DRIVE~~900~~0'], 'expired entry must be pruned');
+
+  // Legacy migration: text-only caches migrate into JSON on the first mutation.
+  const legacyRoute = '52.0,-2.3~51.7,-2.1~DRIVE~1200~8000~' + (nowSec - 100) + '~500~1000~0~5';
+  const legacyTemp = '52.0,-2.3~51.7,-2.1~DRIVE~1200~8000~' + (nowSec - 100) + '~' + (nowSec + 3600);
+  const legacyOrder = '52.0,-2.3|dest2|wp1,wp2|wp2,wp1';
+  const { sandbox: s2, store: st2 } = createSandbox({
+    files: { [ROUTE_TEXT]: legacyRoute, [TEMP_TEXT]: legacyTemp, [ORDER_TEXT]: legacyOrder },
+    nowMs: nowSec * 1000
+  });
+  const prune2 = s2.cacheManager('PRUNE', { nowSec: nowSec });
+  assert(prune2.indexOf('OK') === 0, 'PRUNE must succeed on legacy caches: ' + prune2);
+  const route = readJsonStore(st2, ROUTE_JSON);
   assert(route, 'route cache must be persisted after PRUNE');
-  assert(!route.entries['old~~key~~DRIVE~~900~~0'], 'expired entry must be pruned');
   const migrated = Object.keys(route.entries).map(function (k) { return route.entries[k]; })
     .filter(function (e) { return e.originCell === '52.0,-2.3'; })[0];
   assert(migrated, 'legacy RouteCache.txt must migrate into the JSON cache');
   assert.strictEqual(migrated.meanDurationSecs, 1200, 'migrated mean must be preserved');
   assert.strictEqual(migrated.sampleCount, 5, 'migrated sampleCount must be preserved');
   assert.strictEqual(migrated.bucket, 1000, 'migrated DRIVE bucket must be the tod');
-  const temp = readJsonStore(store, TEMP_JSON);
+  const temp = readJsonStore(st2, TEMP_JSON);
   assert(temp && Object.keys(temp.entries).length === 1, 'legacy temp sample must migrate');
-  const order = readJsonStore(store, ORDER_JSON);
+  const order = readJsonStore(st2, ORDER_JSON);
   assert(order && order.entries['52.0,-2.3|dest2|wp1,wp2'], 'legacy order line must migrate');
 } catch (e) {
   fail('migration/PRUNE section threw: ' + (e && e.message ? e.message : e));
