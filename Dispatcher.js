@@ -12,6 +12,7 @@ const RELEVANCE_DEFAULT_SECS = 4 * 3600;  // INV-0.6: fallback relevance window 
 const RELEVANCE_RECOVERY_SECS = 2 * 3600;  // INV-0.6: recovery leg relevance window (planned arrival + 2h).
 const RELEVANCE_EOD_SECS = 24 * 3600;  // INV-0.6: EOD return remains actionable for the rest of the day.
 const RELEVANCE_DROPIN_GRACE_SECS = 15 * 60;  // INV-0.6: drop-in explicit deadline; if absent, +15 min after planned arrival.
+const LOCK_FRESH_SECS = 7200;  // Phase 4 Slice B: legacy lock freshness for the migration-only fallback.
 
 const SECONDS_PER_DAY = 86400;
 
@@ -340,15 +341,40 @@ try {
     var isAdHoc = (global('User_At_AdHoc') === "true");
 
     var isActionLocked = false;
+    // Phase 4 Slice B (REQ-4SESSION-2): sessions are authoritative. An active
+    // session locks the heartbeat; the legacy lock is honoured only when the
+    // session store is absent/unreadable; a readable empty session map means
+    // unlocked.
+    var sessionStoreReadable = false;
     try {
-        var lockRaw = readFile("Tasker/Tesla/Data/TDS_Action_Lock.json");
-        if (lockRaw && lockRaw.indexOf("%") === -1) {
-            var lockData = JSON.parse(lockRaw);
-            if (nowSec - parseInt(lockData.timestamp || 0) < 7200) {
-                isActionLocked = true;
+        var sessionsRaw = readFile("Tasker/Tesla/Data/TDS_Action_Sessions.json");
+        if (sessionsRaw && sessionsRaw.indexOf("%") === -1) {
+            var sessionsData = JSON.parse(sessionsRaw);
+            if (sessionsData && sessionsData.sessions && typeof sessionsData.sessions === "object") {
+                sessionStoreReadable = true;
+                var sKeys = Object.keys(sessionsData.sessions);
+                for (var si = 0; si < sKeys.length; si++) {
+                    var sess = sessionsData.sessions[sKeys[si]];
+                    if (sess && sess.status === "ACTIVE" && nowSec <= parseInt(sess.expiresAt, 10)) {
+                        isActionLocked = true;
+                        break;
+                    }
+                }
             }
         }
-    } catch(e) {}
+    } catch(e) { sessionStoreReadable = false; }
+
+    if (!sessionStoreReadable) {
+        try {
+            var lockRaw = readFile("Tasker/Tesla/Data/TDS_Action_Lock.json");
+            if (lockRaw && lockRaw.indexOf("%") === -1 && lockRaw !== "{}") {
+                var lockData = JSON.parse(lockRaw);
+                if (nowSec - parseInt(lockData.timestamp || 0) < LOCK_FRESH_SECS) {
+                    isActionLocked = true;
+                }
+            }
+        } catch(e) {}
+    }
 
     if (isDriving) {
         isActionLocked = true;

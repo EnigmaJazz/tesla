@@ -1,9 +1,11 @@
 // ==========================================
-// TDS RETURN TO BASE (Manual Injector v2.0)
-// Command adapter — stages a publish candidate in local('par1') and
-// clears the lateness halt. The next Tasker action runs
-// Generation_Publisher.js. This script does NOT write Itin_Master.json
-// or TDS_Master.json directly (RULE-8A).
+// TDS RETURN TO BASE (Manual Injector v3.0)
+// Command adapter — stages a typed RETURN_TO_BASE envelope for
+// TDS_State_Command (REQ-4ADAPTER-4). The reducer validates the explicit
+// policy and positive route metrics, records the unique manual trip, and
+// stages SESSION_OPEN for the Manual Action Handler. This script does NOT
+// write Itin_Master.json, TDS_Master.json, or any state file, and NEVER
+// serializes or prepends a candidate itinerary leg (RULE-8A/8B, SCRIPT-15).
 // ==========================================
 
 function getDist(lat1, lon1, lat2, lon2) {
@@ -11,6 +13,16 @@ function getDist(lat1, lon1, lat2, lon2) {
     let dLat = (lat2 - lat1) * Math.PI / 180; let dLon = (lon2 - lon1) * Math.PI / 180;
     let a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(rLat1) * Math.cos(rLat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Local planning-day label mirroring Sandbox_Engine/Dispatcher (reader
+// convergence; Tasker scripts are standalone and cannot share functions).
+function localPlanningDay(targetUnixSecs) {
+    let d = new Date(targetUnixSecs * 1000);
+    let y = d.getFullYear();
+    let mo = ("0" + (d.getMonth() + 1)).slice(-2);
+    let day = ("0" + d.getDate()).slice(-2);
+    return y + "-" + mo + "-" + day;
 }
 
 try {
@@ -35,7 +47,6 @@ try {
             if (distM < 1500) {
                 rMode = "WALK";
             } else if (dCar > 300) {
-                // Car is not here. Determine if we can use Transit based on city zones.
                 rMode = "LIFT"; // Default fallback
                 let cityZonesRaw = global('City_Transit_Zones') || "";
                 if (cityZonesRaw.length > 5) {
@@ -63,33 +74,31 @@ try {
         }
 
         let m = readJson(PHASE2_MANIFEST_PATH);
-        let events = (m && m.state === "committed" && m.eventsPath) ? (readJson(m.eventsPath) || []) : [];
-        let master = (m && m.state === "committed" && m.masterPath) ? (readJson(m.masterPath) || []) : [];
-        let itinerary = (m && m.state === "committed" && m.itineraryPath) ? (readJson(m.itineraryPath) || []) : [];
 
-        let returnLeg = {
-            targetEventId: "MANUAL_RETURN",
-            targetTitle: "Return to " + rName,
-            targetDesc: "Manual return initiated from dashboard.",
+        // Collision-safe ids: <core>_<base36Unix> (lastIndexOf("_") convention).
+        let b36 = nowSec.toString(36);
+        let actionId = "action_" + b36;
+        let tripId = "manual_return_" + b36;
+
+        setLocal('par1', 'RETURN_TO_BASE');
+        setLocal('par2', JSON.stringify({
+            generationId: global('TDS_Active_Generation') || (m && m.activeGeneration) || null,
+            actionId: actionId,
+            tripId: tripId,
+            at: nowSec,
+            policy: "MANUAL",
+            originCoords: uLoc,
             targetCoords: rCoords,
+            targetTitle: "Return to " + rName,
             mode: rMode,
-            departUnix: nowSec,
-            arriveUnix: nowSec + durSec,
             durationSecs: durSec,
             distanceMiles: distMiles,
-            pitstopState: "end_of_day",
-            latenessMins: 0,
-            bufferMins: 0,
-            transitStepsRaw: rMode === "DRIVE" ? "🚗 Route securely managed by vehicle onboard navigation" : ""
-        };
-
-        let updated = itinerary.slice();
-        updated.unshift(returnLeg);
-        setLocal("par1", JSON.stringify({ events: events, master: master, itinerary: updated }));
+            planningDay: localPlanningDay(nowSec)
+        }));
 
         let modeDict = { "LIFT": "Lift", "WALK": "Walking", "TRANSIT": "Public Transport", "DRIVE": "Driving" };
         setGlobal('Current_Status', (modeDict[rMode] || "Traveling") + " (Heading Home)");
-        setGlobal('TDS_Lateness_Halt', 'false'); // Clear any pending locks
+        setGlobal('TDS_Lateness_Halt', 'false');
 
         flash("Return to " + rName + " via " + modeDict[rMode] + " queued.");
     }

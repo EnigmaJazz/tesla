@@ -28,6 +28,9 @@ const PHASE3_STATE_PATH = "Tasker/Tesla/Data/TDS_Trip_State.json";
 const REORDER_QUEUE_PATH = "Tasker/Tesla/Data/TDS_Reorder_Commands.json";
 const OVERRIDE_PATH = "Tasker/Tesla/Data/TDS_Overrides.json";
 const PREFS_PATH = "Tasker/Tesla/Data/TDS_Routine_Preferences.json";
+const SESSIONS_PATH = "Tasker/Tesla/Data/TDS_Action_Sessions.json";
+const MANUAL_TRIPS_PATH = "Tasker/Tesla/Data/TDS_Manual_Trips.json";
+const ACTION_LOCK_PATH = "Tasker/Tesla/Data/TDS_Action_Lock.json";
 
 function createSandbox(options) {
   options = options || {};
@@ -74,12 +77,13 @@ function createSandbox(options) {
   }
 
   function reducer(command, payload, context) {
+    const outer = sandbox.__currentScriptPath;
     setLocal('par1', command);
     setLocal('par2', JSON.stringify(payload));
     if (context !== undefined) setLocal('par3', JSON.stringify(context));
     sandbox.__currentScriptPath = REDUCER_PATH;
     runScript(REDUCER_PATH, sandbox, store);
-    sandbox.__currentScriptPath = '';
+    sandbox.__currentScriptPath = outer;
     return local('return_value');
   }
 
@@ -87,11 +91,12 @@ function createSandbox(options) {
   // command entry (par1 op / par2 JSON payload) with __currentScriptPath set so
   // its OVR/PREFS writes pass the ownership guard. Mirrors reducer().
   function handler(command, payload) {
+    const outer = sandbox.__currentScriptPath;
     setLocal('par1', command);
     setLocal('par2', JSON.stringify(payload));
     sandbox.__currentScriptPath = OVERRIDE_HANDLER_PATH;
     runScript(OVERRIDE_HANDLER_PATH, sandbox, store);
-    sandbox.__currentScriptPath = '';
+    sandbox.__currentScriptPath = outer;
     return local('return_value');
   }
 
@@ -121,7 +126,10 @@ function createSandbox(options) {
     liveGlobals[key] = stringify(value);
   }
   function readFile(path) {
-    return Object.prototype.hasOwnProperty.call(liveFiles, path) ? liveFiles[path] : "";
+    // Faithful to the Tasker runtime: missing files return null, present
+    // files return their exact bytes (including "" for an empty present
+    // file). Tests that need to distinguish must check against null.
+    return Object.prototype.hasOwnProperty.call(liveFiles, path) ? liveFiles[path] : null;
   }
   function matchesAny(path, patterns) {
     for (let i = 0; i < patterns.length; i++) {
@@ -137,6 +145,9 @@ function createSandbox(options) {
       throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
     }
     if (path === REORDER_QUEUE_PATH && sandbox.__currentScriptPath !== STATE_COMMAND_PATH && sandbox.__currentScriptPath !== PUBLISHER_PATH) {
+      throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
+    }
+    if ((path === SESSIONS_PATH || path === MANUAL_TRIPS_PATH || path === ACTION_LOCK_PATH) && sandbox.__currentScriptPath !== STATE_COMMAND_PATH) {
       throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
     }
     if (matchesAny(path, writeThrows)) throw new Error("injected write failure: " + path);
@@ -156,6 +167,9 @@ function createSandbox(options) {
       throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
     }
     if (path === REORDER_QUEUE_PATH && sandbox.__currentScriptPath !== STATE_COMMAND_PATH && sandbox.__currentScriptPath !== PUBLISHER_PATH) {
+      throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
+    }
+    if ((path === SESSIONS_PATH || path === MANUAL_TRIPS_PATH || path === ACTION_LOCK_PATH) && sandbox.__currentScriptPath !== STATE_COMMAND_PATH) {
       throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
     }
     delete liveFiles[path];
