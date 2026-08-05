@@ -256,6 +256,7 @@ function rcmFilterTempEntries(obj, nowSec) {
         || typeof e.meanDurationSecs !== "number" || !isFinite(e.meanDurationSecs) || typeof e.sampleCount !== "number" || !isFinite(e.sampleCount)
         || typeof e.m2 !== "number" || !isFinite(e.m2) || typeof e.distanceMiles !== "number" || !isFinite(e.distanceMiles)
         || typeof e.apiUnix !== "number" || !isFinite(e.apiUnix) || typeof e.targetUnix !== "number" || !isFinite(e.targetUnix)
+        || e.dayClass === undefined || e.bucket === undefined
         || typeof e.createdAt !== "number" || typeof e.updatedAt !== "number") {
       rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "temp entry malformed fields", key: keys[i] }); continue;
     }
