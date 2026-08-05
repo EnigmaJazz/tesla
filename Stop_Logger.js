@@ -58,7 +58,8 @@ try {
                 if (typeof reducer === "function") {
                     let r = reducer("COMPLETE_STOP", JSON.parse(local("par2")));
                     if (typeof r === "string" && r.indexOf("OK") !== 0) {
-                        flash("Reducer rejected COMPLETE_STOP: " + r);
+                        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                            component: "Stop_Logger", severity: "ERROR", code: "COMPLETE_STOP_REJECTED", tripId: tripId, details: { reason: r } }));
                     }
                 }
                 flash(cleanStop + "m stop marked as completed.");

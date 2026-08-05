@@ -247,10 +247,11 @@ try {
             // solely by the Manual Action Handler (REQ-4SESSION-2). Finaliser
             // delivers typed commands through the serial router — COMPLETE_TRIP
             // then RELEASE when reducer completion is recorded, SESSION_CLOSE
-            // otherwise — and never writes the lock or sessions itself. The
-            // stateCommand/reducer shims deliver in the harness; the Tasker
-            // serial task routes the same envelopes when present. The publish
-            // candidate staged below stays untouched (par1 is never rewritten).
+            // otherwise — and never writes the lock or sessions itself.
+            // Mid-chain rule: the staged par1 MUST stay the publish candidate,
+            // so the release chain is staged into dedicated locals
+            // (tds_release_par1/par2) that the serial router consumes AFTER
+            // the Publisher+Reducer run; the harness shims deliver directly.
             let activeSession = null;
             try {
                 let sRaw = readFile("Tasker/Tesla/Data/TDS_Action_Sessions.json") || "";
@@ -270,6 +271,11 @@ try {
                     if (stRaw) completionSeen = (JSON.parse(stRaw).manualReturnCompleted === true);
                 } catch(e) {}
                 if (completionSeen) {
+                    // Mid-chain rule: save the staged publish candidate BEFORE
+                    // any shim delivery (reducer/stateCommand set %par1), then
+                    // restore it so %par1 is never clobbered.
+                    const savedPar1 = local('par1');
+                    const savedPar2 = local('par2');
                     let completeTripPayload = { generationId: global('TDS_Active_Generation') || "gen:0:0000", tripId: activeSession.tripId, at: nowSec };
                     if (typeof reducer === "function") {
                         let r = reducer("COMPLETE_TRIP", completeTripPayload);
@@ -279,9 +285,23 @@ try {
                         let r = stateCommand("RELEASE", { actionId: activeSession.actionId, tripId: activeSession.tripId, at: nowSec });
                         if (typeof r === "string" && r.indexOf("OK") !== 0) flash("State Command rejected RELEASE: " + r);
                     }
-                } else if (typeof stateCommand === "function") {
-                    let r = stateCommand("SESSION_CLOSE", { actionId: activeSession.actionId, at: nowSec });
-                    if (typeof r === "string" && r.indexOf("OK") !== 0) flash("State Command rejected SESSION_CLOSE: " + r);
+                    setLocal('par1', savedPar1);
+                    setLocal('par2', savedPar2);
+                    // No-shim (real Tasker): stage the deferred release chain
+                    // without touching the publish candidate in par1.
+                    setLocal('tds_release_par1', 'RELEASE');
+                    setLocal('tds_release_par2', JSON.stringify({ actionId: activeSession.actionId, tripId: activeSession.tripId, at: nowSec }));
+                } else {
+                    const savedPar1 = local('par1');
+                    const savedPar2 = local('par2');
+                    if (typeof stateCommand === "function") {
+                        let r = stateCommand("SESSION_CLOSE", { actionId: activeSession.actionId, at: nowSec });
+                        if (typeof r === "string" && r.indexOf("OK") !== 0) flash("State Command rejected SESSION_CLOSE: " + r);
+                    }
+                    setLocal('par1', savedPar1);
+                    setLocal('par2', savedPar2);
+                    setLocal('tds_release_par1', 'SESSION_CLOSE');
+                    setLocal('tds_release_par2', JSON.stringify({ actionId: activeSession.actionId, at: nowSec }));
                 }
             }
         }

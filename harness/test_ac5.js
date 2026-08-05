@@ -392,6 +392,36 @@ section('lock-cleanup-finaliser-no-direct-clear', function () {
   assert(!sessionWrite, 'Finaliser must not write TDS_Action_Sessions.json');
 });
 
+section('finaliser-midchain-preserves-par1-and-stages-release', function () {
+  // REQ-4ADAPTER-7 mid-chain rule: Finaliser's release delivery must NEVER
+  // clobber %par1 (the publish candidate for the Publisher, or the staged
+  // RECONCILE_GENERATION the publisher leaves). The typed release is staged
+  // into tds_release_par1/par2 (no-shim Tasker path) so the serial router
+  // consumes it AFTER the publish chain without touching par1.
+  const completedState = JSON.parse(seededState({}));
+  completedState.manualReturnCompleted = true;
+  const sessions = { schemaVersion: 1, sessions: { [ACTION_ID]: { actionId: ACTION_ID, tripId: TRIP_ID, status: 'ACTIVE', closedAt: null, closeReason: null } } };
+  const files = {
+    [DATA + 'Itin_Master.json']: '[]',
+    [DATA + 'TDS_Overrides.json']: '{}',
+    [LOCK]: staleLock,
+    [STATE]: JSON.stringify(completedState),
+    [SESSIONS]: JSON.stringify(sessions)
+  };
+  const { sandbox, store } = make(files, finaliserGlobals, { tds_temp_json: '[]', raw_base_data: '' });
+  runScript(FINALISER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+
+  assert.notStrictEqual(sandbox.local('par1'), 'RELEASE', 'release delivery must never clobber %par1');
+  assert.notStrictEqual(sandbox.local('par1'), 'SESSION_CLOSE', 'release delivery must never clobber %par1');
+  assert.strictEqual(sandbox.local('tds_release_par1'), 'RELEASE', 'Finaliser must stage the deferred RELEASE command');
+  const stagedRelease = JSON.parse(sandbox.local('tds_release_par2') || '{}');
+  assert.strictEqual(stagedRelease.actionId, ACTION_ID, 'staged release must carry the exact action id');
+  assert.strictEqual(stagedRelease.tripId, TRIP_ID, 'staged release must carry the exact trip id');
+  assert.strictEqual(store.files[LOCK], staleLock, 'Finaliser must NOT clear the migration-only lock itself');
+  assert(!store.writeLog.some(function (w) { return w.path === LOCK; }), 'Finaliser must not write the lock');
+});
+
 section('unlock-cannot-clear-lock', function () {
   // Unlock without reducer completion: lock must survive.
   const { sandbox: s1, store: st1 } = make({ [LOCK]: staleLock, [STATE]: seededState({}) }, {}, {});

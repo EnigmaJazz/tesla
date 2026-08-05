@@ -74,9 +74,22 @@ try {
   const parts = String(par1).split(":");
   let result;
   if (parts[0] === "readOrigin") {
+    // REQ-4HELPER-1: readOrigin takes NO kind suffix; a suffixed request is
+    // an unknown/unsupported operation and MUST be rejected.
+    if (parts.length > 1 && parts[1] !== "") {
+      helperLogEvent("warn", "HELPER_REQUEST_REJECTED", { reason: "readOrigin takes no suffix", par1: par1 });
+      throw new Error("TDS_Helper: readOrigin suffix rejected: " + par1);
+    }
     result = readOrigin();
   } else if (parts[0] === "readActiveGeneration") {
-    result = readActiveGeneration(parts[1] || "master");
+    // REQ-4HELPER-1: only the exact events|master|itinerary kinds are valid;
+    // any other suffix is an unsupported operation and MUST be rejected.
+    const kind = parts[1] || "master";
+    if (kind !== "events" && kind !== "master" && kind !== "itinerary") {
+      helperLogEvent("warn", "HELPER_REQUEST_REJECTED", { reason: "unknown readActiveGeneration kind", par1: par1 });
+      throw new Error("TDS_Helper: unknown kind rejected: " + par1);
+    }
+    result = readActiveGeneration(kind);
   } else {
     helperLogEvent("warn", "HELPER_REQUEST_REJECTED", { reason: "unknown helper operation", par1: par1 });
     throw new Error("TDS_Helper: unknown operation rejected: " + par1);
