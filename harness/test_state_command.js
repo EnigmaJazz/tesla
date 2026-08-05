@@ -161,6 +161,29 @@ try {
   badGen.sandbox.setLocal('par2', JSON.stringify({ generationId: 'not-a-gen', tripId: 't1', at: 100 }));
   runRouter(badGen.sandbox, badGen.store);
   assert(/ERROR: invalid generationId format/.test(badGen.sandbox.local('return_value')), 'malformed generationId must be rejected');
+
+  // Parity with reducer COMMANDS: SET_OVERRIDE requires key+value (any).
+  const setOvr = make({ globals: { TDS_Active_Generation: ACTIVE_GEN } });
+  setOvr.sandbox.setLocal('par1', 'SET_OVERRIDE');
+  setOvr.sandbox.setLocal('par2', JSON.stringify({ generationId: ACTIVE_GEN }));
+  runRouter(setOvr.sandbox, setOvr.store);
+  assert(/ERROR: missing key/.test(setOvr.sandbox.local('return_value')), 'SET_OVERRIDE missing key must be rejected');
+  assert.strictEqual(setOvr.sandbox.local('tds_state_owner'), '', 'rejected SET_OVERRIDE must not set an owner');
+
+  // Parity: OBSERVE_LIVE_BASE at is OPTIONAL in the reducer — a payload
+  // without at is reducer-valid and must route, never be over-rejected.
+  const liveBase = make({ globals: { TDS_Active_Generation: ACTIVE_GEN } });
+  liveBase.sandbox.setLocal('par1', 'OBSERVE_LIVE_BASE');
+  liveBase.sandbox.setLocal('par2', JSON.stringify({ generationId: ACTIVE_GEN }));
+  runRouter(liveBase.sandbox, liveBase.store);
+  assert.strictEqual(liveBase.sandbox.local('tds_state_owner'), 'Trip_State_Reducer', 'reducer-valid OBSERVE_LIVE_BASE without at must route');
+
+  // Parity: optional typed field present with wrong type must be rejected.
+  const wrongOptional = make({ globals: { TDS_Active_Generation: ACTIVE_GEN } });
+  wrongOptional.sandbox.setLocal('par1', 'COMPLETE_TRIP');
+  wrongOptional.sandbox.setLocal('par2', JSON.stringify({ generationId: ACTIVE_GEN, tripId: 't1', at: 100, planningDay: 123 }));
+  runRouter(wrongOptional.sandbox, wrongOptional.store);
+  assert(/ERROR: planningDay must be string/.test(wrongOptional.sandbox.local('return_value')), 'wrong-typed optional planningDay must be rejected');
 } catch (e) { fail('typed validation: ' + e.message); }
 
 if (failures > 0) { console.log('FAIL: state-command — ' + failures + ' group(s) failed'); process.exit(1); }

@@ -34,27 +34,27 @@ MANUAL_COMMANDS.forEach(function (c) { OWNER[c] = "Manual_Action_Handler"; });
 PUBLISHER_COMMANDS.forEach(function (c) { OWNER[c] = "Generation_Publisher"; });
 
 // Minimal pre-invocation field/type contract (REQ-4CMD-1): the router
-// guarantees the reducer's validateFields contract (types + required)
-// BEFORE any owner is invoked, so an incomplete or wrong-typed payload can
-// never reach an owner. Owner-level semantic validation stays with the owner.
-// Mirror of Trip_State_Reducer.validateFields: field = {name, type, required}.
+// mirrors Trip_State_Reducer.COMMANDS validateFields entries (types,
+// required/optional, "any") plus validateCommon generationId, so a bad
+// payload can never reach an owner. Owner-level semantic validation (e.g.
+// RETURN_TO_BASE policy, trip existence) stays with the owner.
 const REDUCER_REQUIRED_FIELDS = {
-  SET_OVERRIDE: [],
-  REMOVE_OVERRIDE: [],
+  SET_OVERRIDE: [{ name: "key", type: "string", required: true }, { name: "value", type: "any", required: true }],
+  REMOVE_OVERRIDE: [{ name: "key", type: "string", required: true }],
   DEPART_NOW: [{ name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }],
   RETURN_TO_BASE: [{ name: "actionId", type: "string", required: true }, { name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }],
   COMPLETE_STOP: [{ name: "stopId", type: "string", required: true }, { name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }],
   START_UNPLANNED_STOP: [{ name: "stopId", type: "string", required: true }, { name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }],
   END_UNPLANNED_STOP: [{ name: "stopId", type: "string", required: true }, { name: "at", type: "number", required: true }],
   COMPLETE_DROPIN: [{ name: "dropinId", type: "string", required: true }, { name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }],
-  CANCEL_ACTION: [],
-  RESET_ACTIONS: [],
-  OBSERVE_DEPARTURE: [{ name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }],
+  CANCEL_ACTION: [{ name: "actionId", type: "string", required: true }, { name: "at", type: "number", required: true }],
+  RESET_ACTIONS: [{ name: "actionId", type: "string", required: false }, { name: "at", type: "number", required: true }],
+  OBSERVE_DEPARTURE: [{ name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }, { name: "planningDay", type: "string", required: false }],
   OBSERVE_ARRIVAL: [{ name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }, { name: "accuracyM", type: "number", required: true }],
-  RECONCILE_GENERATION: [],
-  COMPLETE_TRIP: [{ name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }],
+  RECONCILE_GENERATION: [{ name: "activeGeneration", type: "string", required: true }, { name: "manifestSchemaVersion", type: "number", required: false }],
+  COMPLETE_TRIP: [{ name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }, { name: "planningDay", type: "string", required: false }],
   EXPIRE_TRIP: [{ name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }],
-  OBSERVE_LIVE_BASE: [{ name: "at", type: "number", required: true }]
+  OBSERVE_LIVE_BASE: [{ name: "at", type: "number", required: false }]
 };
 
 // Trusted reorder producers (REQ-4REORDER-2): a legacy-null generationId is
