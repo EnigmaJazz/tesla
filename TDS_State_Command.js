@@ -6,11 +6,21 @@
 // routes to exactly one declared owner, and passes the owner result through
 // return_value (OK.../ERROR: ...). In the harness the owner shims
 // (reducer()/handler()/publish()) run synchronously; in the serial Tasker
-// task the staged owner runs next. ENQUEUE_REORDER is owned in-file (Manual
-// Action Handler stub for Slice A): this script solely appends
-// TDS_Reorder_Commands.json, and the Generation Publisher is the sole drainer.
+// task the staged owner runs next. ENQUEUE_REORDER is owned in-file: this
+// script solely appends TDS_Reorder_Commands.json, and the Generation
+// Publisher is the sole drainer.
+//
+// Phase 4 Slice B: the Manual Action Handler lives in-file and is the sole
+// writer of TDS_Action_Sessions.json and TDS_Manual_Trips.json (RULE-8D).
+// RETURN_TO_BASE routes to the reducer, which stages SESSION_OPEN; the
+// handler then commits both records with snapshots, read-back, and exact
+// rollback. RELEASE closes the exact actionId/tripId pair and may clear the
+// matching migration-only TDS_Action_Lock.json (LOCK_COMPATIBILITY_CLEARED).
 
 const REORDER_QUEUE_PATH = "Tasker/Tesla/Data/TDS_Reorder_Commands.json";
+const MANUAL_SESSIONS_PATH = "Tasker/Tesla/Data/TDS_Action_Sessions.json";
+const MANUAL_TRIPS_PATH = "Tasker/Tesla/Data/TDS_Manual_Trips.json";
+const MANUAL_LOCK_PATH = "Tasker/Tesla/Data/TDS_Action_Lock.json";
 // Names are unique at the top level (const/let re-declaration is a SyntaxError
 // in the shared harness vm context; entry identifiers use var like the owners).
 var STATE_CMD_REORDER_TYPE = "APPLY_CLUSTER_REORDER";
@@ -18,6 +28,11 @@ var STATE_CMD_GEN_REGEX = /^gen:\d{10}:[0-9a-f]{4}$/;
 var STATE_CMD_ID_SUFFIX_MIN = 1e9;
 var STATE_CMD_ID_SUFFIX_MAX = 2.5e9;
 var STATE_CMD_ID_REGEX = /^([0-9A-Za-z_]+)_([0-9A-Za-z]+)$/;
+var HANDLER_WRITER = "Manual Action Handler";
+var HANDLER_SCHEMA_VERSION = 1;
+var HANDLER_EXPIRY_SECS = 4 * 3600;
+var HANDLER_ID_RETRY_MAX = 16;
+var HANDLER_SCOPES = ["PRESERVE_ACTIVE_TRIP", "SUPPRESS_REPLAN_REPLACEMENT"];
 const COMPONENT = "TDS_State_Command";
 
 // Exact command table — every command maps to exactly one declared owner.
@@ -61,11 +76,10 @@ const REDUCER_REQUIRED_FIELDS = {
 // permitted only from a known producer; unknown/empty sources are rejected.
 const STATE_CMD_TRUSTED_SOURCES = { "Gatekeeper": true, "API_Parser": true };
 
-// Manual commands whose real handler lands in Slice B; rejected in Slice A.
-const MANUAL_PENDING = { SESSION_OPEN: true, SESSION_CLOSE: true, RELEASE: true };
+// Manual commands are owned by the in-file Manual Action Handler (Slice B).
 
 function nowSec() { return Math.floor(Date.now() / 1000); }
-function logEvent(severity, code, details) {
+function stateCmdLogEvent(severity, code, details) {
   flash(JSON.stringify({ timestamp: Date.now(), generationId: global('TDS_Active_Generation') || null,
     component: COMPONENT, severity: severity, code: code, tripId: details && details.tripId || null, details: details || {} }));
 }
@@ -93,7 +107,6 @@ function validGenerationId(v) { return v === null || (typeof v === "string" && S
 // payload validation stays with the owner.
 function validateCommand(command, payload) {
   if (!Object.prototype.hasOwnProperty.call(OWNER, command)) return "unknown command: " + command;
-  if (MANUAL_PENDING[command]) return command + " pending Manual Action Handler (Slice B)";
   if (!isObject(payload)) return "payload must be a JSON object";
   if (command === "ENQUEUE_REORDER") {
     if (!validGenerationId(payload.generationId)) return "invalid generationId";
@@ -114,6 +127,19 @@ function validateCommand(command, payload) {
     if (!Array.isArray(payload.events) || !Array.isArray(payload.master) || !Array.isArray(payload.itinerary)) {
       return "publish candidate must carry events/master/itinerary arrays";
     }
+  } else if (command === "SESSION_OPEN") {
+    if (!isNonEmptyString(payload.type)) return "type must be a non-empty string";
+    if (typeof payload.at !== "number" || isNaN(payload.at) || !isFinite(payload.at)) return "at must be a number";
+    if (payload.scopes !== undefined && (!Array.isArray(payload.scopes) || payload.scopes.some(function (s) { return !isNonEmptyString(s); }))) {
+      return "scopes must be an array of non-empty strings";
+    }
+  } else if (command === "SESSION_CLOSE") {
+    if (!isNonEmptyString(payload.actionId)) return "actionId must be a non-empty string";
+    if (payload.at !== undefined && (typeof payload.at !== "number" || isNaN(payload.at) || !isFinite(payload.at))) return "at must be a number";
+  } else if (command === "RELEASE") {
+    if (!isNonEmptyString(payload.actionId)) return "actionId must be a non-empty string";
+    if (!isNonEmptyString(payload.tripId)) return "tripId must be a non-empty string";
+    if (payload.at !== undefined && (typeof payload.at !== "number" || isNaN(payload.at) || !isFinite(payload.at))) return "at must be a number";
   } else if (REDUCER_REQUIRED_FIELDS[command]) {
     // Mirror the reducer's validateCommon + validateFields contract so a
     // bad payload can never reach an owner (REQ-4CMD-1).
@@ -152,8 +178,163 @@ function enqueueReorder(payload) {
     emittedAt: typeof payload.emittedAt === "number" ? payload.emittedAt : nowSec()
   });
   writeFile(REORDER_QUEUE_PATH, JSON.stringify(commands));
-  logEvent("info", "REORDER_COMMAND_ENQUEUED", { command: "ENQUEUE_REORDER", clusterId: payload.clusterId, count: commands.length });
+  stateCmdLogEvent("info", "REORDER_COMMAND_ENQUEUED", { command: "ENQUEUE_REORDER", clusterId: payload.clusterId, count: commands.length });
   return "OK: ENQUEUE_REORDER " + payload.clusterId;
+}
+
+// --- Manual Action Handler (Slice B) ------------------------------------
+// Sole writer of TDS_Action_Sessions.json / TDS_Manual_Trips.json (RULE-8D).
+// Commands: SESSION_OPEN (commit both records with snapshot/read-back/
+// rollback), SESSION_CLOSE (close only that session), RELEASE (close the exact
+// actionId/tripId pair and optionally clear the matching legacy lock).
+
+function readSessionsFile() {
+  const obj = readJson(MANUAL_SESSIONS_PATH);
+  if (obj && obj.schemaVersion === HANDLER_SCHEMA_VERSION && obj.sessions) return obj;
+  return { schemaVersion: HANDLER_SCHEMA_VERSION, sessions: {} };
+}
+function readManualTripsFile() {
+  const obj = readJson(MANUAL_TRIPS_PATH);
+  if (obj && obj.schemaVersion === HANDLER_SCHEMA_VERSION && obj.trips) return obj;
+  return { schemaVersion: HANDLER_SCHEMA_VERSION, trips: {} };
+}
+function writeWithReadback(path, content) {
+  writeFile(path, content);
+  if (readFile(path) !== content) {
+    stateCmdLogEvent("error", "GENERATION_VALIDATION_FAILED", { reason: "read-back mismatch", path: path, writer: HANDLER_WRITER });
+    throw new Error("READ_BACK_MISMATCH: " + path);
+  }
+}
+function restoreSnapshot(path, snap) {
+  try {
+    if (snap.existed) {
+      writeFile(path, snap.raw);
+      if (readFile(path) !== snap.raw) {
+        stateCmdLogEvent("error", "GENERATION_VALIDATION_FAILED", { reason: "snapshot restore read-back mismatch: " + path });
+      }
+    } else {
+      deleteFile(path);
+    }
+  } catch (e) {
+    stateCmdLogEvent("error", "GENERATION_VALIDATION_FAILED", { reason: "snapshot restore failed: " + path + ": " + e.message });
+  }
+}
+// Collision-safe manual ids: <core>_<base36Unix> via the lastIndexOf("_") and
+// base-36 suffix convention (ID-2). Bounded retry re-encodes a later second
+// when the candidate already exists.
+function mintManualId(prefix, existing) {
+  const base = nowSec();
+  for (let i = 0; i < HANDLER_ID_RETRY_MAX; i++) {
+    const id = prefix + "_" + (base + i).toString(36);
+    if (!existing || !existing[id]) return id;
+  }
+  throw new Error("MANUAL_ID_COLLISION_RETRY_EXHAUSTED");
+}
+function openSession(payload) {
+  const sessions = readSessionsFile();
+  const trips = readManualTripsFile();
+  let actionId = payload.actionId;
+  let tripId = payload.tripId;
+  if (!actionId) actionId = mintManualId("action", sessions.sessions);
+  if (!tripId) tripId = mintManualId("manual_return", trips.trips);
+  if (sessions.sessions[actionId]) throw new Error("SESSION_ID_COLLISION: " + actionId);
+  if (trips.trips[tripId]) throw new Error("MANUAL_TRIP_ID_COLLISION: " + tripId);
+  const at = payload.at;
+  const expiry = at + HANDLER_EXPIRY_SECS;
+  const trip = {
+    tripId: tripId, actionId: actionId, legType: "MANUAL_RETURN", lifecycleState: "IN_PROGRESS",
+    departurePolicy: "ASAP", originSource: "ACTIVE_MANUAL_TRIP", planningDay: payload.planningDay || null,
+    originCoords: payload.originCoords || "", targetCoords: payload.targetCoords || "",
+    targetTitle: payload.targetTitle || "Return to Base", mode: payload.mode || "DRIVE",
+    actualDepartUnix: 0, estimatedArrivalUnix: at + payload.durationSecs,
+    relevanceDeadlineUnix: expiry, durationSecs: payload.durationSecs,
+    distanceMiles: payload.distanceMiles || 0, createdAt: at
+  };
+  const session = {
+    actionId: actionId, type: payload.type || "MANUAL_RETURN", tripId: tripId,
+    createdAt: at, expiresAt: expiry, status: "ACTIVE",
+    scopes: Array.isArray(payload.scopes) && payload.scopes.length > 0 ? payload.scopes : HANDLER_SCOPES.slice(),
+    closedAt: null, closeReason: null
+  };
+  const tripsSnap = { existed: !!readFile(MANUAL_TRIPS_PATH), raw: readFile(MANUAL_TRIPS_PATH) || "" };
+  const sessionsSnap = { existed: !!readFile(MANUAL_SESSIONS_PATH), raw: readFile(MANUAL_SESSIONS_PATH) || "" };
+  const newTrips = { schemaVersion: HANDLER_SCHEMA_VERSION, trips: Object.assign({}, trips.trips) };
+  newTrips.trips[tripId] = trip;
+  const newSessions = { schemaVersion: HANDLER_SCHEMA_VERSION, sessions: Object.assign({}, sessions.sessions) };
+  newSessions.sessions[actionId] = session;
+  try {
+    writeWithReadback(MANUAL_TRIPS_PATH, JSON.stringify(newTrips));       // first file
+    writeWithReadback(MANUAL_SESSIONS_PATH, JSON.stringify(newSessions)); // second file
+  } catch (e) {
+    restoreSnapshot(MANUAL_SESSIONS_PATH, sessionsSnap);
+    restoreSnapshot(MANUAL_TRIPS_PATH, tripsSnap);
+    throw new Error("SESSION_COMMIT_FAILED: " + e.message);
+  }
+  stateCmdLogEvent("info", "SESSION_OPENED", { actionId: actionId, tripId: tripId, type: session.type, expiresAt: expiry });
+  return "OK: SESSION_OPEN " + actionId;
+}
+function closeSession(payload) {
+  const sessions = readSessionsFile();
+  const actionId = payload.actionId;
+  const session = sessions.sessions[actionId];
+  if (!session) throw new Error("SESSION_NOT_FOUND: " + actionId);
+  if (session.status === "ACTIVE") {
+    session.status = "CLOSED";
+    session.closedAt = payload.at || nowSec();
+    session.closeReason = payload.reason || "CLOSED";
+    writeWithReadback(MANUAL_SESSIONS_PATH, JSON.stringify(sessions));
+  }
+  stateCmdLogEvent("info", "SESSION_CLOSED", { actionId: actionId, tripId: session.tripId, status: session.status });
+  return "OK: SESSION_CLOSE " + actionId;
+}
+function releaseSession(payload) {
+  const actionId = payload.actionId;
+  const tripId = payload.tripId;
+  const at = payload.at || nowSec();
+  const sessions = readSessionsFile();
+  const trips = readManualTripsFile();
+  const session = sessions.sessions[actionId];
+  if (!session || session.tripId !== tripId) throw new Error("RELEASE_MISMATCH: " + actionId + "/" + tripId);
+  const tripsSnap = { existed: !!readFile(MANUAL_TRIPS_PATH), raw: readFile(MANUAL_TRIPS_PATH) || "" };
+  const sessionsSnap = { existed: !!readFile(MANUAL_SESSIONS_PATH), raw: readFile(MANUAL_SESSIONS_PATH) || "" };
+  const newTrips = { schemaVersion: HANDLER_SCHEMA_VERSION, trips: Object.assign({}, trips.trips) };
+  const newSessions = { schemaVersion: HANDLER_SCHEMA_VERSION, sessions: Object.assign({}, sessions.sessions) };
+  if (newSessions.sessions[actionId].status === "ACTIVE") {
+    newSessions.sessions[actionId].status = "CLOSED";
+    newSessions.sessions[actionId].closedAt = at;
+    newSessions.sessions[actionId].closeReason = "COMPLETED";
+  }
+  if (newTrips.trips[tripId] && newTrips.trips[tripId].lifecycleState !== "COMPLETED") {
+    newTrips.trips[tripId].lifecycleState = "COMPLETED";
+    newTrips.trips[tripId].completedAt = at;
+  }
+  try {
+    writeWithReadback(MANUAL_TRIPS_PATH, JSON.stringify(newTrips));
+    writeWithReadback(MANUAL_SESSIONS_PATH, JSON.stringify(newSessions));
+  } catch (e) {
+    restoreSnapshot(MANUAL_SESSIONS_PATH, sessionsSnap);
+    restoreSnapshot(MANUAL_TRIPS_PATH, tripsSnap);
+    throw new Error("RELEASE_COMMIT_FAILED: " + e.message);
+  }
+  // Migration-only lock (REQ-4SESSION-2): the handler may clear a matching
+  // legacy lock; the lock is never authoritative and never recreated.
+  const lockRaw = readFile(MANUAL_LOCK_PATH);
+  if (lockRaw && lockRaw !== "{}") {
+    let lock = null;
+    try { lock = JSON.parse(lockRaw); } catch (e) { lock = null; }
+    if (lock && (lock.actionId === actionId || lock.eventId === tripId || lock.tripId === tripId)) {
+      writeWithReadback(MANUAL_LOCK_PATH, "{}");
+      stateCmdLogEvent("info", "LOCK_COMPATIBILITY_CLEARED", { actionId: actionId, tripId: tripId });
+    }
+  }
+  stateCmdLogEvent("info", "SESSION_CLOSED", { actionId: actionId, tripId: tripId, closeReason: "COMPLETED" });
+  return "OK: RELEASE " + actionId;
+}
+function manualAction(command, payload) {
+  if (command === "SESSION_OPEN") return openSession(payload);
+  if (command === "SESSION_CLOSE") return closeSession(payload);
+  if (command === "RELEASE") return releaseSession(payload);
+  throw new Error("unknown manual command: " + command);
 }
 
 // Routes one envelope: validates, sets the owner, then dispatches to the owner
@@ -162,20 +343,39 @@ function routeCommand(command, payload) {
   const rejectReason = validateCommand(command, payload);
   if (rejectReason) {
     setLocal('tds_state_owner', '');
-    logEvent("warn", "STATE_COMMAND_REJECTED", { command: command, reason: rejectReason });
+    stateCmdLogEvent("warn", "STATE_COMMAND_REJECTED", { command: command, reason: rejectReason });
     setLocal('return_value', "ERROR: " + rejectReason);
     return;
   }
   const owner = OWNER[command];
   setLocal('tds_state_owner', owner);
-  logEvent("info", "STATE_COMMAND_ROUTED", { command: command, owner: owner, tripId: payload.tripId || null });
+  stateCmdLogEvent("info", "STATE_COMMAND_ROUTED", { command: command, owner: owner, tripId: payload.tripId || null });
   try {
     if (command === "ENQUEUE_REORDER") {
       setLocal('return_value', enqueueReorder(payload));
     } else if (owner === "Trip_State_Reducer") {
       setLocal('return_value', typeof reducer === "function" ? reducer(command, payload) : "OK");
+      // Slice B (REQ-4ADAPTER-4): RETURN_TO_BASE stages SESSION_OPEN for the
+      // Manual Action Handler; run the staged owner now (serial task parity).
+      if (command === "RETURN_TO_BASE" && local('par1') === "SESSION_OPEN") {
+        let staged = null;
+        try { staged = local('par2') ? JSON.parse(local('par2')) : null; } catch (e) { staged = null; }
+        if (!staged) {
+          stateCmdLogEvent("warn", "STATE_COMMAND_REJECTED", { command: "SESSION_OPEN", reason: "invalid staged payload" });
+          setLocal('return_value', "ERROR: invalid staged SESSION_OPEN payload");
+        } else {
+          try {
+            setLocal('return_value', manualAction("SESSION_OPEN", staged));
+          } catch (e) {
+            stateCmdLogEvent("warn", "STATE_COMMAND_REJECTED", { command: "SESSION_OPEN", reason: e.message });
+            setLocal('return_value', "ERROR: " + e.message);
+          }
+        }
+      }
     } else if (owner === "Override_Handler") {
       setLocal('return_value', typeof handler === "function" ? handler(command, payload) : "OK");
+    } else if (owner === "Manual_Action_Handler") {
+      setLocal('return_value', manualAction(command, payload));
     } else if (owner === "Generation_Publisher") {
       if (typeof publish === "function") {
         setLocal('return_value', String(publish(payload)));
@@ -185,7 +385,7 @@ function routeCommand(command, payload) {
       }
     }
   } catch (e) {
-    logEvent("warn", "STATE_COMMAND_REJECTED", { command: command, reason: e.message });
+    stateCmdLogEvent("warn", "STATE_COMMAND_REJECTED", { command: command, reason: e.message });
     setLocal('return_value', "ERROR: " + e.message);
   }
 }
@@ -195,11 +395,11 @@ var PAYLOAD_RAW = local("par2") || "";
 var payload = null;
 try { payload = PAYLOAD_RAW ? JSON.parse(PAYLOAD_RAW) : null; } catch (e) { payload = null; }
 if (!COMMAND) {
-  logEvent("warn", "STATE_COMMAND_REJECTED", { command: "", reason: "missing command" });
+  stateCmdLogEvent("warn", "STATE_COMMAND_REJECTED", { command: "", reason: "missing command" });
   setLocal('return_value', "ERROR: missing command");
 } else if (payload === null) {
   setLocal('tds_state_owner', '');
-  logEvent("warn", "STATE_COMMAND_REJECTED", { command: COMMAND, reason: "invalid JSON payload" });
+  stateCmdLogEvent("warn", "STATE_COMMAND_REJECTED", { command: COMMAND, reason: "invalid JSON payload" });
   setLocal('return_value', "ERROR: invalid JSON payload");
 } else {
   routeCommand(COMMAND, payload);

@@ -1,9 +1,10 @@
 // ==========================================
-// TDS ACTION: DEPART NOW (v2.0)
-// Command adapter — stages a publish candidate in local('par1') and
-// clears the lateness halt. The next Tasker action runs
-// Generation_Publisher.js. This script does NOT write Itin_Master.json
-// or TDS_Master.json directly (RULE-8A).
+// TDS ACTION: DEPART NOW (v3.0)
+// Command adapter — stages a typed DEPART_NOW envelope for
+// TDS_State_Command (REQ-4ADAPTER-3). The reducer applies the lifecycle
+// change to only the selected trip. This script does NOT write
+// Itin_Master.json, TDS_Master.json, or any state file (RULE-8A/8B,
+// SCRIPT-15) and never stages a full publish candidate.
 // ==========================================
 
 try {
@@ -17,26 +18,18 @@ try {
     }
 
     let m = readJson(PHASE2_MANIFEST_PATH);
-    let events = (m && m.state === "committed" && m.eventsPath) ? (readJson(m.eventsPath) || []) : [];
-    let master = (m && m.state === "committed" && m.masterPath) ? (readJson(m.masterPath) || []) : [];
     let itinerary = (m && m.state === "committed" && m.itineraryPath) ? (readJson(m.itineraryPath) || []) : [];
 
     if (itinerary.length > 0) {
-        let leg = Object.assign({}, itinerary[0]);
-        let originalDuration = leg.durationSecs || 1800;
+        let leg = itinerary[0];
+        let tripId = leg.tripId || leg.targetEventId || "";
 
-        // Shift timestamps to simulate immediate departure
-        leg.departUnix = nowSec;
-        leg.arriveUnix = nowSec + originalDuration;
-
-        leg.latenessMins = 0;
-        leg.warn = "none";
-        if (leg.bufferMins > 0) leg.bufferMins = 0;
-
-        let updated = itinerary.slice();
-        updated[0] = leg;
-
-        setLocal("par1", JSON.stringify({ events: events, master: master, itinerary: updated }));
+        setLocal('par1', 'DEPART_NOW');
+        setLocal('par2', JSON.stringify({
+            generationId: global('TDS_Active_Generation') || (m && m.activeGeneration) || null,
+            tripId: tripId,
+            at: nowSec
+        }));
 
         // Forcefully release the engine block
         setGlobal('TDS_Lateness_Halt', 'false');
