@@ -671,7 +671,7 @@ try {
                     severity: "WARN",
                     code: "DEPARTURE_POLICY_FALLBACK_USED",
                     tripId: row.evId || null,
-                    details: { block_step19: null, rowType: row.rowType || "UNKNOWN", reconstructed: "ASAP" }
+                    details: { departurePolicy: null, rowType: row.rowType || "UNKNOWN", reconstructed: "ASAP" }
                 }));
                 effectivePolicy = "ASAP";
             }
@@ -1420,7 +1420,7 @@ try {
                     let ovrObj = {}; ovrObj[i] = { mode: defMode };
                     let simDef = simulateScenario(i, ovrObj);
                     
-                    if (defMode === "DRIVE") queue.push("FORCED_DRIVE|" + evId); 
+                    if (defMode === "DRIVE") enqueueTypedRow({ rowType: "FORCED_DRIVE", title: evTitle, coords: evCoords, mode: "DRIVE", displayTime: evStart, departTime: evStart, pitstopState: "false", apiTimeType: "DEPART", apiTimeUnix: evStart, evId: evId, evLoc: evLoc, engineLateMins: 0, currentLegStable: false, dropinStatusFlag: "none", safeDesc: safeUIEvTitle, adHoc: [], departurePolicy: "ASAP", planningDay: chainPlanningDay });
                     isBypassed = true;
                 }
                 

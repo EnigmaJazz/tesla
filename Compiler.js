@@ -221,12 +221,35 @@ try {
             details: { reason: "malformed_json_unsupported_schema_or_invalid_row", queueHead: String(local('block_queue')).slice(0, 120) }
         }));
     } else {
+        // REQ-5QUEUE-1 / SCN-5QUEUE-1 [EVT: TYPED_QUEUE_ACCEPTED]: a valid
+        // envelope is accepted and its controls are retained for the pass.
+        flash(JSON.stringify({
+            timestamp: Math.floor(Date.now() / 1000),
+            generationId: global('TDS_Active_Generation') || null,
+            component: "Compiler",
+            severity: "INFO",
+            code: "TYPED_QUEUE_ACCEPTED",
+            tripId: null,
+            details: { rows: envelope.rows.length, eof: envelope.eof, skipIdxUntil: envelope.skipIdxUntil, hasStepConflict: (envelope.stepConflict !== null && envelope.stepConflict !== ""), notifications: (envelope.notifications || []).length }
+        }));
         const queueRows = envelope.rows || [];
         // REQ-5CUTOVER-2: the typed row fields are authoritative — the legacy
         // block_step17-21 split locals are retired and never read here.
+        // [EVT: TYPED_QUEUE_CUTOVER_COMPLETED] is emitted once per pass below.
+        let compiledRows = 0;
         for (let qi = 0; qi < queueRows.length; qi++) {
             compileTypedRow(queueRows[qi]);
+            compiledRows++;
         }
+        flash(JSON.stringify({
+            timestamp: Math.floor(Date.now() / 1000),
+            generationId: global('TDS_Active_Generation') || null,
+            component: "Compiler",
+            severity: "INFO",
+            code: "TYPED_QUEUE_CUTOVER_COMPLETED",
+            tripId: null,
+            details: { compiledRows: compiledRows, legacyStepsRetired: true }
+        }));
     }
 } catch(e) { flash("Unified Engine Crash:\n" + e.message); }
 
