@@ -41,9 +41,11 @@ try {
 
                 // Write the updated inventory to the transient global
                 setGlobal('TDS_Completed_Stops', currentStops);
-                // Phase 3 PR-C: stage COMPLETE_STOP for the Trip State Reducer.
-                // The transient global above is the read-side source for
-                // components that have not yet migrated to state.completedStops.
+                // Slice C (REQ-4ADAPTER-5): stage an exact COMPLETE_STOP for
+                // the Trip State Reducer — stable stopId, lastIndexOf trip
+                // core, never a direct state write. The transient global above
+                // remains the read-side source for components that have not
+                // yet migrated to state.completedStops.
                 let stopId = newStopEntry;
                 let tripId = evId.substring(0, evId.lastIndexOf("_"));
                 setLocal("par1", "COMPLETE_STOP");
@@ -56,17 +58,21 @@ try {
                 if (typeof reducer === "function") {
                     let r = reducer("COMPLETE_STOP", JSON.parse(local("par2")));
                     if (typeof r === "string" && r.indexOf("OK") !== 0) {
-                        flash("Reducer rejected COMPLETE_STOP: " + r);
+                        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                            component: "Stop_Logger", severity: "ERROR", code: "COMPLETE_STOP_REJECTED", tripId: tripId, details: { reason: r } }));
                     }
                 }
                 flash(cleanStop + "m stop marked as completed.");
             } else {
-                flash("Error: Selected stop didn't contain a valid number.");
+                flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                    component: "Stop_Logger", severity: "ERROR", code: "STOP_DURATION_INVALID", tripId: evId || null, details: { reason: "selected stop did not contain a valid number", selected: selStop } }));
             }
         }
     } else {
-        flash("Error: Missing target ID or menu selection.");
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Stop_Logger", severity: "ERROR", code: "STOP_TARGET_MISSING", tripId: null, details: { reason: "missing target id or menu selection", evId: evId || null, selStop: selStop || null } }));
     }
 } catch(e) {
-    flash("Stop Logger Crash: " + e.message);
+    flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+        component: "Stop_Logger", severity: "ERROR", code: "STOP_LOGGER_CRASH", tripId: null, details: { message: e.message } }));
 }

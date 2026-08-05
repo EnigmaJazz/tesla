@@ -133,7 +133,8 @@ try {
                         if (typeof reducer === "function") {
                             let r = reducer("COMPLETE_DROPIN", JSON.parse(local("par2")));
                             if (typeof r === "string" && r.indexOf("OK") !== 0) {
-                                flash("Reducer rejected COMPLETE_DROPIN: " + r);
+                                flash(JSON.stringify({ timestamp: nowSec, generationId: global('TDS_Active_Generation') || null,
+                                    component: "Finaliser", severity: "ERROR", code: "COMPLETE_DROPIN_REJECTED", tripId: ev.id, details: { reason: r } }));
                             }
                         }
                     }
@@ -242,17 +243,85 @@ try {
                 newItin.unshift(currentMaster[0]); 
                 setGlobal('Engine_Output_Itinerary', JSON.stringify(newItin));
             }
+        }
+        // Stale lock: migration-only (REQ-4SESSION-2). The lock is never
+        // authoritative and is cleared only by the Manual Action Handler via
+        // the typed release below; Finaliser never writes it directly.
+    }
+
+    // ==========================================
+    // MANUAL SESSION RELEASE (REQ-4ADAPTER-7)
+    // ==========================================
+    // Runs whenever an ACTIVE manual session exists — regardless of legacy
+    // lock presence — so a session is released even when no lock was ever
+    // written (the modern, session-authoritative path). The migration-only
+    // lock is cleared solely by the Manual Action Handler. Finaliser
+    // delivers typed commands through the serial router — COMPLETE_TRIP then
+    // RELEASE when reducer completion is recorded, SESSION_CLOSE otherwise —
+    // and never writes the lock or sessions itself. Mid-chain rule: the
+    // staged par1 MUST stay the publish candidate, so the release chain is
+    // staged into dedicated locals (tds_release_par1/par2) that the serial
+    // router consumes AFTER the Publisher+Reducer run; the harness shims
+    // deliver directly.
+    let activeSession = null;
+    try {
+        let sRaw = readFile("Tasker/Tesla/Data/TDS_Action_Sessions.json") || "";
+        if (sRaw) {
+            let sObj = JSON.parse(sRaw);
+            if (sObj && sObj.sessions) {
+                for (let sk in sObj.sessions) {
+                    if (sObj.sessions.hasOwnProperty(sk) && sObj.sessions[sk].status === "ACTIVE") { activeSession = sObj.sessions[sk]; break; }
+                }
+            }
+        }
+    } catch(e) { activeSession = null; }
+    if (activeSession) {
+        let completionSeen = false;
+        try {
+            let stRaw = readFile("Tasker/Tesla/Data/TDS_Trip_State.json") || "";
+            if (stRaw) completionSeen = (JSON.parse(stRaw).manualReturnCompleted === true);
+        } catch(e) {}
+        if (completionSeen) {
+            // Mid-chain rule: save the staged publish candidate BEFORE
+            // any shim delivery (reducer/stateCommand set %par1), then
+            // restore it so %par1 is never clobbered.
+            const savedPar1 = local('par1');
+            const savedPar2 = local('par2');
+            let completeTripPayload = { generationId: global('TDS_Active_Generation') || "gen:0:0000", tripId: activeSession.tripId, at: nowSec };
+            if (typeof reducer === "function") {
+                let r = reducer("COMPLETE_TRIP", completeTripPayload);
+                if (typeof r === "string" && r.indexOf("OK") !== 0) {
+                    flash(JSON.stringify({ timestamp: nowSec, generationId: global('TDS_Active_Generation') || null,
+                        component: "Finaliser", severity: "ERROR", code: "COMPLETE_TRIP_REJECTED", tripId: activeSession.tripId, details: { reason: r } }));
+                }
+            }
+            if (typeof stateCommand === "function") {
+                let r = stateCommand("RELEASE", { actionId: activeSession.actionId, tripId: activeSession.tripId, at: nowSec });
+                if (typeof r === "string" && r.indexOf("OK") !== 0) {
+                    flash(JSON.stringify({ timestamp: nowSec, generationId: global('TDS_Active_Generation') || null,
+                        component: "Finaliser", severity: "ERROR", code: "RELEASE_REJECTED", tripId: activeSession.tripId, details: { reason: r } }));
+                }
+            }
+            setLocal('par1', savedPar1);
+            setLocal('par2', savedPar2);
+            // No-shim (real Tasker): stage the deferred release chain
+            // without touching the publish candidate in par1.
+            setLocal('tds_release_par1', 'RELEASE');
+            setLocal('tds_release_par2', JSON.stringify({ actionId: activeSession.actionId, tripId: activeSession.tripId, at: nowSec }));
         } else {
-            // Slice B (AC-5/0E/B3): clear the stale action lock only after a
-            // successful reducer completion. The reducer records
-            // manualReturnCompleted=true when COMPLETE_TRIP succeeds; without
-            // that explicit signal the lock must survive (no session file).
-            let completionSeen = false;
-            try {
-                let stRaw = readFile("Tasker/Tesla/Data/TDS_Trip_State.json") || "";
-                if (stRaw) completionSeen = (JSON.parse(stRaw).manualReturnCompleted === true);
-            } catch(e) {}
-            if (completionSeen) writeFile(overrideFile, "{}", false);
+            const savedPar1 = local('par1');
+            const savedPar2 = local('par2');
+            if (typeof stateCommand === "function") {
+                let r = stateCommand("SESSION_CLOSE", { actionId: activeSession.actionId, at: nowSec });
+                if (typeof r === "string" && r.indexOf("OK") !== 0) {
+                    flash(JSON.stringify({ timestamp: nowSec, generationId: global('TDS_Active_Generation') || null,
+                        component: "Finaliser", severity: "ERROR", code: "SESSION_CLOSE_REJECTED", tripId: activeSession.tripId, details: { reason: r } }));
+                }
+            }
+            setLocal('par1', savedPar1);
+            setLocal('par2', savedPar2);
+            setLocal('tds_release_par1', 'SESSION_CLOSE');
+            setLocal('tds_release_par2', JSON.stringify({ actionId: activeSession.actionId, at: nowSec }));
         }
     }
 
