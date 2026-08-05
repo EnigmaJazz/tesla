@@ -253,6 +253,18 @@ try {
   if (!zdFlash) fail('zero-duration: expected EVT-ZERO_DURATION_LEG_REJECTED');
   assert.strictEqual(JSON.parse(zdFlash).tripId, 'event_1_kx8f00', 'zero-duration rejection must identify the trip');
   const zdItin = readItinerary(zdStore);
+  if (zdItin && zdItin.length > 0) fail('zero-duration: no leg may publish');
+
+  // SCN-5QUEUE-1 [EVT: TYPED_QUEUE_ACCEPTED] and SCN-5CUTOVER-2
+  // [EVT: TYPED_QUEUE_CUTOVER_COMPLETED]: a valid envelope must emit both.
+  const acceptFlash = findFlash(fbStore, 'TYPED_QUEUE_ACCEPTED');
+  if (!acceptFlash) fail('valid envelope must log TYPED_QUEUE_ACCEPTED');
+  const cutoverFlash = findFlash(fbStore, 'TYPED_QUEUE_CUTOVER_COMPLETED');
+  if (!cutoverFlash) fail('cutover pass must log TYPED_QUEUE_CUTOVER_COMPLETED');
+  const accepted = JSON.parse(acceptFlash);
+  if (!(accepted.details && accepted.details.rows >= 1 && typeof accepted.details.eof === 'boolean')) {
+    fail('TYPED_QUEUE_ACCEPTED must retain envelope controls (rows/eof)');
+  }
   if (zdItin && zdItin.length > 0) fail('zero-duration leg must not publish');
 
   console.log('PASS: typed queue envelope contract');
