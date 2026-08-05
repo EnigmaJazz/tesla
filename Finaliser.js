@@ -243,16 +243,47 @@ try {
                 setGlobal('Engine_Output_Itinerary', JSON.stringify(newItin));
             }
         } else {
-            // Slice B (AC-5/0E/B3): clear the stale action lock only after a
-            // successful reducer completion. The reducer records
-            // manualReturnCompleted=true when COMPLETE_TRIP succeeds; without
-            // that explicit signal the lock must survive (no session file).
-            let completionSeen = false;
+            // Slice C (REQ-4ADAPTER-7): the migration-only lock is cleared
+            // solely by the Manual Action Handler (REQ-4SESSION-2). Finaliser
+            // delivers typed commands through the serial router — COMPLETE_TRIP
+            // then RELEASE when reducer completion is recorded, SESSION_CLOSE
+            // otherwise — and never writes the lock or sessions itself. The
+            // stateCommand/reducer shims deliver in the harness; the Tasker
+            // serial task routes the same envelopes when present. The publish
+            // candidate staged below stays untouched (par1 is never rewritten).
+            let activeSession = null;
             try {
-                let stRaw = readFile("Tasker/Tesla/Data/TDS_Trip_State.json") || "";
-                if (stRaw) completionSeen = (JSON.parse(stRaw).manualReturnCompleted === true);
-            } catch(e) {}
-            if (completionSeen) writeFile(overrideFile, "{}", false);
+                let sRaw = readFile("Tasker/Tesla/Data/TDS_Action_Sessions.json") || "";
+                if (sRaw) {
+                    let sObj = JSON.parse(sRaw);
+                    if (sObj && sObj.sessions) {
+                        for (let sk in sObj.sessions) {
+                            if (sObj.sessions.hasOwnProperty(sk) && sObj.sessions[sk].status === "ACTIVE") { activeSession = sObj.sessions[sk]; break; }
+                        }
+                    }
+                }
+            } catch(e) { activeSession = null; }
+            if (activeSession) {
+                let completionSeen = false;
+                try {
+                    let stRaw = readFile("Tasker/Tesla/Data/TDS_Trip_State.json") || "";
+                    if (stRaw) completionSeen = (JSON.parse(stRaw).manualReturnCompleted === true);
+                } catch(e) {}
+                if (completionSeen) {
+                    let completeTripPayload = { generationId: global('TDS_Active_Generation') || "gen:0:0000", tripId: activeSession.tripId, at: nowSec };
+                    if (typeof reducer === "function") {
+                        let r = reducer("COMPLETE_TRIP", completeTripPayload);
+                        if (typeof r === "string" && r.indexOf("OK") !== 0) flash("Reducer rejected COMPLETE_TRIP: " + r);
+                    }
+                    if (typeof stateCommand === "function") {
+                        let r = stateCommand("RELEASE", { actionId: activeSession.actionId, tripId: activeSession.tripId, at: nowSec });
+                        if (typeof r === "string" && r.indexOf("OK") !== 0) flash("State Command rejected RELEASE: " + r);
+                    }
+                } else if (typeof stateCommand === "function") {
+                    let r = stateCommand("SESSION_CLOSE", { actionId: activeSession.actionId, at: nowSec });
+                    if (typeof r === "string" && r.indexOf("OK") !== 0) flash("State Command rejected SESSION_CLOSE: " + r);
+                }
+            }
         }
     }
 
