@@ -222,37 +222,8 @@ try {
         }));
     } else {
         const queueRows = envelope.rows || [];
-        // REQ-5CUTOVER-1 (shadow phase): the head row's typed fields must
-        // agree with the legacy block_step17-21 split locals.
-        if (queueRows.length > 0 && (local('block_step19') || "") !== "") {
-            const shadowDur = parseInt(local('block_step17'), 10);
-            const shadowDist = parseFloat(local('block_step18')) || 0;
-            const headRow = queueRows[0];
-            const shadowDurV = (isNaN(shadowDur) || shadowDur <= 0) ? null : shadowDur;
-            const shadowDistV = (shadowDist > 0) ? shadowDist : null;
-            const shadowPolicy = (local('block_step19') || "").toString().toUpperCase().trim();
-            if (headRow.routeDurationSecs !== shadowDurV
-                || headRow.routeDistanceMiles !== shadowDistV
-                || headRow.departurePolicy !== shadowPolicy
-                || (headRow.planningDay || "") !== (local('block_step20') || "")
-                || (headRow.originSource || "") !== (local('block_step21') || "")) {
-                flash(JSON.stringify({
-                    timestamp: Math.floor(Date.now() / 1000),
-                    generationId: global('TDS_Active_Generation') || null,
-                    component: "Compiler",
-                    severity: "WARN",
-                    code: "TYPED_QUEUE_SHADOW_DIVERGENCE",
-                    tripId: headRow.evId || null,
-                    details: { rowType: headRow.rowType || "UNKNOWN" }
-                }));
-                // Reject typed activation: legacy split values win until cutover.
-                headRow.routeDurationSecs = shadowDurV;
-                headRow.routeDistanceMiles = shadowDistV;
-                headRow.departurePolicy = shadowPolicy;
-                headRow.planningDay = local('block_step20') || "";
-                headRow.originSource = local('block_step21') || "";
-            }
-        }
+        // REQ-5CUTOVER-2: the typed row fields are authoritative — the legacy
+        // block_step17-21 split locals are retired and never read here.
         for (let qi = 0; qi < queueRows.length; qi++) {
             compileTypedRow(queueRows[qi]);
         }
@@ -357,7 +328,7 @@ function compileTypedRow(row) {
     const masterArr = readActiveGeneration("master");
 
     let mEv = masterArr.find(e => (e.id || "DEFAULT") === evId);
-    let evStartSecs = mEv ? parseInt(mEv.start, 10) : parseInt(local('block_step5'), 10) || nowSec;
+    let evStartSecs = mEv ? parseInt(mEv.start, 10) : (row.departTime || nowSec);
     let dropinDur = mEv ? (parseInt(mEv.duration, 10) || 0) : 0;
 
     let isDepartEventLateCheck = /(#leave|#depart)\b/i.test((destName || "") + " " + targetDesc);
@@ -370,7 +341,7 @@ function compileTypedRow(row) {
         mode: mode,
         durationSecs: duration,
         distanceMiles: distMiles,
-        pitstopState: local('block_step7') || "false",
+        pitstopState: row.pitstopState || "false",
         evStartSecs: evStartSecs,
         isDepart: isDepartEventLateCheck,
         transitStepsRaw: local('api_transit_steps') || "", 
@@ -581,7 +552,7 @@ function compileTypedRow(row) {
                 let departChanged = "false"; 
                 let departDiffMins = 0;
                 let apiConflictStr = "";
-                let liveLateMins = parseInt(local('block_step12'), 10) || 0;
+                let liveLateMins = (typeof row.engineLateMins === "number") ? row.engineLateMins : 0;
                 let timeGapFromNow = leg.apiUnix - nowSec; 
                 
                 if (timeGapFromNow <= RELEVANCE_WINDOW_SECS) {
