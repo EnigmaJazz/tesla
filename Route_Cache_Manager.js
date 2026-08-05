@@ -98,8 +98,7 @@ function rcmIsClose(cStrA, cStrB) {
 function rcmSnapshot(path) {
   const raw = readFile(path);
   return { existed: raw !== null, raw: raw === null ? "" : raw };
-}
-function rcmWriteWithReadback(path, content) {
+}function rcmWriteWithReadback(path, content) {
   writeFile(path, content);
   if (readFile(path) !== content) {
     rcmLog("error", "GENERATION_VALIDATION_FAILED", { reason: "read-back mismatch", path: path, writer: RCM_COMPONENT });
@@ -200,21 +199,63 @@ function rcmMigrateOrderText(nowSec) {
 // --- Cache readers (JSON authoritative, legacy text fallback) ---------------
 function rcmReadRouteCache(nowSec) {
   const obj = rcmReadJson(RCM_ROUTE_JSON);
-  if (obj && obj.schemaVersion === RCM_SCHEMA_VERSION && obj.entries) return obj;
+  if (obj && obj.schemaVersion === RCM_SCHEMA_VERSION && obj.entries) return { schemaVersion: obj.schemaVersion, updatedAt: obj.updatedAt, entries: rcmFilterRouteEntries(obj, nowSec) };
   if (obj) rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "malformed route cache file", path: RCM_ROUTE_JSON });
-  return { schemaVersion: RCM_SCHEMA_VERSION, updatedAt: nowSec, entries: rcmMigrateRouteText(nowSec) };
+  return { schemaVersion: RCM_SCHEMA_VERSION, updatedAt: nowSec, entries: rcmFilterRouteEntries({ entries: rcmMigrateRouteText(nowSec) }, nowSec) };
 }
 function rcmReadTempCache(nowSec) {
   const obj = rcmReadJson(RCM_TEMP_JSON);
-  if (obj && obj.schemaVersion === RCM_SCHEMA_VERSION && obj.entries) return obj;
+  if (obj && obj.schemaVersion === RCM_SCHEMA_VERSION && obj.entries) return { schemaVersion: obj.schemaVersion, updatedAt: obj.updatedAt, entries: rcmFilterTempEntries(obj, nowSec) };
   if (obj) rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "malformed temp cache file", path: RCM_TEMP_JSON });
-  return { schemaVersion: RCM_SCHEMA_VERSION, updatedAt: nowSec, entries: rcmMigrateTempText(nowSec) };
+  return { schemaVersion: RCM_SCHEMA_VERSION, updatedAt: nowSec, entries: rcmFilterTempEntries({ entries: rcmMigrateTempText(nowSec) }, nowSec) };
 }
 function rcmReadOrderCache(nowSec) {
   const obj = rcmReadJson(RCM_ORDER_JSON);
-  if (obj && obj.schemaVersion === RCM_SCHEMA_VERSION && obj.entries) return obj;
+  if (obj && obj.schemaVersion === RCM_SCHEMA_VERSION && obj.entries) return { schemaVersion: obj.schemaVersion, updatedAt: obj.updatedAt, entries: rcmFilterOrderEntries(obj, nowSec) };
   if (obj) rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "malformed order cache file", path: RCM_ORDER_JSON });
-  return { schemaVersion: RCM_SCHEMA_VERSION, updatedAt: nowSec, entries: rcmMigrateOrderText(nowSec) };
+  return { schemaVersion: RCM_SCHEMA_VERSION, updatedAt: nowSec, entries: rcmFilterOrderEntries({ entries: rcmMigrateOrderText(nowSec) }, nowSec) };
+}
+
+// REQ-5CACHE-2: reads MUST treat expired and nonpositive entries as misses
+// (they never surface through CACHE_READ). Wrong-bucket/duplicate entries are
+// pruned by exact-key construction; per-entry TTL + positivity filtering here
+// keeps CACHE_READ output valid even when the JSON file was written by an
+// older writer or tampered with. Each filter returns ONLY the filtered entries
+// map; the callers wrap it in the cache envelope.
+function rcmFilterRouteEntries(obj, nowSec) {
+  const out = {};
+  const keys = Object.keys(obj.entries || {});
+  for (let i = 0; i < keys.length; i++) {
+    const e = obj.entries[keys[i]];
+    if (!e) continue;
+    if (typeof e.expiresAt !== "number" || e.expiresAt <= nowSec) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "route entry expired", key: keys[i], expiresAt: e.expiresAt }); continue; }
+    if (typeof e.meanDurationSecs !== "number" || !(e.meanDurationSecs > 0)) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "route entry nonpositive duration", key: keys[i] }); continue; }
+    out[keys[i]] = e;
+  }
+  return out;
+}
+function rcmFilterTempEntries(obj, nowSec) {
+  const out = {};
+  const keys = Object.keys(obj.entries || {});
+  for (let i = 0; i < keys.length; i++) {
+    const e = obj.entries[keys[i]];
+    if (!e) continue;
+    if (typeof e.expiresAt !== "number" || e.expiresAt <= nowSec) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "temp entry expired", key: keys[i], expiresAt: e.expiresAt }); continue; }
+    if (typeof e.meanDurationSecs !== "number" || !(e.meanDurationSecs > 0)) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "temp entry nonpositive duration", key: keys[i] }); continue; }
+    out[keys[i]] = e;
+  }
+  return out;
+}
+function rcmFilterOrderEntries(obj, nowSec) {
+  const out = {};
+  const keys = Object.keys(obj.entries || {});
+  for (let i = 0; i < keys.length; i++) {
+    const e = obj.entries[keys[i]];
+    if (!e) continue;
+    if (typeof e.expiresAt !== "number" || e.expiresAt <= nowSec) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "order entry expired", key: keys[i], expiresAt: e.expiresAt }); continue; }
+    out[keys[i]] = e;
+  }
+  return out;
 }
 function rcmReadRequestState(nowSec) {
   const obj = rcmReadJson(RCM_REQUEST_JSON);
