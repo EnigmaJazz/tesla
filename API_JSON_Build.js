@@ -10,6 +10,21 @@ function getCoord(rawStr, splitIndex) {
     return isNaN(val) ? 0.0 : val;
 }
 
+// Phase 5 Slice C (REQ-5REQID-1): stamp a correlation envelope for the active
+// generation and register the latest request with the Route Cache Manager
+// BEFORE the wire body is sent. The envelope is staged into api_correlation
+// (and par1/par2 as REQUEST_STATE_REGISTER for the manager); the Google Routes
+// wire payload NEVER carries generationId/clusterId/requestId.
+function rqRegisterCorrelation(clusterId) {
+    var rqNow = Math.floor(Date.now() / 1000);
+    var rqHex = ("0000" + Math.floor(Math.random() * 0x10000).toString(16)).slice(-4);
+    var rqRequestId = "req:" + rqNow + ":" + rqHex;
+    var rqGenerationId = global('TDS_Active_Generation') || null;
+    setLocal('api_correlation', JSON.stringify({ generationId: rqGenerationId, clusterId: clusterId, requestId: rqRequestId }));
+    setLocal('par1', 'REQUEST_STATE_REGISTER');
+    setLocal('par2', JSON.stringify({ generationId: rqGenerationId, clusterId: clusterId, requestId: rqRequestId, emittedAt: rqNow }));
+}
+
 try {
     var rawPar1 = local('par1') || "";
     
@@ -26,13 +41,17 @@ try {
             "intermediates": []
         };
         
+        var rqWpIds = [];
         for (var w = 0; w < cluster.waypoints.length; w++) {
             var wC = cluster.waypoints[w].coords.split(",");
+            rqWpIds.push(cluster.waypoints[w].id);
             body.intermediates.push({
                 "location": { "latLng": { "latitude": parseFloat(wC[0]), "longitude": parseFloat(wC[1]) } }
             });
         }
         
+        rqRegisterCorrelation(uLoc + "|" + cluster.destination.id + "|" + rqWpIds.join(","));
+        setLocal('api_cluster_json', JSON.stringify(cluster));
         setLocal('api_request_body', JSON.stringify(body)); 
         setLocal('api_route_mode', "CLUSTER");
         
@@ -60,6 +79,12 @@ try {
         } else if (routeMode === "TRANSIT") {
             if (local('par15') === "ARRIVE") body.arrivalTime = isoTime;
             else body.departureTime = isoTime;
+        }
+
+        var rqOrigin = (local('par11') || "").trim();
+        var rqDest = (local('par12') || "").trim();
+        if (rqOrigin && rqDest) {
+            rqRegisterCorrelation(rqOrigin + "|" + rqDest + "|" + routeMode);
         }
 
         setLocal('api_request_body', JSON.stringify(body)); 
