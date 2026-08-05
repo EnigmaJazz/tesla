@@ -34,26 +34,27 @@ MANUAL_COMMANDS.forEach(function (c) { OWNER[c] = "Manual_Action_Handler"; });
 PUBLISHER_COMMANDS.forEach(function (c) { OWNER[c] = "Generation_Publisher"; });
 
 // Minimal pre-invocation field/type contract (REQ-4CMD-1): the router
-// guarantees these fields before any owner is invoked; owner-level semantic
-// validation stays with the owner. Every reducer payload requires
-// generationId (the reducer's validateCommon contract).
+// guarantees the reducer's validateFields contract (types + required)
+// BEFORE any owner is invoked, so an incomplete or wrong-typed payload can
+// never reach an owner. Owner-level semantic validation stays with the owner.
+// Mirror of Trip_State_Reducer.validateFields: field = {name, type, required}.
 const REDUCER_REQUIRED_FIELDS = {
-  SET_OVERRIDE: ["generationId"],
-  REMOVE_OVERRIDE: ["generationId"],
-  DEPART_NOW: ["generationId"],
-  RETURN_TO_BASE: ["generationId"],
-  COMPLETE_STOP: ["generationId", "stopId"],
-  START_UNPLANNED_STOP: ["generationId"],
-  END_UNPLANNED_STOP: ["generationId"],
-  COMPLETE_DROPIN: ["generationId"],
-  CANCEL_ACTION: ["generationId"],
-  RESET_ACTIONS: ["generationId"],
-  OBSERVE_DEPARTURE: ["generationId"],
-  OBSERVE_ARRIVAL: ["generationId"],
-  RECONCILE_GENERATION: ["generationId"],
-  COMPLETE_TRIP: ["generationId", "tripId", "at"],
-  EXPIRE_TRIP: ["generationId"],
-  OBSERVE_LIVE_BASE: ["generationId", "at"]
+  SET_OVERRIDE: [],
+  REMOVE_OVERRIDE: [],
+  DEPART_NOW: [{ name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }],
+  RETURN_TO_BASE: [{ name: "actionId", type: "string", required: true }, { name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }],
+  COMPLETE_STOP: [{ name: "stopId", type: "string", required: true }, { name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }],
+  START_UNPLANNED_STOP: [{ name: "stopId", type: "string", required: true }, { name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }],
+  END_UNPLANNED_STOP: [{ name: "stopId", type: "string", required: true }, { name: "at", type: "number", required: true }],
+  COMPLETE_DROPIN: [{ name: "dropinId", type: "string", required: true }, { name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }],
+  CANCEL_ACTION: [],
+  RESET_ACTIONS: [],
+  OBSERVE_DEPARTURE: [{ name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }],
+  OBSERVE_ARRIVAL: [{ name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }, { name: "accuracyM", type: "number", required: true }],
+  RECONCILE_GENERATION: [],
+  COMPLETE_TRIP: [{ name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }],
+  EXPIRE_TRIP: [{ name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }],
+  OBSERVE_LIVE_BASE: [{ name: "at", type: "number", required: true }]
 };
 
 // Trusted reorder producers (REQ-4REORDER-2): a legacy-null generationId is
@@ -116,13 +117,24 @@ function validateCommand(command, payload) {
       return "publish candidate must carry events/master/itinerary arrays";
     }
   } else if (REDUCER_REQUIRED_FIELDS[command]) {
-    // Every reducer command carries generationId (reducer validateCommon
-    // contract); COMPLETE_TRIP/COMPLETE_STOP/OBSERVE_* add their mandatory
-    // fields. The router rejects an incomplete payload BEFORE the owner runs.
-    for (let i = 0; i < REDUCER_REQUIRED_FIELDS[command].length; i++) {
-      const field = REDUCER_REQUIRED_FIELDS[command][i];
-      if (payload[field] === undefined || payload[field] === null || payload[field] === "") {
-        return "missing required field: " + field;
+    // Mirror the reducer's validateCommon + validateFields contract so a
+    // bad payload can never reach an owner (REQ-4CMD-1).
+    if (!payload.generationId || typeof payload.generationId !== "string") {
+      return "missing generationId";
+    }
+    if (!STATE_CMD_GEN_REGEX.test(payload.generationId)) {
+      return "invalid generationId format";
+    }
+    const fields = REDUCER_REQUIRED_FIELDS[command];
+    for (let i = 0; i < fields.length; i++) {
+      const f = fields[i];
+      const v = payload[f.name];
+      if (f.required && (v === undefined || v === null || v === "")) {
+        return "missing " + f.name;
+      }
+      if (v !== undefined && v !== null) {
+        if (f.type === "string" && typeof v !== "string") return f.name + " must be string";
+        if (f.type === "number" && (typeof v !== "number" || isNaN(v) || !isFinite(v))) return f.name + " must be number";
       }
     }
   }
