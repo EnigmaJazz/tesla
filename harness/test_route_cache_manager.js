@@ -424,6 +424,36 @@ try {
   const rejectCount3 = (malformed.store.flashLog || []).map(function (f) { try { return JSON.parse(f); } catch (e) { return null; } })
     .filter(function (l) { return l && l.code === 'CACHE_ENTRY_REJECTED'; }).length;
   assert(rejectCount3 >= 2, 'malformed + mismatch drops must log CACHE_ENTRY_REJECTED (got ' + rejectCount3 + ')');
+
+  // REQ-5CACHE-3: malformed temp and order entries must also be misses.
+  const badTempKey = '1,1~~2,2~~DRIVE~~' + nowSec;
+  const malformedTemp = createSandbox({
+    files: {
+      [TEMP_JSON]: JSON.stringify({ schemaVersion: 1, updatedAt: nowSec, entries: {
+        [badTempKey]: { originCell: '1,1' },
+        [badTempKey + 'x']: { originCell: '1,1', destinationCell: '2,2', mode: 'DRIVE', meanDurationSecs: 900, sampleCount: 1, m2: 0, distanceMiles: 50, apiUnix: nowSec, targetUnix: nowSec, createdAt: nowSec, updatedAt: nowSec, expiresAt: nowSec + RCM_TEST_FUTURE }
+      } })
+    },
+    nowMs: nowSec * 1000
+  });
+  const readT = malformedTemp.sandbox.cacheManager('CACHE_READ', { kind: 'temp' });
+  assert(readT.indexOf('OK') === 0, 'CACHE_READ temp must succeed: ' + readT);
+  const tempFiltered = JSON.parse(malformedTemp.sandbox.local('cache_read_result'));
+  assert.strictEqual(Object.keys(tempFiltered.entries || {}).length, 0, 'malformed + key-mismatch temp entries must be dropped');
+  const badOrderKey = 'c1|d1|wp1,wp2';
+  const malformedOrder = createSandbox({
+    files: {
+      [ORDER_JSON]: JSON.stringify({ schemaVersion: 1, updatedAt: nowSec, entries: {
+        [badOrderKey]: { clusterKey: badOrderKey, result: [], createdAt: nowSec, updatedAt: nowSec, expiresAt: nowSec + RCM_TEST_FUTURE },
+        [badOrderKey + 'x']: { clusterKey: badOrderKey, result: ['wp1', 5], createdAt: nowSec, updatedAt: nowSec, expiresAt: nowSec + RCM_TEST_FUTURE }
+      } })
+    },
+    nowMs: nowSec * 1000
+  });
+  const readO = malformedOrder.sandbox.cacheManager('CACHE_READ', { kind: 'order' });
+  assert(readO.indexOf('OK') === 0, 'CACHE_READ order must succeed: ' + readO);
+  const orderFiltered = JSON.parse(malformedOrder.sandbox.local('cache_read_result'));
+  assert.strictEqual(Object.keys(orderFiltered.entries || {}).length, 0, 'empty-result + non-string-id order entries must be dropped');
 } catch (e) {
   fail('CACHE_READ section threw: ' + (e && e.message ? e.message : e));
 }

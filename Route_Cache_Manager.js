@@ -253,8 +253,10 @@ function rcmFilterTempEntries(obj, nowSec) {
     const e = obj.entries[keys[i]];
     if (!e || typeof e !== "object") { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "temp entry not an object", key: keys[i] }); continue; }
     if (typeof e.originCell !== "string" || typeof e.destinationCell !== "string" || typeof e.mode !== "string"
-        || typeof e.meanDurationSecs !== "number" || typeof e.sampleCount !== "number" || typeof e.m2 !== "number"
-        || typeof e.apiUnix !== "number" || typeof e.targetUnix !== "number") {
+        || typeof e.meanDurationSecs !== "number" || !isFinite(e.meanDurationSecs) || typeof e.sampleCount !== "number" || !isFinite(e.sampleCount)
+        || typeof e.m2 !== "number" || !isFinite(e.m2) || typeof e.distanceMiles !== "number" || !isFinite(e.distanceMiles)
+        || typeof e.apiUnix !== "number" || !isFinite(e.apiUnix) || typeof e.targetUnix !== "number" || !isFinite(e.targetUnix)
+        || typeof e.createdAt !== "number" || typeof e.updatedAt !== "number") {
       rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "temp entry malformed fields", key: keys[i] }); continue;
     }
     if (typeof e.expiresAt !== "number" || e.expiresAt <= nowSec) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "temp entry expired", key: keys[i], expiresAt: e.expiresAt }); continue; }
@@ -271,10 +273,13 @@ function rcmFilterOrderEntries(obj, nowSec) {
   for (let i = 0; i < keys.length; i++) {
     const e = obj.entries[keys[i]];
     if (!e || typeof e !== "object") { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "order entry not an object", key: keys[i] }); continue; }
-    if (typeof e.clusterKey !== "string" || !Array.isArray(e.result)
+    if (typeof e.clusterKey !== "string" || !Array.isArray(e.result) || e.result.length === 0
         || typeof e.createdAt !== "number" || typeof e.updatedAt !== "number") {
       rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "order entry malformed fields", key: keys[i] }); continue;
     }
+    let allIds = true;
+    for (let r = 0; r < e.result.length; r++) { if (typeof e.result[r] !== "string" || e.result[r] === "") { allIds = false; break; } }
+    if (!allIds) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "order entry non-string result id", key: keys[i] }); continue; }
     if (typeof e.expiresAt !== "number" || e.expiresAt <= nowSec) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "order entry expired", key: keys[i], expiresAt: e.expiresAt }); continue; }
     if (e.clusterKey !== keys[i]) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "order key mismatch", key: keys[i], clusterKey: e.clusterKey }); continue; }
     out[keys[i]] = e;
