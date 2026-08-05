@@ -26,6 +26,7 @@ const PUBLISHER_PATH = path.resolve(__dirname, '..', 'Generation_Publisher.js');
 const REDUCER_PATH = path.resolve(__dirname, '..', 'Trip_State_Reducer.js');
 const OVERRIDE_HANDLER_PATH = path.resolve(__dirname, '..', 'Override_Handler.js');
 const STATE_COMMAND_PATH = path.resolve(__dirname, '..', 'TDS_State_Command.js');
+const CACHE_MANAGER_PATH = path.resolve(__dirname, '..', 'Route_Cache_Manager.js');
 const PHASE3_STATE_PATH = "Tasker/Tesla/Data/TDS_Trip_State.json";
 const REORDER_QUEUE_PATH = "Tasker/Tesla/Data/TDS_Reorder_Commands.json";
 const OVERRIDE_PATH = "Tasker/Tesla/Data/TDS_Overrides.json";
@@ -33,6 +34,18 @@ const PREFS_PATH = "Tasker/Tesla/Data/TDS_Routine_Preferences.json";
 const SESSIONS_PATH = "Tasker/Tesla/Data/TDS_Action_Sessions.json";
 const MANUAL_TRIPS_PATH = "Tasker/Tesla/Data/TDS_Manual_Trips.json";
 const ACTION_LOCK_PATH = "Tasker/Tesla/Data/TDS_Action_Lock.json";
+// Phase 5 Slice B (REQ-5CACHE-1, RULE-8E): the Route Cache Manager is the sole
+// writer of the four cache JSON files AND their legacy text projections.
+const ROUTE_CACHE_PATH = "Tasker/Tesla/Data/TDS_Route_Cache.json";
+const ORDER_CACHE_PATH = "Tasker/Tesla/Data/TDS_Order_Cache.json";
+const TEMP_CACHE_PATH = "Tasker/Tesla/Data/Temp_Route_Cache.json";
+const REQUEST_STATE_PATH = "Tasker/Tesla/Data/TDS_Route_Request_State.json";
+const ROUTE_CACHE_TEXT_PATH = "Tasker/Tesla/Data/RouteCache.txt";
+const TEMP_CACHE_TEXT_PATH = "Tasker/Tesla/Data/Temp_Route_Cache.txt";
+const ORDER_CACHE_TEXT_PATH = "Tasker/Tesla/Data/TDS_Order_Cache.txt";
+// Exact-key membership (never substring): the manager is the only permitted owner.
+const CACHE_FILES = [ROUTE_CACHE_PATH, ORDER_CACHE_PATH, TEMP_CACHE_PATH, REQUEST_STATE_PATH,
+  ROUTE_CACHE_TEXT_PATH, TEMP_CACHE_TEXT_PATH, ORDER_CACHE_TEXT_PATH];
 
 function createSandbox(options) {
   options = options || {};
@@ -115,6 +128,20 @@ function createSandbox(options) {
     return local('return_value');
   }
 
+  // cacheManager(command, payload): runs Route_Cache_Manager through its staged
+  // entry (par1 command / par2 JSON payload) with __currentScriptPath set so its
+  // four cache JSON files + legacy text projections pass the ownership guard.
+  // Mirrors reducer()/handler()/stateCommand().
+  function cacheManager(command, payload) {
+    const outer = sandbox.__currentScriptPath;
+    setLocal('par1', command);
+    setLocal('par2', JSON.stringify(payload));
+    sandbox.__currentScriptPath = CACHE_MANAGER_PATH;
+    runScript(CACHE_MANAGER_PATH, sandbox, store);
+    sandbox.__currentScriptPath = outer;
+    return local('return_value');
+  }
+
   function local(key) {
     return Object.prototype.hasOwnProperty.call(liveLocals, key) ? liveLocals[key] : "";
   }
@@ -139,7 +166,26 @@ function createSandbox(options) {
     }
     return false;
   }
+  function isCacheFile(path) { return CACHE_FILES.indexOf(path) !== -1; }
+  function rejectCacheWrite(op, path) {
+    // REQ-5LOG-1: ownership rejection emits structured LOG-17 evidence so
+    // tests can assert the event shape, not just the thrown error text.
+    const ts = Math.floor(Date.now() / 1000);
+    flashLog.push(JSON.stringify({
+      timestamp: ts,
+      generationId: null,
+      component: "Route_Cache_Manager",
+      severity: "ERROR",
+      code: "CACHE_WRITE_REJECTED",
+      tripId: null,
+      details: { op: op, path: path, owner: sandbox.__currentScriptPath || "unknown" }
+    }));
+    throw new Error("CACHE_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
+  }
   function writeFile(path, content) {
+    if (isCacheFile(path) && sandbox.__currentScriptPath !== CACHE_MANAGER_PATH) {
+      rejectCacheWrite("write", path);
+    }
     if (path === PHASE3_STATE_PATH && sandbox.__currentScriptPath !== REDUCER_PATH) {
       throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
     }
@@ -165,6 +211,9 @@ function createSandbox(options) {
     writeOrder.push(path);
   }
   function deleteFile(path) {
+    if (isCacheFile(path) && sandbox.__currentScriptPath !== CACHE_MANAGER_PATH) {
+      rejectCacheWrite("delete", path);
+    }
     if ((path === OVERRIDE_PATH || path === PREFS_PATH) && sandbox.__currentScriptPath !== OVERRIDE_HANDLER_PATH) {
       throw new Error("UNAUTHORIZED_WRITE_REJECTED: " + path + " by " + (sandbox.__currentScriptPath || "unknown"));
     }
@@ -227,7 +276,8 @@ function createSandbox(options) {
     publish: publish,
     reducer: reducer,
     handler: handler,
-    stateCommand: stateCommand
+    stateCommand: stateCommand,
+    cacheManager: cacheManager
   };
 
   const store = {
