@@ -62,7 +62,7 @@ function routeEntry(o, d, m, mean, bucket, dayClass, extra) {
   return Object.assign({
     originCell: o, destinationCell: d, mode: m, dayClass: dayClass, bucket: bucket,
     meanDurationSecs: mean, sampleCount: 1, m2: 0,
-    distanceMiles: Math.round((12000 / METERS_PER_MILE) * 1000) / 1000,
+    distanceMiles: 12000 / METERS_PER_MILE,
     createdAt: nowSec - 60, updatedAt: nowSec - 60, expiresAt: nowSec + 30 * 86400
   }, extra || {});
 }
@@ -141,8 +141,10 @@ try {
 // ---------- (a) Gatekeeper reads the JSON caches; decisions match legacy ----------
 
 try {
+  // Master-cache route hit: future DRIVE leg resolves from the JSON Welford row.
+  // Target nowSec + 10800 -> tod 73 (2023-11-15T01:13Z), dayClass 0.
   const routeFixtures = {};
-  routeFixtures[rk(homeCoords, eventCoords, 'DRIVE', 1333, 0)] = routeEntry(homeCoords, eventCoords, 'DRIVE', 1800, 1333, 0, { updatedAt: nowSec });
+  routeFixtures[rk(homeCoords, eventCoords, 'DRIVE', 73, 0)] = routeEntry(homeCoords, eventCoords, 'DRIVE', 1800, 73, 0, { updatedAt: nowSec });
   const orderFixtures = {};
   orderFixtures['51.9,-2.1|dest1|wp1,wp2'] = orderEntry('51.9,-2.1|dest1|wp1,wp2', ['wp2', 'wp1']);
 
@@ -182,7 +184,7 @@ try {
 
   // Migration bridge: the SAME physical cache expressed as legacy text migrates
   // through the manager and the reader selects the identical duration.
-  const legacyRoute = '51.9,-2.1~52.0,-2.0~DRIVE~1800~12000~' + (nowSec - 60) + '~0~1333~0~1';
+  const legacyRoute = '51.9,-2.1~52.0,-2.0~DRIVE~1800~12000~' + (nowSec - 60) + '~0~73~0~1';
   const { sandbox: m1, store: m2 } = createSandbox({ files: { [ROUTE_TEXT]: legacyRoute }, nowMs: nowSec * 1000 });
   m1.cacheManager('PRUNE', { nowSec: nowSec });
   assert.strictEqual(m2.files[ROUTE_TEXT], undefined, 'PRUNE must retire the legacy text file after migration');
@@ -278,24 +280,22 @@ try {
 
 try {
   // Target: future event at nowSec + 10800 -> tod 73, dayClass 0 (Wednesday).
+  // The legacy reader scans the cache BACKWARD and returns the LAST matching
+  // row; the JSON reader preserves key order, so the parity rules below encode
+  // the legacy selection semantics exactly:
+  //   DRIVE: mode + isClose + (bucket within 60 min of target tod) + dayClass;
+  //   WALK:  mode + isClose only (unbucketed per CACHE-11, bucket null).
   const targetSec = nowSec + 10800;
-  const matrix = {
-    matchExact: rk(homeCoords, eventCoords, 'DRIVE', 73, 0),
-    wrongDay: rk(homeCoords, eventCoords, 'DRIVE', 73, 1),
-    bucketFar: rk(homeCoords, eventCoords, 'DRIVE', 200, 0),
-    bucketAdjacent: rk(homeCoords, eventCoords, 'DRIVE', 133, 0),
-    walkNull: rk(homeCoords, eventCoords, 'WALK', null, 0),
-    fresh: rk(homeCoords, eventCoords, 'DRIVE', 73, 0)
+  const entrySets = {
+    matchStale: routeEntry(homeCoords, eventCoords, 'DRIVE', 1700, 73, 0, { updatedAt: nowSec - 100000 }),
+    wrongDay: routeEntry(homeCoords, eventCoords, 'DRIVE', 1600, 73, 1, { updatedAt: nowSec - 100000 }),
+    bucketFar: routeEntry(homeCoords, eventCoords, 'DRIVE', 1500, 200, 0, { updatedAt: nowSec - 100000 }),
+    bucketAdjacent: routeEntry(homeCoords, eventCoords, 'DRIVE', 1400, 133, 0, { updatedAt: nowSec - 100000 }),
+    bucketOutside: routeEntry(homeCoords, eventCoords, 'DRIVE', 1350, 12, 0, { updatedAt: nowSec - 100000 }),
+    walkNull: routeEntry(homeCoords, eventCoords, 'WALK', 900, null, 0, { updatedAt: nowSec - 100000 })
   };
-  const entries = {};
-  entries[matrix.matchExact] = routeEntry(homeCoords, eventCoords, 'DRIVE', 1700, 73, 0, { updatedAt: nowSec - 100000 });
-  entries[matrix.wrongDay] = routeEntry(homeCoords, eventCoords, 'DRIVE', 1600, 73, 1, { updatedAt: nowSec - 100000 });
-  entries[matrix.bucketFar] = routeEntry(homeCoords, eventCoords, 'DRIVE', 1500, 200, 0, { updatedAt: nowSec - 100000 });
-  entries[matrix.bucketAdjacent] = routeEntry(homeCoords, eventCoords, 'DRIVE', 1400, 133, 0, { updatedAt: nowSec - 100000 });
-  entries[matrix.walkNull] = routeEntry(homeCoords, eventCoords, 'WALK', 900, null, 0, { updatedAt: nowSec - 100000 });
-  entries[matrix.fresh] = routeEntry(homeCoords, eventCoords, 'DRIVE', 1300, 73, 0, { updatedAt: nowSec - 10 });
 
-  function runQuery(mode) {
+  function runQuery(entries, mode) {
     const { sandbox, store } = createSandbox({
       locals: { par1: '', par11: homeCoords, par12: eventCoords, par13: mode, par14: String(targetSec) },
       files: { [ROUTE_JSON]: cacheJson(entries), [TEMP_JSON]: cacheJson({}) },
@@ -307,11 +307,16 @@ try {
     return JSON.parse(sandbox.local('api_return_json')).durationSecs;
   }
 
-  // Backward scan: the LAST matching row in key order wins — seed order is the
-  // legacy text order, so 'fresh' (last) shadows 'matchExact' for the same key
-  // shape; the selection rules below assert the parity rules themselves.
-  assert.strictEqual(runQuery('DRIVE'), 1300, 'fresh row must win over the stale same-bucket row');
-  assert.strictEqual(runQuery('WALK'), 900, 'WALK must resolve unbucketed regardless of tod');
+  // Backward scan wins: bucketAdjacent (133, diff 60) is the last DRIVE match.
+  assert.strictEqual(runQuery(entrySets, 'DRIVE'), 1400, 'adjacent bucket (diff 60) must hit and win the backward scan');
+  // Without the adjacent/far interference: wrongDay and bucketFar are misses;
+  // the stale row resolves via the tod/dayClass path (legacy parity).
+  assert.strictEqual(runQuery({ m1: entrySets.matchStale, m2: entrySets.wrongDay, m3: entrySets.bucketFar }, 'DRIVE'), 1700,
+    'wrong-day and far-bucket rows must be misses; stale tod-path row must hit');
+  // A bucket 61+ minutes outside the target tod is a miss.
+  assert.strictEqual(runQuery({ m1: entrySets.bucketOutside }, 'DRIVE'), null, 'bucket outside the 60-min window must be a miss');
+  // WALK resolves unbucketed regardless of tod.
+  assert.strictEqual(runQuery({ m1: entrySets.walkNull }, 'WALK'), 900, 'WALK must resolve unbucketed');
 } catch (e) {
   fail('spatial/bucket parity section threw: ' + (e && e.message ? e.message : e));
 }
