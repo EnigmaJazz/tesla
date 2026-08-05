@@ -90,8 +90,11 @@ try {
   const malformed = runPublish([{ type: 'BOGUS_TYPE', generationId: PREBUILD_GEN, orderedEventIds: ['e3', 'e1', 'e2'] }]);
   assert.deepStrictEqual(malformed.master.map(function (x) { return x.id; }), ['e1', 'e2', 'e3'], 'malformed command must not apply');
   assert(logs(malformed.store).some(function (l) { return l.code === 'REORDER_COMMAND_REJECTED'; }), 'malformed command must log REORDER_COMMAND_REJECTED');
-  const legacyNull = runPublish([reorderCmd({ generationId: null })]);
+  const legacyNull = runPublish([reorderCmd({ generationId: null, source: 'Gatekeeper' })]);
   assert.deepStrictEqual(legacyNull.master.map(function (x) { return x.id; }), ['e3', 'e1', 'e2'], 'permitted legacy-null command must apply');
+  const untrustedNull = runPublish([reorderCmd({ generationId: null, source: 'test' })]);
+  assert.deepStrictEqual(untrustedNull.master.map(function (x) { return x.id; }), ['e1', 'e2', 'e3'], 'untrusted legacy-null command must NOT apply');
+  assert(logs(untrustedNull.store).some(function (l) { return l.code === 'REORDER_COMMAND_REJECTED'; }), 'untrusted legacy-null must log REORDER_COMMAND_REJECTED');
 } catch (e) { fail('admission matrix: ' + e.message); }
 
 // SCN-4REORDER-2: every publish drains and clears the queue — nothing retained.
