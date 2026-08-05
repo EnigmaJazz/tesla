@@ -217,6 +217,12 @@ try {
   if (!findFlash(badSchema, 'TYPED_QUEUE_REJECTED')) fail('unsupported schemaVersion must log TYPED_QUEUE_REJECTED');
   if (badSchema.files[DATA + 'TDS_Run_Manifest.json']) fail('unsupported schemaVersion must not publish a generation');
 
+  // REQ-5QUEUE-2: a row missing a REQUIRED field (evLoc) must reject the
+  // whole queue atomically — never accept/publish a partial row.
+  const missingEvLoc = runCompiler(makeTypedRow(Object.assign({}, baseRow, { evLoc: undefined })), { extraLocals: { block_queue: makeEnvelope([makeTypedRow(Object.assign({}, baseRow, { evLoc: undefined }))]) } });
+  if (!findFlash(missingEvLoc, 'TYPED_QUEUE_REJECTED')) fail('missing evLoc must log TYPED_QUEUE_REJECTED');
+  if (missingEvLoc.files[DATA + 'TDS_Run_Manifest.json']) fail('missing evLoc must not publish a generation');
+
   // REQ-5QUEUE-1: malformed CONTROLS reject the envelope atomically.
   const badEof = runCompiler(baseRow, { extraLocals: { block_queue: JSON.stringify({ schemaVersion: 1, rows: [baseRow], eof: 'yes', skipIdxUntil: 0, stepConflict: null, notifications: [] }) } });
   if (!findFlash(badEof, 'TYPED_QUEUE_REJECTED')) fail('non-boolean eof must log TYPED_QUEUE_REJECTED');

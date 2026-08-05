@@ -37,6 +37,7 @@ function isValidTypedRow(row) {
         && typeof row.evId === "string" && row.evId !== ""
         && typeof row.title === "string"
         && typeof row.coords === "string"
+        && typeof row.evLoc === "string"
         && typeof row.mode === "string"
         && typeof row.displayTime === "number"
         && typeof row.departTime === "number"
