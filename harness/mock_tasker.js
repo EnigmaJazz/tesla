@@ -245,6 +245,33 @@ function createSandbox(options) {
   return { sandbox: sandbox, store: store };
 }
 
+// Phase 5 (REQ-5QUEUE-1): typed queue envelope builders for Compiler/Sandbox
+// harnesses. Tasker Variable Split never processes block_queue; the Compiler
+// JSON.parses the envelope once inside its JSlet.
+function makeEnvelope(rows, opts) {
+  opts = opts || {};
+  return JSON.stringify({
+    schemaVersion: 1,
+    rows: rows || [],
+    eof: opts.eof || false,
+    skipIdxUntil: (typeof opts.skipIdxUntil === 'number') ? opts.skipIdxUntil : 0,
+    stepConflict: opts.stepConflict || null,
+    notifications: opts.notifications || []
+  });
+}
+
+// Build a TypedRow object; missing fields take contract defaults so harnesses
+// only spell out the fields their scenario cares about.
+function makeTypedRow(fields) {
+  return Object.assign({
+    rowType: '', title: '', coords: '', mode: '', displayTime: 0, departTime: 0,
+    pitstopState: '', apiTimeType: '', apiTimeUnix: 0, evId: '', evLoc: '',
+    engineLateMins: 0, currentLegStable: false, dropinStatusFlag: '', safeDesc: '',
+    adHoc: [], routeDurationSecs: null, routeDistanceMiles: null,
+    departurePolicy: 'JIT', planningDay: '', originSource: ''
+  }, fields);
+}
+
 function stringify(value) {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
@@ -255,4 +282,4 @@ function stringify(value) {
   return String(value);
 }
 
-module.exports = { createSandbox: createSandbox };
+module.exports = { createSandbox: createSandbox, makeEnvelope: makeEnvelope, makeTypedRow: makeTypedRow };
