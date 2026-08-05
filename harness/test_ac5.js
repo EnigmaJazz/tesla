@@ -31,6 +31,8 @@ const SANDBOX = path.resolve(__dirname, '..', 'Sandbox_Engine.js');
 const DISPATCHER = path.resolve(__dirname, '..', 'Dispatcher.js');
 const FINALISER = path.resolve(__dirname, '..', 'Finaliser.js');
 const UNLOCK = path.resolve(__dirname, '..', 'Unlock.js');
+const STOP_LOGGER = path.resolve(__dirname, '..', 'Stop_Logger.js');
+const TDS_HELPER = path.resolve(__dirname, '..', 'TDS_Helper.js');
 
 const failures = [];
 function section(name, fn) {
@@ -335,10 +337,11 @@ const finaliserGlobals = {
 const ACTION_ID = 'action_' + nowSec.toString(36);
 const TRIP_ID = 'manual_return_' + nowSec.toString(36);
 const STATE_COMMAND = path.resolve(__dirname, '..', 'TDS_State_Command.js');
+const matchingLock = JSON.stringify({ type: 'MANUAL_ROUTING', timestamp: nowSec - 10000, eventId: TRIP_ID });
 
-function runRelease(sandbox, store, payload) {
+function runRelease(sandbox, store, payload, command) {
   sandbox.__currentScriptPath = STATE_COMMAND;
-  sandbox.setLocal('par1', 'RELEASE');
+  sandbox.setLocal('par1', command || 'RELEASE');
   sandbox.setLocal('par2', JSON.stringify(payload));
   runScript(STATE_COMMAND, sandbox, store);
   sandbox.__currentScriptPath = '';
@@ -364,9 +367,11 @@ section('lock-cleanup-finaliser-gated', function () {
   assert(!sessionWrite, 'Finaliser must not write TDS_Action_Sessions.json');
 });
 
-section('lock-cleanup-finaliser-handler-only', function () {
+section('lock-cleanup-finaliser-no-direct-clear', function () {
   // After COMPLETE_TRIP succeeded (manualReturnCompleted), Finaliser STILL
-  // cannot clear the migration-only lock — only the Manual Action Handler may.
+  // cannot clear the migration-only lock — it stages typed commands instead
+  // (REQ-4ADAPTER-7). With no session there is no exact release to stage, so
+  // the lock survives untouched and no direct write is attempted.
   const completedState = JSON.parse(seededState({}));
   completedState.manualReturnCompleted = true;
   const files = {
@@ -380,10 +385,59 @@ section('lock-cleanup-finaliser-handler-only', function () {
   if (store.runError) throw new Error(store.runError.message);
 
   assert.strictEqual(store.files[LOCK], staleLock, 'Finaliser must NOT clear the migration-only lock');
-  assert(store.flashLog.some(function (f) { return f.indexOf('UNAUTHORIZED_WRITE_REJECTED') !== -1; }),
-    'Finaliser lock-clear attempt must be rejected');
+  assert(!store.flashLog.some(function (f) { return f.indexOf('UNAUTHORIZED_WRITE_REJECTED') !== -1; }),
+    'Finaliser must not attempt a direct lock write');
+  assert(!store.writeLog.some(function (w) { return w.path === LOCK; }), 'Finaliser must not write the lock');
   const sessionWrite = store.writeLog.some(function (w) { return w.path === SESSIONS; });
   assert(!sessionWrite, 'Finaliser must not write TDS_Action_Sessions.json');
+});
+
+section('finaliser-midchain-preserves-par1-and-stages-release', function () {
+  // REQ-4ADAPTER-7 mid-chain rule: Finaliser's release delivery must NEVER
+  // clobber %par1 (the publish candidate for the Publisher, or the staged
+  // RECONCILE_GENERATION the publisher leaves). The typed release is staged
+  // into tds_release_par1/par2 (no-shim Tasker path) so the serial router
+  // consumes it AFTER the publish chain without touching par1.
+  const completedState = JSON.parse(seededState({}));
+  completedState.manualReturnCompleted = true;
+  const sessions = { schemaVersion: 1, sessions: { [ACTION_ID]: { actionId: ACTION_ID, tripId: TRIP_ID, status: 'ACTIVE', closedAt: null, closeReason: null } } };
+  const files = {
+    [DATA + 'Itin_Master.json']: '[]',
+    [DATA + 'TDS_Overrides.json']: '{}',
+    [LOCK]: staleLock,
+    [STATE]: JSON.stringify(completedState),
+    [SESSIONS]: JSON.stringify(sessions)
+  };
+  const { sandbox, store } = make(files, finaliserGlobals, { tds_temp_json: '[]', raw_base_data: '' });
+  runScript(FINALISER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+
+  assert.notStrictEqual(sandbox.local('par1'), 'RELEASE', 'release delivery must never clobber %par1');
+  assert.notStrictEqual(sandbox.local('par1'), 'SESSION_CLOSE', 'release delivery must never clobber %par1');
+  assert.strictEqual(sandbox.local('tds_release_par1'), 'RELEASE', 'Finaliser must stage the deferred RELEASE command');
+  const stagedRelease = JSON.parse(sandbox.local('tds_release_par2') || '{}');
+  assert.strictEqual(stagedRelease.actionId, ACTION_ID, 'staged release must carry the exact action id');
+  assert.strictEqual(stagedRelease.tripId, TRIP_ID, 'staged release must carry the exact trip id');
+  assert.strictEqual(store.files[LOCK], staleLock, 'Finaliser must NOT clear the migration-only lock itself');
+  assert(!store.writeLog.some(function (w) { return w.path === LOCK; }), 'Finaliser must not write the lock');
+
+  // No-lock path (verify run 2): an ACTIVE session must release even when NO
+  // legacy lock exists — the modern session-authoritative path. The release
+  // must not be nested under the lock-presence gate.
+  const noLockFiles = {
+    [DATA + 'Itin_Master.json']: '[]',
+    [DATA + 'TDS_Overrides.json']: '{}',
+    [STATE]: JSON.stringify(completedState),
+    [SESSIONS]: JSON.stringify(sessions)
+  };
+  const { sandbox: s2, store: st2 } = make(noLockFiles, finaliserGlobals, { tds_temp_json: '[]', raw_base_data: '' });
+  runScript(FINALISER, s2, st2);
+  if (st2.runError) throw new Error(st2.runError.message);
+  assert.strictEqual(s2.local('tds_release_par1'), 'RELEASE', 'no-lock path must still stage the deferred RELEASE');
+  const stagedNoLock = JSON.parse(s2.local('tds_release_par2') || '{}');
+  assert.strictEqual(stagedNoLock.actionId, ACTION_ID, 'no-lock staged release must carry the exact action id');
+  assert.strictEqual(stagedNoLock.tripId, TRIP_ID, 'no-lock staged release must carry the exact trip id');
+  assert.notStrictEqual(s2.local('par1'), 'RELEASE', 'no-lock path must never clobber %par1');
 });
 
 section('unlock-cannot-clear-lock', function () {
@@ -432,6 +486,98 @@ section('release-clears-lock-and-keeps-tomorrow-planned', function () {
   const state = JSON.parse(store.files[STATE]);
   assert.strictEqual(state.trips.today_ret.lifecycleState, 'IN_PROGRESS', 'RELEASE must not touch reducer trip lifecycle');
   assert.deepStrictEqual(state.trips.tomorrow_trip, before.trips.tomorrow_trip, 'tomorrow trip must stay byte-identical PLANNED');
+});
+
+// ---------------------------------------------------------------------
+// Section 6 (Slice C): release adapters stage typed commands; the Manual
+// Action Handler is the sole lock clearer (REQ-4ADAPTER-5/6/7, SCN-4ADAPTER-5..7).
+// ---------------------------------------------------------------------
+const QUEUE = DATA + 'TDS_Reorder_Commands.json';
+
+function sessionFiles() {
+  const sessions = { schemaVersion: 1, sessions: { [ACTION_ID]: { actionId: ACTION_ID, type: 'MANUAL_RETURN', tripId: TRIP_ID, createdAt: nowSec - 3600, expiresAt: nowSec + 10800, status: 'ACTIVE', scopes: ['PRESERVE_ACTIVE_TRIP'], closedAt: null, closeReason: null } } };
+  const trips = { schemaVersion: 1, trips: { [TRIP_ID]: { tripId: TRIP_ID, actionId: ACTION_ID, legType: 'MANUAL_RETURN', lifecycleState: 'IN_PROGRESS' } } };
+  return { [SESSIONS]: JSON.stringify(sessions), [DATA + 'TDS_Manual_Trips.json']: JSON.stringify(trips) };
+}
+
+section('stop-logger-stages-complete-stop', function () {
+  const { sandbox, store } = make({}, { TDS_Active_Generation: GEN_ID }, { active_target_id: 'ev_x_kx8f00', ld_selected: '5m' });
+  runScript(STOP_LOGGER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  assert.strictEqual(sandbox.local('par1'), 'COMPLETE_STOP', 'Stop_Logger must stage COMPLETE_STOP');
+  const payload = JSON.parse(sandbox.local('par2'));
+  assert.strictEqual(payload.stopId, 'ev_x_kx8f00_5', 'COMPLETE_STOP must carry the exact stable stopId');
+  assert.strictEqual(payload.tripId, 'ev_x', 'COMPLETE_STOP must carry the lastIndexOf trip core');
+  assert(!store.writeLog.some(function (w) { return w.owner && w.owner.indexOf('Stop_Logger.js') !== -1; }), 'Stop_Logger itself must not write any file');
+});
+
+section('unlock-stages-exact-release', function () {
+  const completed = JSON.parse(seededState({ [TRIP_ID]: { tripId: TRIP_ID, lifecycleState: 'IN_PROGRESS' }, tomorrow_trip: { tripId: 'tomorrow_trip', lifecycleState: 'PLANNED', currentPlanningDay: tomorrowDay } }));
+  completed.manualReturnCompleted = true;
+  const files = Object.assign(sessionFiles(), { [LOCK]: matchingLock, [STATE]: JSON.stringify(completed) });
+  const { sandbox, store } = make(files, {}, {});
+  runScript(UNLOCK, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  assert.strictEqual(sandbox.local('par1'), 'RELEASE', 'Unlock must stage RELEASE after completion');
+  const payload = JSON.parse(sandbox.local('par2'));
+  assert.strictEqual(payload.actionId, ACTION_ID, 'RELEASE must carry the exact actionId');
+  assert.strictEqual(payload.tripId, TRIP_ID, 'RELEASE must carry the exact tripId');
+  const r = runRelease(sandbox, store, payload);
+  assert(r.indexOf('OK') === 0, 'staged RELEASE must be accepted: ' + r);
+  assert.strictEqual(store.files[LOCK], '{}', 'RELEASE must clear the matching legacy lock');
+  assert.strictEqual(JSON.parse(store.files[STATE]).trips.tomorrow_trip.lifecycleState, 'PLANNED', 'tomorrow trip must stay PLANNED');
+});
+
+section('unlock-session-close-without-completion', function () {
+  const notDone = JSON.parse(seededState({ [TRIP_ID]: { tripId: TRIP_ID, lifecycleState: 'IN_PROGRESS' } }));
+  const files = Object.assign(sessionFiles(), { [LOCK]: matchingLock, [STATE]: JSON.stringify(notDone) });
+  const { sandbox, store } = make(files, {}, {});
+  runScript(UNLOCK, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  assert.strictEqual(sandbox.local('par1'), 'SESSION_CLOSE', 'Unlock must stage SESSION_CLOSE without completion');
+  const payload = JSON.parse(sandbox.local('par2'));
+  assert.strictEqual(payload.actionId, ACTION_ID, 'SESSION_CLOSE must carry the exact actionId');
+  const r = runRelease(sandbox, store, payload, 'SESSION_CLOSE');
+  assert(r.indexOf('OK') === 0, 'staged SESSION_CLOSE must be accepted: ' + r);
+  assert.strictEqual(JSON.parse(store.files[SESSIONS]).sessions[ACTION_ID].status, 'CLOSED', 'SESSION_CLOSE must close the exact session');
+  assert.strictEqual(store.files[LOCK], matchingLock, 'SESSION_CLOSE must NOT clear the lock without completion');
+});
+
+section('finaliser-stages-release', function () {
+  // SCN-4ADAPTER-7: completion recorded at base, then Finaliser releases it.
+  const done = JSON.parse(seededState({ [TRIP_ID]: { tripId: TRIP_ID, lifecycleState: 'IN_PROGRESS' }, tomorrow_trip: { tripId: 'tomorrow_trip', lifecycleState: 'PLANNED', currentPlanningDay: tomorrowDay } }));
+  done.manualReturnCompleted = true;
+  const files = Object.assign(sessionFiles(), { [LOCK]: matchingLock, [STATE]: JSON.stringify(done), [DATA + 'Itin_Master.json']: '[]', [DATA + 'TDS_Overrides.json']: '{}' });
+  const { sandbox, store } = make(files, finaliserGlobals, { tds_temp_json: '[]', raw_base_data: '' });
+  runScript(FINALISER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  const st = JSON.parse(store.files[STATE]);
+  assert.strictEqual(st.manualReturnCompleted, true, 'Finaliser must preserve reducer completion');
+  assert.strictEqual(st.trips[TRIP_ID].lifecycleState, 'COMPLETED', 'Finaliser must deliver COMPLETE_TRIP to the reducer');
+  assert.strictEqual(store.files[LOCK], '{}', 'Finaliser must deliver RELEASE through the router and clear the matching lock');
+  assert.strictEqual(JSON.parse(store.files[SESSIONS]).sessions[ACTION_ID].status, 'CLOSED', 'RELEASE must close the exact session');
+  assert.strictEqual(st.trips.tomorrow_trip.lifecycleState, 'PLANNED', 'future JIT trip must stay PLANNED');
+  const lockWrite = store.writeLog.find(function (w) { return w.path === LOCK; });
+  assert(lockWrite && lockWrite.owner && lockWrite.owner.indexOf('TDS_State_Command.js') !== -1, 'lock clear must be owned by State Command');
+});
+
+section('helper-rejects-generic-requests', function () {
+  const { sandbox, store } = make({ [DATA + 'TDS_Master.json']: JSON.stringify([{ id: 'legacy_1' }]) }, {}, {});
+  sandbox.setLocal('par1', 'TDS_Master:0:id');
+  sandbox.setLocal('par2', '');
+  runScript(TDS_HELPER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  const rv = sandbox.local('return_value');
+  assert(rv.indexOf('ERROR:') === 0, 'legacy getter must be rejected, got: ' + rv);
+});
+
+section('guard-rejects-unauthorized-writes', function () {
+  const { sandbox } = make({}, {}, {});
+  [SESSIONS, DATA + 'TDS_Manual_Trips.json', LOCK, QUEUE].forEach(function (p) {
+    let rejected = false;
+    try { sandbox.writeFile(p, '{}'); } catch (e) { rejected = String(e && e.message || e).indexOf('UNAUTHORIZED_WRITE_REJECTED') !== -1; }
+    assert(rejected, 'direct write to ' + p + ' must be rejected');
+  });
 });
 
 // ---------------------------------------------------------------------

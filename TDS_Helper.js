@@ -1,7 +1,8 @@
-// TDS_Helper — Phase 2 read-only manifest resolver.
-// par1 = events|master|itinerary returns the active committed resource (prior/empty fallback).
-// par1 = Filename:Index:Key returns legacy getter value.
-// Direct writes to RULE-8A files are rejected.
+// TDS_Helper — read-only manifest resolver (REQ-4HELPER-1).
+// par1 = readOrigin | readActiveGeneration[:events|master|itinerary] returns
+// the active committed resource (prior/legacy fallback). Generic getters
+// (legacy Filename:Index:Key form), setters, and unknown operations are
+// rejected with HELPER_REQUEST_REJECTED; this script never writes.
 
 const PHASE2_MANIFEST_PATH = "Tasker/Tesla/Data/TDS_Run_Manifest.json";
 const PHASE2_DATA_DIR = "Tasker/Tesla/Data/";
@@ -14,19 +15,6 @@ function readJson(path) {
   const raw = readFile(path) || "";
   if (!raw) return null;
   try { return JSON.parse(raw); } catch (e) { return null; }
-}
-function readActive(kind) {
-  const m = readJson(PHASE2_MANIFEST_PATH);
-  const key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
-  if (m && m.state === "committed" && m.activeGeneration) {
-    const data = readJson(m[key] || pathFor(m.activeGeneration, kind));
-    if (data !== null) return data;
-  }
-  if (m && m.previousGeneration) {
-    const data = readJson(pathFor(m.previousGeneration, kind));
-    if (data !== null) return data;
-  }
-  return [];
 }
 
 // Phase 3 PR-E: Canonical active-generation reader. Consumers (Compiler,
@@ -71,21 +59,51 @@ function readOrigin() {
   }
 }
 
+function helperLogEvent(severity, code, details) {
+  flash(JSON.stringify({ timestamp: Date.now(), generationId: global('TDS_Active_Generation') || null,
+    component: "TDS_Helper", severity: severity, code: code, tripId: details && details.tripId || null, details: details || {} }));
+}
+
 try {
   const par1 = local("par1");
   const par2 = local("par2");
-  if (par2 !== "") throw new Error("TDS_Helper generic setter is removed");
+  if (par2 !== "") {
+    helperLogEvent("warn", "HELPER_REQUEST_REJECTED", { reason: "generic setter is removed", par1: par1 });
+    throw new Error("TDS_Helper generic setter is removed");
+  }
   const parts = String(par1).split(":");
   let result;
   if (parts[0] === "readOrigin") {
+    // REQ-4HELPER-1: readOrigin takes NO suffix — exactly one token. Empty
+    // or surplus tokens (readOrigin:, readOrigin::bogus) are malformed and
+    // MUST be rejected.
+    if (parts.length !== 1 || parts[1] !== undefined) {
+      helperLogEvent("warn", "HELPER_REQUEST_REJECTED", { reason: "readOrigin takes no suffix", par1: par1 });
+      throw new Error("TDS_Helper: readOrigin suffix rejected: " + par1);
+    }
     result = readOrigin();
   } else if (parts[0] === "readActiveGeneration") {
-    result = readActiveGeneration(parts[1] || "master");
-  } else if (parts[0] === "events" || parts[0] === "master" || parts[0] === "itinerary") {
-    result = readActive(parts[0]);
+    // REQ-4HELPER-1: exactly one optional kind token with a non-empty value
+    // in events|master|itinerary. Empty or surplus tokens (readActiveGeneration:,
+    // readActiveGeneration:master:bogus, readActiveGeneration::bogus) are
+    // malformed and MUST be rejected.
+    if (parts.length > 2) {
+      helperLogEvent("warn", "HELPER_REQUEST_REJECTED", { reason: "readActiveGeneration surplus tokens", par1: par1 });
+      throw new Error("TDS_Helper: readActiveGeneration surplus rejected: " + par1);
+    }
+    const kind = parts[1];
+    if (kind === undefined || kind === "") {
+      helperLogEvent("warn", "HELPER_REQUEST_REJECTED", { reason: "readActiveGeneration empty kind", par1: par1 });
+      throw new Error("TDS_Helper: readActiveGeneration empty kind rejected: " + par1);
+    }
+    if (kind !== "events" && kind !== "master" && kind !== "itinerary") {
+      helperLogEvent("warn", "HELPER_REQUEST_REJECTED", { reason: "unknown readActiveGeneration kind", par1: par1 });
+      throw new Error("TDS_Helper: unknown kind rejected: " + par1);
+    }
+    result = readActiveGeneration(kind);
   } else {
-    const arr = readJson(PHASE2_DATA_DIR + parts[0] + ".json") || [];
-    result = arr[parseInt(parts[1], 10)][parts[2]];
+    helperLogEvent("warn", "HELPER_REQUEST_REJECTED", { reason: "unknown helper operation", par1: par1 });
+    throw new Error("TDS_Helper: unknown operation rejected: " + par1);
   }
   setLocal("return_value", typeof result === "string" ? result : JSON.stringify(result));
 } catch (e) {

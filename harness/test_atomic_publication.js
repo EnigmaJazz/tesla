@@ -64,16 +64,16 @@ function testResolver() {
   files[DATA + 'TDS_Master.gen_1700000000_ab12.json'] = JSON.stringify([{ id: 'evt1' }]);
   files[DATA + 'Itin_Master.gen_1700000000_ab12.json'] = JSON.stringify([{ tripId: 'leg1' }]);
   files[DATA + 'TDS_Events.gen_1700000000_ab12.json'] = JSON.stringify([{ eventId: 'evt1' }]);
-  assert.deepEqual(JSON.parse(runHelper(files, 'master')), [{ id: 'evt1' }]);
-  assert.deepEqual(JSON.parse(runHelper(files, 'itinerary')), [{ tripId: 'leg1' }]);
-  assert.deepEqual(JSON.parse(runHelper(files, 'events')), [{ eventId: 'evt1' }]);
+  assert.deepEqual(JSON.parse(runHelper(files, 'readActiveGeneration:master')), [{ id: 'evt1' }]);
+  assert.deepEqual(JSON.parse(runHelper(files, 'readActiveGeneration:itinerary')), [{ tripId: 'leg1' }]);
+  assert.deepEqual(JSON.parse(runHelper(files, 'readActiveGeneration:events')), [{ eventId: 'evt1' }]);
 
   const priorFiles = prior();
   priorFiles[MANIFEST] = JSON.stringify(Object.assign(JSON.parse(priorFiles[MANIFEST]), { state: 'failed' }));
   priorFiles[DATA + 'TDS_Master.gen_1699999999_0001.json'] = 'CORRUPT';
-  assert.deepEqual(JSON.parse(runHelper(priorFiles, 'master')), [], 'TDS_Helper must refuse a failed manifest active generation');
+  assert.deepEqual(JSON.parse(runHelper(priorFiles, 'readActiveGeneration:master')), [], 'TDS_Helper must refuse a failed manifest active generation');
 
-  assert.deepEqual(JSON.parse(runHelper({}, 'master')), []);
+  assert.deepEqual(JSON.parse(runHelper({}, 'readActiveGeneration:master')), []);
 
   const { sandbox, store } = make();
   sandbox.setLocal('par1', 'master:0:id');
@@ -378,7 +378,7 @@ function testReaderFallback() {
     targetCoords: '52.1,-2.2'
   }]);
 
-  assert.deepEqual(JSON.parse(runHelper(files, 'master')), [{ id: 'prior' }], 'TDS_Helper should fall back to prior generation when active is corrupt');
+  assert.deepEqual(JSON.parse(runHelper(files, 'readActiveGeneration:master')), [{ id: 'prior' }], 'TDS_Helper should fall back to prior generation when active is corrupt');
 
   const DISPATCHER = path.resolve(__dirname, '..', 'Dispatcher.js');
   const { sandbox, store } = createSandbox({ files: files, globals: { Current_Status: 'Idle' }, nowMs: nowSec * 1000 });
@@ -412,8 +412,8 @@ function testReadersRequireCommittedState() {
   files[DATA + 'TDS_Master.gen_1700000000_cd34.json'] = JSON.stringify([{ id: 'evt1' }]);
   files[DATA + 'Itin_Master.gen_1700000000_cd34.json'] = JSON.stringify([{ tripId: 'leg1', mode: 'DRIVE', departUnix: nowSec + 3600, arriveUnix: nowSec + 5400, targetTitle: 'Work' }]);
 
-  assert.deepEqual(JSON.parse(runHelper(files, 'master')), [], 'TDS_Helper must refuse a building manifest');
-  assert.deepEqual(JSON.parse(runHelper(files, 'itinerary')), [], 'TDS_Helper itinerary must refuse a building manifest');
+  assert.deepEqual(JSON.parse(runHelper(files, 'readActiveGeneration:master')), [], 'TDS_Helper must refuse a building manifest');
+  assert.deepEqual(JSON.parse(runHelper(files, 'readActiveGeneration:itinerary')), [], 'TDS_Helper itinerary must refuse a building manifest');
 
   const DISPATCHER = path.resolve(__dirname, '..', 'Dispatcher.js');
   const { sandbox, store } = createSandbox({ files: files, globals: { Current_Status: 'Idle' }, nowMs: nowSec * 1000 });
@@ -425,8 +425,8 @@ function testReadersRequireCommittedState() {
   const committedManifest = JSON.parse(files[MANIFEST]);
   committedManifest.state = 'committed';
   files[MANIFEST] = JSON.stringify(committedManifest);
-  assert.deepEqual(JSON.parse(runHelper(files, 'master')), [{ id: 'evt1' }], 'TDS_Helper must serve committed manifest');
-  const itin = JSON.parse(runHelper(files, 'itinerary'));
+  assert.deepEqual(JSON.parse(runHelper(files, 'readActiveGeneration:master')), [{ id: 'evt1' }], 'TDS_Helper must serve committed manifest');
+  const itin = JSON.parse(runHelper(files, 'readActiveGeneration:itinerary'));
   assert.strictEqual(itin[0].tripId, 'leg1', 'TDS_Helper itinerary must serve committed manifest');
 }
 
