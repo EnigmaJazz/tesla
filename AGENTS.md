@@ -57,6 +57,7 @@ commit.
 | `TDS_Overrides.json`, `TDS_Routine_Preferences.json` | Override Handler |
 | `TDS_Manual_Trips.json`, `TDS_Action_Sessions.json` | Manual Action Handler |
 | `TDS_Route_Cache.json`, `TDS_Order_Cache.json` | Route Cache Manager |
+| `TDS_Reorder_Commands.json` | State Command enqueues; Generation Publisher drains and clears |
 
 Any other script that writes one of these is a bug.
 
