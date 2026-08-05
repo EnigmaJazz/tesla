@@ -243,6 +243,22 @@ try {
   const rawStale = logsWithCode(raw.store, 'STALE_API_RESPONSE_DISCARDED');
   assert(rawStale.length === 1, 'raw callback without envelope must be discarded (got ' + rawStale.length + ')');
   assert(logsWithCode(raw.store, 'ROUTE_RESPONSE_ACCEPTED').length === 0, 'raw callback must never be accepted');
+
+  // REQ-5REQID-2/3: a truthy STRING or ARRAY response is stale — the response
+  // member must be an object, never accepted or consumed.
+  const strResp = runRegisteredClusterFlow();
+  strResp.sandbox.writeFile(TEMP_PAYLOAD, JSON.stringify({ correlation: strResp.correlation, response: 'oops' }));
+  runScript(PARSER, strResp.sandbox, strResp.store);
+  if (strResp.store.runError) throw new Error('API_Parser crashed on string response: ' + JSON.stringify(strResp.store.runError));
+  assert.strictEqual(strResp.sandbox.local('par1'), '', 'string response must stage no mutation');
+  assert(logsWithCode(strResp.store, 'STALE_API_RESPONSE_DISCARDED').length === 1, 'string response must be discarded');
+
+  const arrResp = runRegisteredClusterFlow();
+  arrResp.sandbox.writeFile(TEMP_PAYLOAD, JSON.stringify({ correlation: arrResp.correlation, response: ['a', 'b'] }));
+  runScript(PARSER, arrResp.sandbox, arrResp.store);
+  if (arrResp.store.runError) throw new Error('API_Parser crashed on array response: ' + JSON.stringify(arrResp.store.runError));
+  assert.strictEqual(arrResp.sandbox.local('par1'), '', 'array response must stage no mutation');
+  assert(logsWithCode(arrResp.store, 'STALE_API_RESPONSE_DISCARDED').length === 1, 'array response must be discarded');
 } catch (e) {
   fail('accepted correlation section threw: ' + (e && e.message ? e.message : e));
 }
