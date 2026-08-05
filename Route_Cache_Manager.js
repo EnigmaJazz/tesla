@@ -216,20 +216,28 @@ function rcmReadOrderCache(nowSec) {
   return { schemaVersion: RCM_SCHEMA_VERSION, updatedAt: nowSec, entries: rcmFilterOrderEntries({ entries: rcmMigrateOrderText(nowSec) }, nowSec) };
 }
 
-// REQ-5CACHE-2: reads MUST treat expired and nonpositive entries as misses
-// (they never surface through CACHE_READ). Wrong-bucket/duplicate entries are
-// pruned by exact-key construction; per-entry TTL + positivity filtering here
-// keeps CACHE_READ output valid even when the JSON file was written by an
-// older writer or tampered with. Each filter returns ONLY the filtered entries
-// map; the callers wrap it in the cache envelope.
+// REQ-5CACHE-2/3: reads MUST treat expired, nonpositive, malformed, and
+// key/bucket-mismatched entries as misses (CACHE_ENTRY_REJECTED per drop).
+// Wrong-bucket/duplicate entries are pruned by exact-key reconstruction:
+// an entry is kept only when its stored key equals the key rebuilt from its
+// own fields. Each filter returns ONLY the filtered entries map; the callers
+// wrap it in the cache envelope.
 function rcmFilterRouteEntries(obj, nowSec) {
   const out = {};
   const keys = Object.keys(obj.entries || {});
   for (let i = 0; i < keys.length; i++) {
     const e = obj.entries[keys[i]];
-    if (!e) continue;
+    if (!e || typeof e !== "object") { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "route entry not an object", key: keys[i] }); continue; }
+    if (typeof e.originCell !== "string" || typeof e.destinationCell !== "string" || typeof e.mode !== "string"
+        || typeof e.meanDurationSecs !== "number" || typeof e.sampleCount !== "number" || typeof e.m2 !== "number"
+        || typeof e.createdAt !== "number" || typeof e.updatedAt !== "number") {
+      rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "route entry malformed fields", key: keys[i] }); continue;
+    }
     if (typeof e.expiresAt !== "number" || e.expiresAt <= nowSec) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "route entry expired", key: keys[i], expiresAt: e.expiresAt }); continue; }
-    if (typeof e.meanDurationSecs !== "number" || !(e.meanDurationSecs > 0)) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "route entry nonpositive duration", key: keys[i] }); continue; }
+    if (!(e.meanDurationSecs > 0)) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "route entry nonpositive duration", key: keys[i] }); continue; }
+    const dayClass = typeof e.dayClass === "number" ? e.dayClass : 0;
+    const rebuilt = rcmRouteKey(e.originCell, e.destinationCell, e.mode, e.bucket === undefined ? null : e.bucket, dayClass);
+    if (rebuilt !== keys[i]) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "route key/bucket mismatch", key: keys[i], rebuilt: rebuilt }); continue; }
     out[keys[i]] = e;
   }
   return out;
@@ -239,9 +247,16 @@ function rcmFilterTempEntries(obj, nowSec) {
   const keys = Object.keys(obj.entries || {});
   for (let i = 0; i < keys.length; i++) {
     const e = obj.entries[keys[i]];
-    if (!e) continue;
+    if (!e || typeof e !== "object") { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "temp entry not an object", key: keys[i] }); continue; }
+    if (typeof e.originCell !== "string" || typeof e.destinationCell !== "string" || typeof e.mode !== "string"
+        || typeof e.meanDurationSecs !== "number" || typeof e.sampleCount !== "number" || typeof e.m2 !== "number"
+        || typeof e.apiUnix !== "number" || typeof e.targetUnix !== "number") {
+      rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "temp entry malformed fields", key: keys[i] }); continue;
+    }
     if (typeof e.expiresAt !== "number" || e.expiresAt <= nowSec) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "temp entry expired", key: keys[i], expiresAt: e.expiresAt }); continue; }
-    if (typeof e.meanDurationSecs !== "number" || !(e.meanDurationSecs > 0)) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "temp entry nonpositive duration", key: keys[i] }); continue; }
+    if (!(e.meanDurationSecs > 0)) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "temp entry nonpositive duration", key: keys[i] }); continue; }
+    const rebuilt = rcmTempKey(e.originCell, e.destinationCell, e.mode, e.apiUnix);
+    if (rebuilt !== keys[i]) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "temp key mismatch", key: keys[i], rebuilt: rebuilt }); continue; }
     out[keys[i]] = e;
   }
   return out;
@@ -251,8 +266,13 @@ function rcmFilterOrderEntries(obj, nowSec) {
   const keys = Object.keys(obj.entries || {});
   for (let i = 0; i < keys.length; i++) {
     const e = obj.entries[keys[i]];
-    if (!e) continue;
+    if (!e || typeof e !== "object") { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "order entry not an object", key: keys[i] }); continue; }
+    if (typeof e.clusterKey !== "string" || !Array.isArray(e.result)
+        || typeof e.createdAt !== "number" || typeof e.updatedAt !== "number") {
+      rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "order entry malformed fields", key: keys[i] }); continue;
+    }
     if (typeof e.expiresAt !== "number" || e.expiresAt <= nowSec) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "order entry expired", key: keys[i], expiresAt: e.expiresAt }); continue; }
+    if (e.clusterKey !== keys[i]) { rcmLog("warn", "CACHE_ENTRY_REJECTED", { reason: "order key mismatch", key: keys[i], clusterKey: e.clusterKey }); continue; }
     out[keys[i]] = e;
   }
   return out;
