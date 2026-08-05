@@ -258,6 +258,29 @@ try {
   if (!zdItin) fail('zero-duration: published itinerary was not found');
   if (zdItin.length !== 1) fail('zero-duration: rejected leg must not publish (expected only the stale leg, 1), got ' + zdItin.length);
 
+  // Sub-test (verify fix): PARTIAL API pair {duration: 1800, distance: 0} with
+  // no later tier must NOT publish with distanceMiles 0. The incomplete pair is
+  // rejected as zero-duration (INV-0.7 complete-metric contract).
+  const partialStore = runWithMetrics({ api_duration_secs: "1800", api_distance_miles: "0" });
+  if (partialStore.runError) fail('partial-pair fixture threw: ' + partialStore.runError.message);
+  const partialFlash = partialStore.flashLog.find(function (m) { return m.indexOf('ZERO_DURATION_LEG_REJECTED') !== -1; });
+  if (!partialFlash) fail('partial-pair: expected ZERO_DURATION_LEG_REJECTED flash for incomplete metric pair');
+  const partialItin = readActiveItinerary(partialStore);
+  if (!partialItin) fail('partial-pair: published itinerary was not found');
+  if (partialItin.length !== 1) fail('partial-pair: incomplete-metric leg must not publish (expected only the stale leg, 1), got ' + partialItin.length);
+
+  // Sub-test: PARTIAL pair WITH a valid Sandbox tier must use the Sandbox
+  // metrics (fallback, not rejection) — the pair is only rejected when every
+  // later tier also fails.
+  const partialSbStore = runWithMetrics({ api_duration_secs: "1800", api_distance_miles: "0", block_step17: "2400", block_step18: "12.5" });
+  if (partialSbStore.runError) fail('partial-pair+sandbox fixture threw: ' + partialSbStore.runError.message);
+  const partialSbItin = readActiveItinerary(partialSbStore);
+  if (!partialSbItin) fail('partial-pair+sandbox: published itinerary was not found');
+  if (partialSbItin.length !== 2) fail('partial-pair+sandbox: expected 2 legs (stale + head), got ' + partialSbItin.length);
+  const partialSbHead = partialSbItin[1];
+  assert.equal(partialSbHead.durationSecs, 2400, 'partial-pair+sandbox: should consume the Sandbox duration');
+  assert.equal(partialSbHead.distanceMiles, 12.5, 'partial-pair+sandbox: should consume the Sandbox distance');
+
   console.log('PASS: AC-1 Compiler: explicit departurePolicy consumed; isPrevBase reconstruction removed');
   console.log('  ASAP departUnix = ' + asapHead.departUnix + ' (hardFloor = ' + expectedHardFloor + ')');
   console.log('  JIT  departUnix = ' + jitHead.departUnix + ' (max = ' + Math.max(expectedHardFloor, expectedDepTarget) + ', depTarget = ' + expectedDepTarget + ')');
