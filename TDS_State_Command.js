@@ -33,6 +33,33 @@ OVERRIDE_COMMANDS.forEach(function (c) { OWNER[c] = "Override_Handler"; });
 MANUAL_COMMANDS.forEach(function (c) { OWNER[c] = "Manual_Action_Handler"; });
 PUBLISHER_COMMANDS.forEach(function (c) { OWNER[c] = "Generation_Publisher"; });
 
+// Minimal pre-invocation field/type contract (REQ-4CMD-1): the router
+// guarantees these fields before any owner is invoked; owner-level semantic
+// validation stays with the owner. Every reducer payload requires
+// generationId (the reducer's validateCommon contract).
+const REDUCER_REQUIRED_FIELDS = {
+  SET_OVERRIDE: ["generationId"],
+  REMOVE_OVERRIDE: ["generationId"],
+  DEPART_NOW: ["generationId"],
+  RETURN_TO_BASE: ["generationId"],
+  COMPLETE_STOP: ["generationId", "stopId"],
+  START_UNPLANNED_STOP: ["generationId"],
+  END_UNPLANNED_STOP: ["generationId"],
+  COMPLETE_DROPIN: ["generationId"],
+  CANCEL_ACTION: ["generationId"],
+  RESET_ACTIONS: ["generationId"],
+  OBSERVE_DEPARTURE: ["generationId"],
+  OBSERVE_ARRIVAL: ["generationId"],
+  RECONCILE_GENERATION: ["generationId"],
+  COMPLETE_TRIP: ["generationId", "tripId", "at"],
+  EXPIRE_TRIP: ["generationId"],
+  OBSERVE_LIVE_BASE: ["generationId", "at"]
+};
+
+// Trusted reorder producers (REQ-4REORDER-2): a legacy-null generationId is
+// permitted only from a known producer; unknown/empty sources are rejected.
+const STATE_CMD_TRUSTED_SOURCES = { "Gatekeeper": true, "API_Parser": true };
+
 // Manual commands whose real handler lands in Slice B; rejected in Slice A.
 const MANUAL_PENDING = { SESSION_OPEN: true, SESSION_CLOSE: true, RELEASE: true };
 
@@ -87,6 +114,16 @@ function validateCommand(command, payload) {
   } else if (command === "PUBLISH_GENERATION") {
     if (!Array.isArray(payload.events) || !Array.isArray(payload.master) || !Array.isArray(payload.itinerary)) {
       return "publish candidate must carry events/master/itinerary arrays";
+    }
+  } else if (REDUCER_REQUIRED_FIELDS[command]) {
+    // Every reducer command carries generationId (reducer validateCommon
+    // contract); COMPLETE_TRIP/COMPLETE_STOP/OBSERVE_* add their mandatory
+    // fields. The router rejects an incomplete payload BEFORE the owner runs.
+    for (let i = 0; i < REDUCER_REQUIRED_FIELDS[command].length; i++) {
+      const field = REDUCER_REQUIRED_FIELDS[command][i];
+      if (payload[field] === undefined || payload[field] === null || payload[field] === "") {
+        return "missing required field: " + field;
+      }
     }
   }
   return null;

@@ -453,13 +453,14 @@ function testReorderTiming() {
   const expectedGen = 'gen:' + nowSec + ':ab12';
   const files = prior();
   // Commands emitted before generation minting carry a null generationId;
-  // the Publisher applies them to the generation being published.
+  // the Publisher applies them to the generation being published. Phase 4
+  // (REQ-4REORDER-2): legacy-null is permitted only from a trusted producer.
   files[DATA + 'TDS_Reorder_Commands.json'] = JSON.stringify([{
     type: 'APPLY_CLUSTER_REORDER',
     generationId: null,
     clusterId: 'cluster-1',
     orderedEventIds: ['e3', 'e1', 'e2'],
-    source: 'test',
+    source: 'Gatekeeper',
     emittedAt: nowSec
   }]);
   const candidate = {
