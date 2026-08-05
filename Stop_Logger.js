@@ -41,9 +41,11 @@ try {
 
                 // Write the updated inventory to the transient global
                 setGlobal('TDS_Completed_Stops', currentStops);
-                // Phase 3 PR-C: stage COMPLETE_STOP for the Trip State Reducer.
-                // The transient global above is the read-side source for
-                // components that have not yet migrated to state.completedStops.
+                // Slice C (REQ-4ADAPTER-5): stage an exact COMPLETE_STOP for
+                // the Trip State Reducer — stable stopId, lastIndexOf trip
+                // core, never a direct state write. The transient global above
+                // remains the read-side source for components that have not
+                // yet migrated to state.completedStops.
                 let stopId = newStopEntry;
                 let tripId = evId.substring(0, evId.lastIndexOf("_"));
                 setLocal("par1", "COMPLETE_STOP");
