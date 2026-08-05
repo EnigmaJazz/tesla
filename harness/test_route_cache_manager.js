@@ -367,17 +367,17 @@ try {
   const seeded = createSandbox({
     files: {
       [ROUTE_JSON]: JSON.stringify({ schemaVersion: 1, updatedAt: nowSec, entries: {
-        'good~~key~~DRIVE~~900~~0': {
+        '1,1~~2,2~~DRIVE~~900~~0': {
           originCell: '1,1', destinationCell: '2,2', mode: 'DRIVE', dayClass: 0, bucket: 900,
           meanDurationSecs: 600, sampleCount: 1, m2: 0, distanceMiles: 100,
           createdAt: nowSec - 60, updatedAt: nowSec - 60, expiresAt: nowSec + RCM_TEST_FUTURE
         },
-        'expired~~key~~DRIVE~~900~~0': {
+        '3,3~~4,4~~DRIVE~~900~~0': {
           originCell: '3,3', destinationCell: '4,4', mode: 'DRIVE', dayClass: 0, bucket: 900,
           meanDurationSecs: 700, sampleCount: 1, m2: 0, distanceMiles: 100,
           createdAt: nowSec - 400000, updatedAt: nowSec - 400000, expiresAt: nowSec - 60
         },
-        'zero~~key~~DRIVE~~900~~0': {
+        '5,5~~6,6~~DRIVE~~900~~0': {
           originCell: '5,5', destinationCell: '6,6', mode: 'DRIVE', dayClass: 0, bucket: 900,
           meanDurationSecs: 0, sampleCount: 1, m2: 0, distanceMiles: 100,
           createdAt: nowSec - 60, updatedAt: nowSec - 60, expiresAt: nowSec + RCM_TEST_FUTURE
@@ -391,10 +391,39 @@ try {
   const filtered = JSON.parse(seeded.sandbox.local('cache_read_result'));
   const keptKeys = Object.keys(filtered.entries || {});
   assert.strictEqual(keptKeys.length, 1, 'CACHE_READ must drop expired + nonpositive entries (got ' + keptKeys.length + ': ' + keptKeys.join(',') + ')');
-  assert(keptKeys[0].indexOf('good') === 0, 'CACHE_READ must keep only the valid entry');
+  assert(keptKeys[0].indexOf('1,1~~2,2') === 0, 'CACHE_READ must keep only the valid entry');
   const rejectedLogs = (seeded.store.flashLog || []).map(function (f) { try { return JSON.parse(f); } catch (e) { return null; } })
     .filter(function (l) { return l && l.code === 'CACHE_ENTRY_REJECTED'; });
   assert(rejectedLogs.length >= 2, 'expired + nonpositive drops must log CACHE_ENTRY_REJECTED (got ' + rejectedLogs.length + ')');
+
+  // REQ-5CACHE-3: malformed and key/bucket-mismatched entries are also misses.
+  const malformed = createSandbox({
+    files: {
+      [ROUTE_JSON]: JSON.stringify({ schemaVersion: 1, updatedAt: nowSec, entries: {
+        'malformed~~key~~DRIVE~~900~~0': { originCell: '1,1' },
+        '1,1~~2,2~~DRIVE~~900~~0': {
+          originCell: '1,1', destinationCell: '2,2', mode: 'DRIVE', dayClass: 0, bucket: 900,
+          meanDurationSecs: 600, sampleCount: 1, m2: 0, distanceMiles: 100,
+          createdAt: nowSec - 60, updatedAt: nowSec - 60, expiresAt: nowSec + RCM_TEST_FUTURE
+        },
+        '9,9~~8,8~~WALK~~null~~0': {
+          originCell: '9,9', destinationCell: '8,8', mode: 'WALK', dayClass: 0, bucket: 900,
+          meanDurationSecs: 700, sampleCount: 1, m2: 0, distanceMiles: 100,
+          createdAt: nowSec - 60, updatedAt: nowSec - 60, expiresAt: nowSec + RCM_TEST_FUTURE
+        }
+      } })
+    },
+    nowMs: nowSec * 1000
+  });
+  const read3 = malformed.sandbox.cacheManager('CACHE_READ', { kind: 'route' });
+  assert(read3.indexOf('OK') === 0, 'CACHE_READ must succeed on malformed cache: ' + read3);
+  const filtered3 = JSON.parse(malformed.sandbox.local('cache_read_result'));
+  const kept3 = Object.keys(filtered3.entries || {});
+  assert.strictEqual(kept3.length, 1, 'CACHE_READ must drop malformed + key-mismatch entries (got ' + kept3.length + ': ' + kept3.join(',') + ')');
+  assert(kept3[0].indexOf('1,1~~2,2') === 0, 'CACHE_READ must keep only the structurally valid, key-consistent entry');
+  const rejectCount3 = (malformed.store.flashLog || []).map(function (f) { try { return JSON.parse(f); } catch (e) { return null; } })
+    .filter(function (l) { return l && l.code === 'CACHE_ENTRY_REJECTED'; }).length;
+  assert(rejectCount3 >= 2, 'malformed + mismatch drops must log CACHE_ENTRY_REJECTED (got ' + rejectCount3 + ')');
 } catch (e) {
   fail('CACHE_READ section threw: ' + (e && e.message ? e.message : e));
 }
