@@ -1,6 +1,9 @@
 // Phase 5 Slice B (REQ-5CACHE-1/2, RULE-8E, SCN-5CACHE-1..3): Route Cache
 // Manager sole-writer contract, JSON cache schemas, Alpha Welford parity, and
-// the Temp_Route_Cache multi-writer fix.
+// the Temp_Route_Cache multi-writer fix. Slice D closes the distanceMiles
+// deferral (the field holds actual miles, not meters) and retires the legacy
+// text projections (JSON is the only cache format; PRUNE deletes surviving
+// text files).
 //
 // Covered:
 //   Ownership guard   — TDS_Route_Cache.json / TDS_Order_Cache.json /
@@ -8,14 +11,19 @@
 //                       AND the legacy text projections (RouteCache.txt,
 //                       Temp_Route_Cache.txt, TDS_Order_Cache.txt) are writable
 //                       ONLY by Route_Cache_Manager. Direct writes are rejected
-//                       without file mutation (CACHE_WRITE_REJECTED).
+//                       without file mutation (CACHE_WRITE_REJECTED). Slice D
+//                       retires the text projections: the manager no longer
+//                       writes them and PRUNE deletes surviving text files.
 //   JSON schemas      — schemaVersion / updatedAt / exact-key entries; DRIVE
 //                       bucket is the exact tod, WALK bucket is null; Welford
-//                       fields (meanDurationSecs, sampleCount, m2), distance,
+//                       fields (meanDurationSecs, sampleCount, m2), distanceMiles
+//                       (REAL miles since Slice D — meters are converted via
+//                       1609.344 at write and at legacy migration),
 //                       createdAt/updatedAt/expiresAt TTL timestamps.
 //   Welford parity    — Alpha's capped-Welford/outlier rollup, run through the
-//                       manager, produces the identical RouteCache.txt bytes:
-//                       new entry, Welford update, outlier reset, z-score path.
+//                       manager, produces the identical Welford fields in the
+//                       JSON route cache: new entry, Welford update, outlier
+//                       reset, z-score path.
 //   Multi-writer fix  — Alpha and API_Parser no longer write the temp/route/
 //                       order cache files directly; they stage manager commands
 //                       (ROLLUP_DUE_TEMP / SESSION_CACHE_UPSERT /
@@ -62,7 +70,9 @@ function readJsonStore(store, filePath) {
 
 // Run the full production cycle on one sandbox: stage the session sample via
 // the manager, run Alpha (which stages ROLLUP_DUE_TEMP), then dispatch the
-// manager to commit due samples. Asserts the resulting cache text bytes.
+// manager to commit due samples. Asserts the resulting JSON cache entries
+// (Slice D: the text projections are retired, so parity is asserted on the
+// Welford fields of the JSON route cache).
 function commitViaAlpha(sample, files, expected) {
   const { sandbox, store } = createSandbox({
     globals: { TIMEMS: String(nowSec * 1000), Auto_Base_Hours: '3' },
@@ -79,8 +89,22 @@ function commitViaAlpha(sample, files, expected) {
   const result = sandbox.cacheManager('ROLLUP_DUE_TEMP', payload);
   assert(result.indexOf('OK') === 0, 'manager must accept ROLLUP_DUE_TEMP: ' + result);
   assert.strictEqual(sandbox.local('par1'), 'PRUNE', 'manager must re-stage the PRUNE command');
-  assert.strictEqual(store.files[ROUTE_TEXT], expected.routeText, 'RouteCache.txt must match the legacy rollup bytes');
-  assert.strictEqual(store.files[TEMP_TEXT], expected.tempText, 'Temp_Route_Cache.txt must match the legacy rollup bytes');
+  assert.strictEqual(store.files[ROUTE_TEXT], undefined, 'RouteCache.txt projection must be retired (JSON only)');
+  assert.strictEqual(store.files[TEMP_TEXT], undefined, 'Temp_Route_Cache.txt projection must be retired (JSON only)');
+  const route = readJsonStore(store, ROUTE_JSON);
+  const routeEntries = (route && route.entries) ? route.entries : {};
+  const rKeys = Object.keys(routeEntries);
+  assert.strictEqual(rKeys.length, expected.entryCount, 'route JSON must hold ' + expected.entryCount + ' entry(ies), got ' + rKeys.length);
+  if (expected.entryCount > 0) {
+    const e = routeEntries[rKeys[0]];
+    assert.strictEqual(e.meanDurationSecs, expected.mean, 'Welford mean must match the legacy rollup');
+    assert.strictEqual(e.sampleCount, expected.n, 'Welford sampleCount must match');
+    assert.strictEqual(e.m2, expected.m2, 'Welford m2 must match');
+    assert.strictEqual(e.bucket, expected.bucket, 'DRIVE bucket must stay the exact tod');
+  }
+  const temp = readJsonStore(store, TEMP_JSON);
+  const tempKeys = (temp && temp.entries) ? Object.keys(temp.entries) : [];
+  assert.strictEqual(tempKeys.length, expected.tempCount, 'temp JSON must hold ' + expected.tempCount + ' sample(s), got ' + tempKeys.length);
   return store;
 }
 function sample(dur, apiUnix) {
@@ -151,12 +175,11 @@ try {
   assert.strictEqual(sample.meanDurationSecs, 1800, 'sample meanDurationSecs');
   assert.strictEqual(sample.sampleCount, 1, 'sample sampleCount');
   assert.strictEqual(sample.m2, 0, 'sample m2');
-  assert.strictEqual(sample.distanceMiles, 12000, 'sample distance');
+  assert(Math.abs(sample.distanceMiles - (12000 / 1609.344)) < 0.001, 'sample distanceMiles must hold actual miles, got ' + sample.distanceMiles);
   assert.strictEqual(sample.createdAt, nowSec, 'sample createdAt');
   assert.strictEqual(sample.expiresAt, nowSec + 24 * 3600, 'sample temp TTL must be 24h');
   assert.strictEqual(sample.targetUnix, nowSec, 'sample targetUnix (event time)');
-  assert.strictEqual(store.files[TEMP_TEXT], '51.9,-2.1~51.5,-2.0~DRIVE~1800~12000~' + nowSec + '~' + nowSec,
-    'temp text projection must match the legacy session format');
+  assert.strictEqual(store.files[TEMP_TEXT], undefined, 'temp text projection must be retired (JSON only)');
 
   // Rollup commits the due sample into the master cache with exact DRIVE bucket.
   sandbox.cacheManager('ROLLUP_DUE_TEMP', { nowSec: nowSec });
@@ -173,16 +196,16 @@ try {
   assert.strictEqual(entry.meanDurationSecs, 1800, 'entry meanDurationSecs');
   assert.strictEqual(entry.sampleCount, 1, 'entry sampleCount');
   assert.strictEqual(entry.m2, 0, 'entry m2');
-  assert.strictEqual(entry.distanceMiles, 12000, 'entry distance');
+  assert(Math.abs(entry.distanceMiles - (12000 / 1609.344)) < 0.001, 'entry distanceMiles must hold actual miles, got ' + entry.distanceMiles);
   assert.strictEqual(entry.createdAt, nowSec, 'entry createdAt');
   assert.strictEqual(entry.updatedAt, nowSec, 'entry updatedAt');
   assert.strictEqual(entry.expiresAt, nowSec + 30 * 86400, 'entry master TTL must be 30 days');
-  assert.strictEqual(store.files[ROUTE_TEXT], '51.9,-2.1~51.5,-2.0~DRIVE~1800~12000~' + nowSec + '~0~1333~0~1',
-    'route text projection must match the legacy rollup bytes');
-  assert.strictEqual(store.files[TEMP_TEXT], '', 'consumed temp sample must leave an empty temp cache');
+  assert.strictEqual(store.files[ROUTE_TEXT], undefined, 'route text projection must be retired (JSON only)');
+  const tempAfterRollup = readJsonStore(store, TEMP_JSON);
+  assert.strictEqual(Object.keys(tempAfterRollup.entries).length, 0, 'consumed temp sample must leave an empty temp cache');
 
-  // WALK: bucket is null in JSON; the text projection stays parseable and the
-  // reader-visible mean is preserved (WALK tod is a dead text field).
+  // WALK: bucket is null in JSON; the reader-visible mean is preserved and
+  // the WALK tod is a dead field (unbucketed caching per CACHE-11).
   sandbox.cacheManager('SESSION_CACHE_UPSERT', {
     origin: '52.0,-2.3', destination: '51.7,-2.1', mode: 'WALK',
     durationSecs: 900, distanceMeters: 1100, apiUnix: nowSec, targetUnix: nowSec,
@@ -195,9 +218,7 @@ try {
   assert(walkEntry, 'WALK entry must exist');
   assert.strictEqual(walkEntry.bucket, null, 'WALK bucket must be null');
   assert.strictEqual(walkEntry.meanDurationSecs, 900, 'WALK mean must be preserved');
-  const walkText = store.files[ROUTE_TEXT].split('|').filter(function (l) { return l.indexOf('WALK') !== -1; })[0];
-  assert(walkText && walkText.split('~').length === 10, 'WALK text entry must stay 10-field parseable');
-  assert.strictEqual(parseInt(walkText.split('~')[3], 10), 900, 'readers must select the WALK mean 900');
+  assert(Math.abs(walkEntry.distanceMiles - (1100 / 1609.344)) < 0.001, 'WALK distanceMiles must be miles');
 
   // Order cache schema + ENQUEUE_REORDER re-stage.
   const { sandbox: s2, store: st2 } = createSandbox({ files: {}, nowMs: nowSec * 1000 });
@@ -209,7 +230,7 @@ try {
   const order = readJsonStore(st2, ORDER_JSON);
   assert(order && order.schemaVersion === 1, 'order cache must exist with schemaVersion 1');
   assert.strictEqual(order.entries['51.9,-2.1|dest1|wp1,wp2'].result.join(','), 'wp2,wp1', 'order result must be stored');
-  assert.strictEqual(st2.files[ORDER_TEXT], '51.9,-2.1|dest1|wp1,wp2|wp2,wp1', 'order text projection must match the legacy line format');
+  assert.strictEqual(st2.files[ORDER_TEXT], undefined, 'order text projection must be retired (JSON only)');
   assert.strictEqual(s2.local('par1'), 'ENQUEUE_REORDER', 'manager must re-stage ENQUEUE_REORDER');
   assert.deepStrictEqual(JSON.parse(s2.local('par2')).orderedEventIds, ['wp2', 'wp1'], 're-staged reorder must carry the ordered ids');
 
@@ -230,40 +251,19 @@ try {
 
 try {
   // A: fresh entry from a due session measurement.
-  let store = commitViaAlpha(sample(1800, nowSec), {}, {
-    routeText: '51.9,-2.1~51.5,-2.0~DRIVE~1800~12000~' + nowSec + '~0~1333~0~1',
-    tempText: ''
-  });
+  let store = commitViaAlpha(sample(1800, nowSec), {}, { entryCount: 1, mean: 1800, n: 1, m2: 0, bucket: 1333, tempCount: 0 });
   // B: Welford update (n 1 -> 2): mean 1950, m2 45000.
-  store = commitViaAlpha(sample(2100, nowSec + 1), store.files, {
-    routeText: '51.9,-2.1~51.5,-2.0~DRIVE~1950~12000~' + nowSec + '~45000~1333~0~2',
-    tempText: ''
-  });
+  store = commitViaAlpha(sample(2100, nowSec + 1), store.files, { entryCount: 1, mean: 1950, n: 2, m2: 45000, bucket: 1333, tempCount: 0 });
   // C: ratio outlier reset (n 2 -> 1): 7000 > 3 * 1950.
-  store = commitViaAlpha(sample(7000, nowSec + 2), store.files, {
-    routeText: '51.9,-2.1~51.5,-2.0~DRIVE~1950~12000~' + nowSec + '~45000~1333~0~1',
-    tempText: ''
-  });
+  store = commitViaAlpha(sample(7000, nowSec + 2), store.files, { entryCount: 1, mean: 1950, n: 1, m2: 45000, bucket: 1333, tempCount: 0 });
   // D: update (n 1 -> 2): mean 1975, m2 46250.
-  store = commitViaAlpha(sample(2000, nowSec + 3), store.files, {
-    routeText: '51.9,-2.1~51.5,-2.0~DRIVE~1975~12000~' + nowSec + '~46250~1333~0~2',
-    tempText: ''
-  });
+  store = commitViaAlpha(sample(2000, nowSec + 3), store.files, { entryCount: 1, mean: 1975, n: 2, m2: 46250, bucket: 1333, tempCount: 0 });
   // E: update (n 2 -> 3): mean 1983, m2 46667.
-  store = commitViaAlpha(sample(2000, nowSec + 4), store.files, {
-    routeText: '51.9,-2.1~51.5,-2.0~DRIVE~1983~12000~' + nowSec + '~46667~1333~0~3',
-    tempText: ''
-  });
+  store = commitViaAlpha(sample(2000, nowSec + 4), store.files, { entryCount: 1, mean: 1983, n: 3, m2: 46667, bucket: 1333, tempCount: 0 });
   // F: z-score path (n 3 -> 4): z = 117/152.75 < 2.0 -> accepted; mean 2012, m2 56934.
-  store = commitViaAlpha(sample(2100, nowSec + 5), store.files, {
-    routeText: '51.9,-2.1~51.5,-2.0~DRIVE~2012~12000~' + nowSec + '~56934~1333~0~4',
-    tempText: ''
-  });
+  store = commitViaAlpha(sample(2100, nowSec + 5), store.files, { entryCount: 1, mean: 2012, n: 4, m2: 56934, bucket: 1333, tempCount: 0 });
   // G: un-expired samples stay in the temp cache (keep-until-event semantics).
-  const keep = commitViaAlpha(Object.assign(sample(2400, nowSec + 6), { targetUnix: nowSec + 3600 }), store.files, {
-    routeText: '51.9,-2.1~51.5,-2.0~DRIVE~2012~12000~' + nowSec + '~56934~1333~0~4',
-    tempText: '51.9,-2.1~51.5,-2.0~DRIVE~2400~12000~' + (nowSec + 6) + '~' + (nowSec + 3600)
-  });
+  const keep = commitViaAlpha(Object.assign(sample(2400, nowSec + 6), { targetUnix: nowSec + 3600 }), store.files, { entryCount: 1, mean: 2012, n: 4, m2: 56934, bucket: 1333, tempCount: 1 });
   assert(keep, 'keep-until-event run must complete');
 } catch (e) {
   fail('Welford parity section threw: ' + (e && e.message ? e.message : e));
@@ -538,10 +538,15 @@ try {
   assert.strictEqual(migrated.meanDurationSecs, 1200, 'migrated mean must be preserved');
   assert.strictEqual(migrated.sampleCount, 5, 'migrated sampleCount must be preserved');
   assert.strictEqual(migrated.bucket, 1000, 'migrated DRIVE bucket must be the tod');
+  assert(Math.abs(migrated.distanceMiles - (8000 / 1609.344)) < 0.001, 'migrated distanceMiles must convert meters to miles');
   const temp = readJsonStore(st2, TEMP_JSON);
   assert(temp && Object.keys(temp.entries).length === 1, 'legacy temp sample must migrate');
   const order = readJsonStore(st2, ORDER_JSON);
   assert(order && order.entries['52.0,-2.3|dest2|wp1,wp2'], 'legacy order line must migrate');
+  // Slice D text retirement: PRUNE deletes the legacy text files after migration.
+  assert.strictEqual(st2.files[ROUTE_TEXT], undefined, 'PRUNE must delete RouteCache.txt');
+  assert.strictEqual(st2.files[TEMP_TEXT], undefined, 'PRUNE must delete Temp_Route_Cache.txt');
+  assert.strictEqual(st2.files[ORDER_TEXT], undefined, 'PRUNE must delete TDS_Order_Cache.txt');
 } catch (e) {
   fail('migration/PRUNE section threw: ' + (e && e.message ? e.message : e));
 }

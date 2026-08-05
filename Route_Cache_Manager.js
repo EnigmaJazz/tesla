@@ -42,9 +42,13 @@
 // Migration: on first read of a JSON cache that is absent while the legacy
 // text file exists, the text is parsed into the JSON schema (legacy-tolerant:
 // short/garbage rows are skipped; nonpositive durations are misses per
-// REQ-5CACHE-2). The text files remain as byte-faithful projections so the
-// unchanged readers (Gatekeeper, Sandbox) keep selecting identically; Slice D
-// retires the text projections.
+// REQ-5CACHE-2). Slice D retires the text projections: the manager no longer
+// writes RouteCache.txt / Temp_Route_Cache.txt / TDS_Order_Cache.txt, the
+// readers (Gatekeeper, Sandbox) consume the JSON caches read-only, and PRUNE
+// deletes any surviving legacy text files after migration. The JSON distance
+// field contract is REAL MILES: SESSION_CACHE_UPSERT still receives meters
+// (the command contract), and every entry stores distanceMiles converted from
+// meters via RCM_METERS_PER_MILE (the Slice-B deferral closes here).
 //
 // Top-level identifiers use unique RCM_-prefixed names (var) so the shared
 // harness vm context never sees a redeclaration, matching TDS_State_Command.
@@ -54,6 +58,7 @@ var RCM_MASTER_TTL_SECS = 30 * 86400;     // CACHE-11 master cache retention
 var RCM_TEMP_TTL_SECS = 24 * 3600;        // session samples
 var RCM_ORDER_TTL_SECS = 7 * 86400;       // cluster order cache
 var RCM_REQUEST_TTL_SECS = 2 * 3600;      // request correlation records
+var RCM_METERS_PER_MILE = 1609.344;       // distanceMiles field unit (Slice D)
 var RCM_WALK = "WALK";
 var RCM_WELFORD_CAP = 20;                 // Alpha's capped-Welford n ceiling
 var RCM_BUCKET_WINDOW_MINS = 60;          // time-bucket tolerance (minutes)
@@ -81,6 +86,9 @@ function rcmReadJson(path) {
 }
 function rcmIsObject(v) { return v !== null && typeof v === "object" && !Array.isArray(v); }
 function rcmIsNonEmptyString(v) { return typeof v === "string" && v.length > 0; }
+// The JSON schema field is named distanceMiles and holds actual miles; the
+// command contract (distanceMeters) and legacy text rows both carry meters.
+function rcmMetersToMiles(meters) { return meters / RCM_METERS_PER_MILE; }
 
 // Legacy spatial helpers — copied verbatim from Alpha so matching is identical.
 function rcmGetDist(lat1, lon1, lat2, lon2) {
@@ -147,7 +155,7 @@ function rcmMigrateRouteText(nowSec) {
     entries[key] = {
       originCell: p[0], destinationCell: p[1], mode: mode, dayClass: dayClass,
       bucket: bucket, meanDurationSecs: mean, sampleCount: parseInt(p[9], 10) || 1,
-      m2: parseFloat(p[6]) || 0, distanceMiles: parseInt(p[4], 10) || 0,
+      m2: parseFloat(p[6]) || 0, distanceMiles: rcmMetersToMiles(parseInt(p[4], 10) || 0),
       createdAt: updatedAt, updatedAt: updatedAt, expiresAt: updatedAt + RCM_MASTER_TTL_SECS,
       targetUnix: null, apiUnix: null
     };
@@ -175,7 +183,7 @@ function rcmMigrateTempText(nowSec) {
     const key = rcmTempKey(o, d, m, apiUnix);
     entries[key] = {
       originCell: o, destinationCell: d, mode: m, dayClass: null, bucket: null,
-      meanDurationSecs: durSec, sampleCount: 1, m2: 0, distanceMiles: distM,
+      meanDurationSecs: durSec, sampleCount: 1, m2: 0, distanceMiles: rcmMetersToMiles(distM),
       createdAt: apiUnix, updatedAt: apiUnix, expiresAt: apiUnix + RCM_TEMP_TTL_SECS,
       targetUnix: targetSec, apiUnix: apiUnix
     };
@@ -297,39 +305,12 @@ function rcmReadRequestState(nowSec) {
   return { schemaVersion: RCM_SCHEMA_VERSION, updatedAt: nowSec, latestByCluster: {} };
 }
 
-// --- Text projections (byte-faithful legacy formats for unchanged readers) --
-function rcmProjectRouteText(entries) {
-  const keys = Object.keys(entries);
-  const lines = [];
-  for (let i = 0; i < keys.length; i++) {
-    const e = entries[keys[i]];
-    // Position 7 (tod) is a dead field for WALK in every reader; the bucket is
-    // null in JSON per REQ-5CACHE-2, so the projection writes 0 there.
-    const todText = (e.bucket === null) ? "0" : String(e.bucket);
-    lines.push(e.originCell + "~" + e.destinationCell + "~" + e.mode + "~" + e.meanDurationSecs + "~" +
-      e.distanceMiles + "~" + e.updatedAt + "~" + e.m2 + "~" + todText + "~" + e.dayClass + "~" + e.sampleCount);
-  }
-  return lines.join("|");
-}
-function rcmProjectTempText(entries) {
-  const keys = Object.keys(entries);
-  const lines = [];
-  for (let i = 0; i < keys.length; i++) {
-    const e = entries[keys[i]];
-    lines.push(e.originCell + "~" + e.destinationCell + "~" + e.mode + "~" + e.meanDurationSecs + "~" +
-      e.distanceMiles + "~" + e.apiUnix + "~" + e.targetUnix);
-  }
-  return lines.join("|");
-}
-function rcmProjectOrderText(entries) {
-  const keys = Object.keys(entries);
-  const lines = [];
-  for (let i = 0; i < keys.length; i++) {
-    const e = entries[keys[i]];
-    lines.push(e.clusterKey + "|" + e.result.join(","));
-  }
-  return lines.join("\n");
-}
+// --- Legacy text projections: RETIRED in Slice D ---------------------------
+// RouteCache.txt / Temp_Route_Cache.txt / TDS_Order_Cache.txt are no longer
+// written. Gatekeeper and Sandbox consume the JSON caches read-only; PRUNE
+// deletes surviving legacy text files after migration. Keeping a stale text
+// projection would break its meters/miles unit contract now that the JSON
+// field holds real miles.
 
 // --- Alpha's capped-Welford/outlier rollup, moved verbatim ------------------
 // Legacy route-entry format: o~d~m~mean~dist~updatedSec~m2~tod~dayType~n.
@@ -438,16 +419,15 @@ function rcmHandleSessionUpsert(payload) {
   entries[key] = {
     originCell: payload.origin, destinationCell: payload.destination, mode: payload.mode,
     dayClass: null, bucket: null, meanDurationSecs: payload.durationSecs, sampleCount: 1,
-    m2: 0, distanceMiles: payload.distanceMeters, createdAt: apiUnix, updatedAt: apiUnix,
+    m2: 0, distanceMiles: rcmMetersToMiles(payload.distanceMeters), createdAt: apiUnix, updatedAt: apiUnix,
     expiresAt: apiUnix + RCM_TEMP_TTL_SECS, targetUnix: payload.targetUnix, apiUnix: apiUnix
   };
   const next = { schemaVersion: RCM_SCHEMA_VERSION, updatedAt: now, entries: entries };
-  const snap = [{ path: RCM_TEMP_JSON, snap: rcmSnapshot(RCM_TEMP_JSON) }, { path: RCM_TEMP_TEXT, snap: rcmSnapshot(RCM_TEMP_TEXT) }];
+  const snap = rcmSnapshot(RCM_TEMP_JSON);
   try {
     rcmWriteWithReadback(RCM_TEMP_JSON, JSON.stringify(next));
-    rcmWriteWithReadback(RCM_TEMP_TEXT, rcmProjectTempText(entries));
   } catch (e) {
-    rcmRestore(snap[0].snap); rcmRestore(snap[1].snap);
+    rcmRestore(snap);
     throw new Error("SESSION_CACHE_COMMIT_FAILED: " + e.message);
   }
   rcmLog("info", "ROUTE_CACHE_MUTATED", { command: "SESSION_CACHE_UPSERT", routeKey: key, mode: payload.mode, durationSecs: payload.durationSecs });
@@ -476,12 +456,11 @@ function rcmHandleOrderUpsert(payload) {
     createdAt: now, updatedAt: now, expiresAt: now + RCM_ORDER_TTL_SECS
   };
   const next = { schemaVersion: RCM_SCHEMA_VERSION, updatedAt: now, entries: entries };
-  const snap = [{ path: RCM_ORDER_JSON, snap: rcmSnapshot(RCM_ORDER_JSON) }, { path: RCM_ORDER_TEXT, snap: rcmSnapshot(RCM_ORDER_TEXT) }];
+  const snap = rcmSnapshot(RCM_ORDER_JSON);
   try {
     rcmWriteWithReadback(RCM_ORDER_JSON, JSON.stringify(next));
-    rcmWriteWithReadback(RCM_ORDER_TEXT, rcmProjectOrderText(entries));
   } catch (e) {
-    rcmRestore(snap[0].snap); rcmRestore(snap[1].snap);
+    rcmRestore(snap);
     throw new Error("ORDER_CACHE_COMMIT_FAILED: " + e.message);
   }
   rcmLog("info", "ROUTE_CACHE_MUTATED", { command: "ORDER_CACHE_UPSERT", clusterKey: payload.clusterKey, count: payload.orderedEventIds.length });
@@ -522,7 +501,7 @@ function rcmHandleRollup(payload) {
     const durSec = e.meanDurationSecs, distM = e.distanceMiles, apiUnix = e.apiUnix, targetSec = e.targetUnix;
     if (!o || !d || o === "0,0" || d === "0,0") continue;
     if (isNaN(durSec) || isNaN(distM) || isNaN(apiUnix) || isNaN(targetSec)) continue;
-    if (distM > 3000000 || distM > 10000000) continue; // legacy-verbatim double check
+    if (distM > rcmMetersToMiles(3000000) || distM > rcmMetersToMiles(10000000)) continue; // legacy-verbatim double check (meters thresholds converted to the miles field)
     const rkey = o + "~~" + d + "~~" + m;
     if (now >= targetSec) {
       if (!latest[rkey] || latest[rkey].apiUnix < apiUnix) {
@@ -555,16 +534,12 @@ function rcmHandleRollup(payload) {
   const nextRoute = { schemaVersion: RCM_SCHEMA_VERSION, updatedAt: now, entries: routeCache.entries };
   const snaps = [
     { path: RCM_TEMP_JSON, snap: rcmSnapshot(RCM_TEMP_JSON) },
-    { path: RCM_TEMP_TEXT, snap: rcmSnapshot(RCM_TEMP_TEXT) },
-    { path: RCM_ROUTE_JSON, snap: rcmSnapshot(RCM_ROUTE_JSON) },
-    { path: RCM_ROUTE_TEXT, snap: rcmSnapshot(RCM_ROUTE_TEXT) }
+    { path: RCM_ROUTE_JSON, snap: rcmSnapshot(RCM_ROUTE_JSON) }
   ];
   try {
     rcmWriteWithReadback(RCM_TEMP_JSON, JSON.stringify(nextTemp));
-    rcmWriteWithReadback(RCM_TEMP_TEXT, rcmProjectTempText(keep));
     if (commits.length > 0) {
       rcmWriteWithReadback(RCM_ROUTE_JSON, JSON.stringify(nextRoute));
-      rcmWriteWithReadback(RCM_ROUTE_TEXT, rcmProjectRouteText(routeCache.entries));
     }
   } catch (e) {
     for (let s = 0; s < snaps.length; s++) rcmRestore(snaps[s].snap);
@@ -688,19 +663,22 @@ function rcmHandlePrune(payload) {
     latestByCluster[k] = rec;
   });
   const snaps = [
-    { path: RCM_ROUTE_JSON, snap: rcmSnapshot(RCM_ROUTE_JSON) }, { path: RCM_ROUTE_TEXT, snap: rcmSnapshot(RCM_ROUTE_TEXT) },
-    { path: RCM_TEMP_JSON, snap: rcmSnapshot(RCM_TEMP_JSON) }, { path: RCM_TEMP_TEXT, snap: rcmSnapshot(RCM_TEMP_TEXT) },
-    { path: RCM_ORDER_JSON, snap: rcmSnapshot(RCM_ORDER_JSON) }, { path: RCM_ORDER_TEXT, snap: rcmSnapshot(RCM_ORDER_TEXT) },
+    { path: RCM_ROUTE_JSON, snap: rcmSnapshot(RCM_ROUTE_JSON) },
+    { path: RCM_TEMP_JSON, snap: rcmSnapshot(RCM_TEMP_JSON) },
+    { path: RCM_ORDER_JSON, snap: rcmSnapshot(RCM_ORDER_JSON) },
     { path: RCM_REQUEST_JSON, snap: rcmSnapshot(RCM_REQUEST_JSON) }
   ];
   try {
     rcmWriteWithReadback(RCM_ROUTE_JSON, JSON.stringify({ schemaVersion: RCM_SCHEMA_VERSION, updatedAt: now, entries: routeEntries }));
-    rcmWriteWithReadback(RCM_ROUTE_TEXT, rcmProjectRouteText(routeEntries));
     rcmWriteWithReadback(RCM_TEMP_JSON, JSON.stringify({ schemaVersion: RCM_SCHEMA_VERSION, updatedAt: now, entries: tempEntries }));
-    rcmWriteWithReadback(RCM_TEMP_TEXT, rcmProjectTempText(tempEntries));
     rcmWriteWithReadback(RCM_ORDER_JSON, JSON.stringify({ schemaVersion: RCM_SCHEMA_VERSION, updatedAt: now, entries: orderEntries }));
-    rcmWriteWithReadback(RCM_ORDER_TEXT, rcmProjectOrderText(orderEntries));
     rcmWriteWithReadback(RCM_REQUEST_JSON, JSON.stringify({ schemaVersion: RCM_SCHEMA_VERSION, updatedAt: now, latestByCluster: latestByCluster }));
+    // Slice D text retirement: delete any surviving legacy text projections.
+    // The JSON caches are authoritative and the readers consume JSON only;
+    // a stale text file would violate the distanceMiles unit contract.
+    if (readFile(RCM_ROUTE_TEXT) !== null) deleteFile(RCM_ROUTE_TEXT);
+    if (readFile(RCM_TEMP_TEXT) !== null) deleteFile(RCM_TEMP_TEXT);
+    if (readFile(RCM_ORDER_TEXT) !== null) deleteFile(RCM_ORDER_TEXT);
   } catch (e) {
     for (let s = 0; s < snaps.length; s++) rcmRestore(snaps[s].snap);
     throw new Error("PRUNE_COMMIT_FAILED: " + e.message);
