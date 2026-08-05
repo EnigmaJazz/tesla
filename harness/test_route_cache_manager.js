@@ -285,12 +285,18 @@ try {
   assert.strictEqual(sandbox.local('par1'), 'ROLLUP_DUE_TEMP', 'Alpha must stage ROLLUP_DUE_TEMP');
 
   // API_Parser route mode: no direct temp write, stages SESSION_CACHE_UPSERT.
+  // Slice C correlation: the parser requires the staged correlation envelope
+  // (register via the manager first, then stage {correlation, response}).
   const routePayload = { routes: [{ duration: '1800s', distanceMeters: 12000 }] };
   const { sandbox: ap, store: apStore } = createSandbox({
     locals: { api_route_mode: '', par11: '51.9,-2.1', par12: '51.5,-2.0', par13: 'DRIVE', par14: String(nowSec) },
     files: { [DATA + 'temp_payload.json']: JSON.stringify(routePayload) },
     nowMs: nowSec * 1000
   });
+  const apCorr = { generationId: null, clusterId: 'route', requestId: 'req_route', emittedAt: nowSec };
+  const apReg = ap.cacheManager('REQUEST_STATE_REGISTER', apCorr);
+  assert(apReg.indexOf('OK') === 0, 'REQUEST_STATE_REGISTER must succeed for route fixture: ' + apReg);
+  ap.writeFile(DATA + 'temp_payload.json', JSON.stringify({ correlation: { generationId: null, clusterId: 'route', requestId: 'req_route' }, response: routePayload }));
   runScript(API_PARSER, ap, apStore);
   if (apStore.runError) throw new Error('API_Parser crashed with guards: ' + JSON.stringify(apStore.runError));
   assert(!apStore.writeLog.some(function (w) { return w.path === TEMP_TEXT; }),
@@ -311,6 +317,11 @@ try {
     files: { [DATA + 'TDS_Reorder_Commands.json']: '[]', [DATA + 'temp_payload.json']: JSON.stringify(clusterPayload) },
     nowMs: nowSec * 1000
   });
+  const acCorr = { generationId: 'gen:1700000000:ab12', clusterId: '51.9,-2.1|dest1|wp1,wp2', requestId: 'req_cluster2', emittedAt: nowSec };
+  const acReg = ac.cacheManager('REQUEST_STATE_REGISTER', acCorr);
+  assert(acReg.indexOf('OK') === 0, 'REQUEST_STATE_REGISTER must succeed for cluster fixture: ' + acReg);
+  ac.setLocal('par1', JSON.stringify(cluster));
+  ac.writeFile(DATA + 'temp_payload.json', JSON.stringify({ correlation: { generationId: 'gen:1700000000:ab12', clusterId: '51.9,-2.1|dest1|wp1,wp2', requestId: 'req_cluster2' }, response: clusterPayload }));
   runScript(API_PARSER, ac, acStore);
   if (acStore.runError) throw new Error('API_Parser cluster crashed with guards: ' + JSON.stringify(acStore.runError));
   assert(!acStore.writeLog.some(function (w) { return w.path === ORDER_TEXT; }),
