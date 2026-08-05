@@ -57,18 +57,21 @@
         let staged = JSON.parse(rawPayload);
         let correlation = null;
         let res = staged;
-        if (staged && typeof staged === "object" && !Array.isArray(staged) && staged.correlation && typeof staged.correlation === "object" && staged.response) {
+        if (staged && typeof staged === "object" && !Array.isArray(staged) && staged.correlation && typeof staged.correlation === "object"
+            && staged.response && typeof staged.response === "object" && !Array.isArray(staged.response)) {
             // Callback envelope {correlation, response} retained by staging
-            // (post-migration the builder ALWAYS stages this envelope).
+            // (post-migration the builder ALWAYS stages this envelope). The
+            // response member MUST be an object (routes/legs payload) — a
+            // truthy string/array response is stale, never accepted.
             correlation = staged.correlation;
             res = staged.response;
         } else {
-            // Anything else — raw {routes:[...]}, malformed envelope, or a
-            // response without a valid correlation — is stale. There is NO
-            // local-correlation fallback: correlation must travel WITH the
-            // callback (REQ-5REQID-2/3).
+            // Anything else — raw {routes:[...]}, malformed envelope, non-object
+            // response, or a response without a valid correlation — is stale.
+            // There is NO local-correlation fallback: correlation must travel
+            // WITH the callback (REQ-5REQID-2/3).
             correlation = null;
-            if (staged && typeof staged === "object" && !Array.isArray(staged) && staged.response !== undefined) res = staged.response;
+            if (staged && typeof staged === "object" && !Array.isArray(staged) && typeof staged.response === "object" && !Array.isArray(staged.response)) res = staged.response;
         }
 
         if (!correlationOk(correlation)) {

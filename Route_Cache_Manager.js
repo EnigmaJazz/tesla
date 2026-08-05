@@ -621,12 +621,18 @@ function rcmHandleConsume(payload) {
   }
   const now = rcmNowSec();
   const state = rcmReadRequestState(now);
+  const rec = state.latestByCluster[payload.clusterId];
+  // Revalidate: only the request that is currently the latest for the cluster
+  // may be consumed; a superseded or already-consumed request cannot consume.
+  if (!rec || rec.requestId !== payload.requestId) {
+    return "no matching latest request to consume";
+  }
   const latestByCluster = {};
   const sKeys = Object.keys(state.latestByCluster);
   for (let i = 0; i < sKeys.length; i++) {
-    const rec = state.latestByCluster[sKeys[i]];
-    if (sKeys[i] === payload.clusterId && rec.requestId === payload.requestId) continue; // consumed
-    latestByCluster[sKeys[i]] = rec;
+    const r = state.latestByCluster[sKeys[i]];
+    if (sKeys[i] === payload.clusterId && r.requestId === payload.requestId) continue; // consumed
+    latestByCluster[sKeys[i]] = r;
   }
   const next = { schemaVersion: RCM_SCHEMA_VERSION, updatedAt: now, latestByCluster: latestByCluster };
   const snap = rcmSnapshot(RCM_REQUEST_JSON);
