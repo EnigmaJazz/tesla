@@ -226,6 +226,15 @@ section('session-open-collision-safe-ids', function () {
   assert(firstTripId && secondTripId, 're-minted trip must have a distinct id');
   assert.notStrictEqual(secondTripId, firstTripId, 'second trip id must differ from the first');
 
+  // Tasker-faithful propagation (verify run 3): the STAGED %par2 must carry
+  // the re-minted ids, because in the serial task the reducer runs next from
+  // the locals, not from the router's in-memory object. The mock's synchronous
+  // reducer shim masks this; assert the staged bytes directly.
+  const stagedPayload = JSON.parse(s2.sandbox.local('par2'));
+  assert.notStrictEqual(stagedPayload.tripId, retPayload.tripId, 'staged par2 must carry the re-minted trip id');
+  assert.strictEqual(stagedPayload.tripId, secondTripId, 'staged par2 trip id must match the session record id');
+  assert.notStrictEqual(stagedPayload.actionId, retPayload.actionId, 'staged par2 must carry the re-minted action id');
+
   // Split-brain guard (verify run 2): the re-minted second trip must be
   // completable through RELEASE — reducer state, sessions, and manual trips
   // must all agree on the re-minted ids.

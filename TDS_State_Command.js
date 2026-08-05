@@ -387,8 +387,12 @@ function routeCommand(command, payload) {
   try {
     // Single-point id authority: re-mint colliding manual ids BEFORE the
     // reducer commits, so reducer state and the staged SESSION_OPEN agree.
+    // The re-minted payload MUST be written back to %par2: in the serial
+    // Tasker task the staged reducer runs next from the locals, not from this
+    // in-memory object (REQ-4SESSION-1 Tasker-faithful convergence).
     if (command === "RETURN_TO_BASE" || command === "SESSION_OPEN") {
       ensureUniqueManualIds(payload);
+      setLocal('par2', JSON.stringify(payload));
     }
     if (command === "ENQUEUE_REORDER") {
       setLocal('return_value', enqueueReorder(payload));
