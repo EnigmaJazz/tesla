@@ -58,19 +58,17 @@
         let correlation = null;
         let res = staged;
         if (staged && typeof staged === "object" && !Array.isArray(staged) && staged.correlation && typeof staged.correlation === "object" && staged.response) {
-            // Callback envelope {correlation, response} retained by staging.
+            // Callback envelope {correlation, response} retained by staging
+            // (post-migration the builder ALWAYS stages this envelope).
             correlation = staged.correlation;
             res = staged.response;
-        } else if (staged && typeof staged === "object" && !Array.isArray(staged) && staged.response !== undefined) {
-            // A callback carrying a response but NO valid correlation envelope is
-            // stale — never fall back to local staging state (REQ-5REQID-2).
-            correlation = null;
-            res = staged.response;
         } else {
-            // Raw Google response (no envelope): the builder's api_correlation
-            // local is the correlation source for the callback.
-            let corrRaw = local('api_correlation');
-            if (corrRaw) { try { correlation = JSON.parse(corrRaw); } catch (e2) { correlation = null; } }
+            // Anything else — raw {routes:[...]}, malformed envelope, or a
+            // response without a valid correlation — is stale. There is NO
+            // local-correlation fallback: correlation must travel WITH the
+            // callback (REQ-5REQID-2/3).
+            correlation = null;
+            if (staged && typeof staged === "object" && !Array.isArray(staged) && staged.response !== undefined) res = staged.response;
         }
 
         if (!correlationOk(correlation)) {
