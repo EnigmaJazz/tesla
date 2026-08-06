@@ -1,11 +1,22 @@
 // ==========================================
-// SMART CACHE GATEKEEPER (V7.0)
+// SMART CACHE GATEKEEPER (V7.1)
 // Intercepts JSON Clusters on %par1. 
 // Uses isClose for GPS drift caching. Merges Master Sorter logic.
 // [V7.0] In-Place Array Sorting to protect Strict Event chronology.
+// [V7.1] Slice D (REQ-5CACHE-1/2): reads the route/temp/order caches from
+//        the Route Cache Manager's JSON files, read-only. Gatekeeper NEVER
+//        writes cache files — the manager is the sole writer (RULE-8E). The
+//        legacy RouteCache.txt / Temp_Route_Cache.txt / TDS_Order_Cache.txt
+//        projections are retired; expired entries are misses (SCN-5CACHE-3),
+//        matching the manager's CACHE_READ filter. Selection rules are
+//        byte-identical to V7.0: backward scan for the master/temp tiers,
+//        forward scan for order rows, exact mode match, isClose GPS drift,
+//        WALK unbucketed, DRIVE exact tod + dayClass within 60 minutes.
 // ==========================================
 
 (function() {
+    const METERS_PER_MILE = 1609.344; // Slice D: JSON distanceMiles field unit
+
     function forceSeconds(val) {
         let v = parseFloat(val); 
         if (isNaN(v) || v <= 0) return 0;
@@ -29,6 +40,31 @@
         if (!cStrA || !cStrB || cStrA === "0,0" || cStrB === "0,0") return false;
         let pA = cStrA.split(","), pB = cStrB.split(",");
         return getDist(parseFloat(pA[0]), parseFloat(pA[1]), parseFloat(pB[0]), parseFloat(pB[1])) <= 200;
+    }
+
+    // Slice D (REQ-5CACHE-1/2): read-only JSON cache accessor. The Route Cache
+    // Manager is the SOLE writer of TDS_Route_Cache.json / Temp_Route_Cache.json
+    // / TDS_Order_Cache.json; this script only ever reads them (never writes).
+    // Expired entries (expiresAt <= now) are dropped here, exactly as the
+    // manager's CACHE_READ filters them (SCN-5CACHE-3), so a reader can never
+    // resurrect a pruned route.
+    function readCacheJson(path, nowSec) {
+        let raw = "";
+        try { raw = readFile(path) || ""; } catch (e) { return null; }
+        if (!raw) return null;
+        try {
+            let obj = JSON.parse(raw);
+            if (!obj || obj.schemaVersion !== 1 || !obj.entries || typeof obj.entries !== "object") return null;
+            let out = {};
+            let keys = Object.keys(obj.entries);
+            for (let i = 0; i < keys.length; i++) {
+                let e = obj.entries[keys[i]];
+                if (!e || typeof e !== "object") continue;
+                if (typeof e.expiresAt === "number" && e.expiresAt <= nowSec) continue; // expired = miss
+                out[keys[i]] = e;
+            }
+            return { schemaVersion: obj.schemaVersion, entries: out };
+        } catch (e) { return null; }
     }
 
     // [SURGICAL UPGRADE: In-Place Sorting]
@@ -103,18 +139,23 @@
             
             let uLoc = global('User_Loc') || "0,0";
             let wpIdStr = wp.map(function(w) { return w.id; }).join(",");
-            
-            let orderCacheRaw = "";
-            try { orderCacheRaw = readFile("Tasker/Tesla/Data/TDS_Order_Cache.txt") || ""; } catch(e){}
-            let cacheRows = orderCacheRaw.split("\n");
-            
-            for(let c=0; c<cacheRows.length; c++) {
-                if(!cacheRows[c]) continue;
-                let cp = cacheRows[c].split("|"); 
-                if (cp.length === 4 && isClose(cp[0], uLoc) && cp[1] === cluster.destination.id && cp[2] === wpIdStr) {
-                    sortMasterJson(cp[3]);
-                    setLocal('cluster_bypass', 'true');
-                    return; 
+
+            // Slice D (REQ-5CACHE-1): order-cache reads come from the manager's
+            // JSON (read-only; the manager is the sole writer). The legacy row
+            // shape origin|destination.id|wpIdStr|result is preserved by the
+            // JSON clusterKey (first three fields) + result array.
+            let orderCache = readCacheJson("Tasker/Tesla/Data/TDS_Order_Cache.json", Math.floor(Date.now() / 1000));
+            if (orderCache) {
+                let oKeys = Object.keys(orderCache.entries);
+                for (let c = 0; c < oKeys.length; c++) {
+                    let oe = orderCache.entries[oKeys[c]];
+                    if (!oe || typeof oe.clusterKey !== "string" || !Array.isArray(oe.result)) continue;
+                    let kp = oe.clusterKey.split("|");
+                    if (kp.length === 3 && isClose(kp[0], uLoc) && kp[1] === cluster.destination.id && kp[2] === wpIdStr) {
+                        sortMasterJson(oe.result.join(","));
+                        setLocal('cluster_bypass', 'true');
+                        return; 
+                    }
                 }
             }
             return; 
@@ -134,39 +175,44 @@
 
             if (isFuture || mode === "WALK") {
                 let cachedDurSecs = -1, cachedDistM = 0, cacheSource = "";
-                let diskRaw = ""; try { diskRaw = readFile("Tasker/Tesla/Data/RouteCache.txt") || ""; } catch(e) {}
-                let welford = diskRaw.split("|");
+                // Slice D (REQ-5CACHE-1/2): master-cache reads come from the
+                // manager's JSON (read-only; the manager is the sole writer).
+                // distanceMiles in the JSON holds actual miles. Expired rows are
+                // already dropped by readCacheJson (expired = miss).
+                let routeCache = readCacheJson("Tasker/Tesla/Data/TDS_Route_Cache.json", nowSec);
+                if (routeCache) {
+                    let rKeys = Object.keys(routeCache.entries);
+                    for (let i = rKeys.length - 1; i >= 0; i--) {
+                        let e = routeCache.entries[rKeys[i]];
+                        if (!e || typeof e.meanDurationSecs !== "number" || typeof e.mode !== "string") continue;
 
-                for (let i = welford.length - 1; i >= 0; i--) {
-                    let p = welford[i].split("~");
-                    if (p.length < 10) continue;
+                        if (e.mode === mode && isClose(e.originCell, orig) && isClose(e.destinationCell, dest)) {
+                            let cTod = (e.bucket === null) ? -999 : e.bucket;
+                            let cDay = e.dayClass;
 
-                    if (p[2].trim() === mode && isClose(p[0], orig) && isClose(p[1], dest)) {
-                        let mean = parseInt(p[3], 10);
-                        let cTod = parseInt(p[7], 10);
-                        let cDay = parseInt(p[8], 10);
-
-                        if (mode === "WALK" || (isFuture && !isNaN(cTod) && cTod !== -999 && cDay === targetDay)) {
-                            let diff = Math.abs(targetTod - cTod);
-                            if (diff > 720) diff = 1440 - diff;
-                            if (mode === "WALK" || diff <= 60) {
-                                cachedDurSecs = mean; cachedDistM = parseInt(p[4], 10); cacheSource = "Master Cache"; 
-                                break;
+                            if (mode === "WALK" || (isFuture && typeof cTod === "number" && cTod !== -999 && cDay === targetDay)) {
+                                let diff = Math.abs(targetTod - cTod);
+                                if (diff > 720) diff = 1440 - diff;
+                                if (mode === "WALK" || diff <= 60) {
+                                    cachedDurSecs = e.meanDurationSecs; cachedDistM = (typeof e.distanceMiles === "number") ? e.distanceMiles : 0; cacheSource = "Master Cache"; 
+                                    break;
+                                }
                             }
                         }
                     }
                 }
 
                 if (cachedDurSecs === -1) {
-                    let tempRaw = ""; try { tempRaw = readFile("Tasker/Tesla/Data/Temp_Route_Cache.txt") || ""; } catch(e) {}
-                    if (tempRaw !== "") {
-                        let tempArr = tempRaw.split("|");
-                        for (let t = tempArr.length - 1; t >= 0; t--) {
-                            let tp = tempArr[t].split("~");
-                            if (tp.length < 7) continue;
+                    // Slice D: session-cache reads come from the manager's JSON.
+                    let tempCache = readCacheJson("Tasker/Tesla/Data/Temp_Route_Cache.json", nowSec);
+                    if (tempCache) {
+                        let tKeys = Object.keys(tempCache.entries);
+                        for (let t = tKeys.length - 1; t >= 0; t--) {
+                            let te = tempCache.entries[tKeys[t]];
+                            if (!te || typeof te.meanDurationSecs !== "number" || typeof te.mode !== "string") continue;
 
-                            if (tp[2].trim() === mode && isClose(tp[0], orig) && isClose(tp[1], dest)) {
-                                cachedDurSecs = parseInt(tp[3], 10); cachedDistM = parseInt(tp[4], 10); cacheSource = "Session Cache"; 
+                            if (te.mode === mode && isClose(te.originCell, orig) && isClose(te.destinationCell, dest)) {
+                                cachedDurSecs = te.meanDurationSecs; cachedDistM = (typeof te.distanceMiles === "number") ? te.distanceMiles : 0; cacheSource = "Session Cache"; 
                                 break;
                             }
                         }
@@ -175,7 +221,7 @@
 
                 if (cachedDurSecs !== -1) {
                     setLocal('cache_hit', 'true');
-                    setLocal('api_return_json', JSON.stringify({ durationSecs: cachedDurSecs, distanceMeters: cachedDistM, distanceMiles: (cachedDistM * 0.000621371).toFixed(1), transitSteps: "⚡ Resolved via " + cacheSource }));
+                    setLocal('api_return_json', JSON.stringify({ durationSecs: cachedDurSecs, distanceMeters: Math.round(cachedDistM * METERS_PER_MILE), distanceMiles: cachedDistM.toFixed(1), transitSteps: "⚡ Resolved via " + cacheSource }));
                 }
             }
         }

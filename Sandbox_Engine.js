@@ -714,24 +714,58 @@ try {
         let defArrMins = parseInt(global('Arrival_Buffer_Mins'), 10) || 5; 
         let defDepMins = parseInt(global('Departure_Buffer_Mins'), 10) || 5; 
 
-        let ramTier = []; let tempCacheRaw = "";
-        try { tempCacheRaw = readFile("Tasker/Tesla/Data/Temp_Route_Cache.txt") || ""; } catch(e) {}
-        if (tempCacheRaw.length > 5) {
-            let tRows = tempCacheRaw.split("|");
-            for (let r = 0; r < tRows.length; r++) {
-                if (!tRows[r]) continue; let tp = tRows[r].split("~");
-                if (tp.length < 7) continue; 
-                ramTier.push({ o: tp[0].trim(), d: tp[1].trim(), m: tp[2].trim(), dur: parseInt(tp[3], 10), dist: parseInt(tp[4], 10), pulledSec: parseInt(tp[5], 10) });
+        // Slice D (REQ-5CACHE-1/2): read-only JSON cache readers. The Route
+        // Cache Manager is the SOLE writer of TDS_Route_Cache.json and
+        // Temp_Route_Cache.json (RULE-8E); this engine never mutates them. The
+        // legacy RouteCache.txt / Temp_Route_Cache.txt projections were retired
+        // in Slice D — JSON is the only format. Expired entries (expiresAt <=
+        // now) are misses (SCN-5CACHE-3), matching the manager's CACHE_READ
+        // filter, so getCachedTime sees the identical envelope.
+        function sbReadCacheJson(filePath) {
+            let raw = "";
+            try { raw = readFile(filePath) || ""; } catch (e) { return null; }
+            if (!raw) return null;
+            try {
+                let obj = JSON.parse(raw);
+                if (!obj || obj.schemaVersion !== 1 || !obj.entries || typeof obj.entries !== "object") return null;
+                let out = {};
+                let keys = Object.keys(obj.entries);
+                for (let i = 0; i < keys.length; i++) {
+                    let e = obj.entries[keys[i]];
+                    if (!e || typeof e !== "object") continue;
+                    if (typeof e.expiresAt === "number" && e.expiresAt <= nowSec) continue; // expired = miss
+                    out[keys[i]] = e;
+                }
+                return out;
+            } catch (e) { return null; }
+        }
+
+        // Temp tier (session samples): fresh samples (pulled within the live
+        // threshold) win the first getCachedTime pass; the tod/dayClass master
+        // pass and the no-recency fallback keep the legacy semantics.
+        let ramTier = [];
+        let tempJson = sbReadCacheJson("Tasker/Tesla/Data/Temp_Route_Cache.json");
+        if (tempJson) {
+            let tKeys = Object.keys(tempJson);
+            for (let r = 0; r < tKeys.length; r++) {
+                let e = tempJson[tKeys[r]];
+                if (typeof e.meanDurationSecs !== "number" || !(e.meanDurationSecs > 0)
+                    || typeof e.originCell !== "string" || typeof e.destinationCell !== "string" || typeof e.mode !== "string") continue;
+                ramTier.push({ o: e.originCell, d: e.destinationCell, m: e.mode, dur: e.meanDurationSecs, dist: (typeof e.distanceMiles === "number") ? e.distanceMiles : 0, pulledSec: (typeof e.apiUnix === "number") ? e.apiUnix : 0 });
             }
         }
-        
-        let ssdTier = []; let diskCacheRaw = readFile("Tasker/Tesla/Data/RouteCache.txt") || "";
-        if (diskCacheRaw.length > 5) {
-            let dRows = diskCacheRaw.split("|");
-            for (let s = 0; s < dRows.length; s++) {
-                if (!dRows[s]) continue; let sp = dRows[s].split("~");
-                if (sp.length < 10) continue; 
-                ssdTier.push({ o: sp[0].trim(), d: sp[1].trim(), m: sp[2].trim(), meanDur: parseInt(sp[3], 10), updatedSec: parseInt(sp[5], 10), tod: parseInt(sp[7], 10), dayType: parseInt(sp[8], 10) });
+
+        // Master tier (Welford cache): mean/bucket/dayClass map 1:1 from the
+        // JSON entry (bucket null -> legacy tod -999 sentinel for WALK).
+        let ssdTier = [];
+        let routeJson = sbReadCacheJson("Tasker/Tesla/Data/TDS_Route_Cache.json");
+        if (routeJson) {
+            let rKeys = Object.keys(routeJson);
+            for (let s = 0; s < rKeys.length; s++) {
+                let e = routeJson[rKeys[s]];
+                if (typeof e.meanDurationSecs !== "number" || !(e.meanDurationSecs > 0)
+                    || typeof e.originCell !== "string" || typeof e.destinationCell !== "string" || typeof e.mode !== "string") continue;
+                ssdTier.push({ o: e.originCell, d: e.destinationCell, m: e.mode, meanDur: e.meanDurationSecs, updatedSec: (typeof e.updatedAt === "number") ? e.updatedAt : 0, tod: (e.bucket === null) ? -999 : e.bucket, dayType: (typeof e.dayClass === "number") ? e.dayClass : -999 });
             }
         }
 
