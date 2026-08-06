@@ -1,14 +1,14 @@
 ```yaml
 schema: gentle-ai.verify-result/v1
-evidence_revision: sha256:addba56ae4729fc3b8432f51f759ed5b5ac5c816519cf357be948d9ab512f0ff
+evidence_revision: sha256:acea5bca6010e3748eeb89d0cfedddbdf285947ef8bf268784ca72de494014f9
 verdict: pass
 blockers: 0
 critical_findings: 0
 requirements: 3/3
-scenarios: 6/6
+scenarios: 4/4
 test_command: for t in harness/test_*.js; do node "$t" || exit 1; done
 test_exit_code: 0
-test_output_hash: sha256:93b5a5e37b8c70deb8e0709c4b183d0cc493450d17a31065d63837fc5267e97c
+test_output_hash: sha256:283911ff27d5fae6783c69434cdd0c4a17c24267a993cfea450a3aa48d78799e
 build_command: for f in *.js harness/*.js; do node --check "$f" || exit 1; done
 build_exit_code: 0
 build_output_hash: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
@@ -16,205 +16,207 @@ build_output_hash: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca49599
 
 ## Verification Report
 
-**Change**: tasker-tesla-upgrade-phase-5-typed-protocols — Slice A (PR-A), run 5 (post-crash recovery; ledger attempt `slice-a-run-5-verification` settled passed)  
-**Version**: Proposed delta  
-**Mode**: Standard (Strict TDD disabled)  
-**Branch verified**: `tasker-tesla-phase5-pr-a`  
-**HEAD verified**: `4543e301b10ef1b45b2a29381d3418e630700e8d`  
-**Slice commits**: `993f676`, `066a9e6`, `bceb752`, `08725ca`, `422f960`, `4543e30`
+**Change**: tasker-tesla-upgrade-phase-5-typed-protocols — Slice C (PR-C), verification run 4
+**Version**: Proposed delta
+**Mode**: Standard (Strict TDD disabled)
+**Branch verified**: `tasker-tesla-phase5-pr-c`
+**HEAD verified**: `8eec1e2a6a89669131f194a5b7933527613250bb`
+**Slice commits**: `1702d544178f650d7b6aa43fc919099f25aaf997`, `33450f99b492e9ce0b3e65d42958e38f190a5a4e`, `bda055a2455073856675fe8c1f75d0966d6f5293`, `fbc2f3fdfc0dcc8840a843ecca0623e1a40c183f`, `d54c3c8acce2576370e8361e6595d6316ab6989d`, `8eec1e2a6a89669131f194a5b7933527613250bb`
+**Bounded attempt**: acquired with `verify-slice-c-run4-acquire-20260805-001`; settled `complete` with evidence revision `sha256:acea5bca6010e3748eeb89d0cfedddbdf285947ef8bf268784ca72de494014f9`
 
 ### Completeness
 
 | Metric | Value |
 |---|---:|
-| Slice A tasks total | 3 |
-| Slice A tasks complete | 3 |
-| Slice A tasks incomplete | 0 |
-| Full change tasks complete | 3/12 |
+| Slice C tasks total | 3 |
+| Slice C tasks complete | 3 |
+| Slice C tasks incomplete | 0 |
+| Full change tasks complete | 9/12 |
 | In-scope top-level requirements | 3 |
-| In-scope scenarios | 6 |
+| In-scope scenarios | 4 |
 
-Slice B-D tasks remain outside this scoped PR-A assessment. The full SDD change is not ready for final full-change verification or archive.
+This is scoped PR-C verification, not final full-change verification. Slice D remains outside this run and blocks archive. The delta contains top-level requirements `REQ-5REQID-1`, `REQ-5REQID-2`, and `REQ-5LOG-1`; there is no top-level `REQ-5REQID-3`. The requested valid-response behavior is `SCN-5REQID-3` under `REQ-5REQID-2`.
 
 ### Build & Tests Execution
 
-**Focused Slice A harnesses**: ✅ 12/12 scripts passed
+**Focused Slice C plus baseline harnesses**: ✅ 3/3 scripts passed
 
 ```text
-Command: for t in harness/test_typed_queue.js harness/test_ac3_sandbox.js harness/test_ac5.js harness/test_atomic_publication.js harness/test_compiler_ac1.js harness/test_compiler_ac8.js harness/test_dst_utc.js harness/test_id_parsing.js harness/test_manual_session.js harness/test_sandbox_ac6.js harness/test_sandbox_ovr10.js harness/test_single_writer.js; do node "$t" || exit 1; done
+Command: for t in harness/test_request_correlation.js harness/test_atomic_publication.js harness/test_route_cache_manager.js; do node "$t" || exit 1; done
 Exit: 0
-Scripts: 12/12
-Output hash: sha256:74d45e4a89f900ed0f1084185c04a9abdfd8623fb937f6814f6516fba10a115e
+Scripts: 3/3
+Output hash: sha256:5ddee5dfdc8045cf4d9086c8b1b2eb481624876f6807c343a2b23442f71bff75
+Output:
+PASS: Request Correlation — builder stamping, wire purity, exact correlation, latest-wins, stale no-op, LOG-17
+PASS: atomic-publication: publisher and resolver contract OK
+PASS: Route Cache Manager — ownership guard, JSON schemas, Welford parity, multi-writer fix, EVT codes, CACHE_READ, migration + TTL prune
 ```
 
-**Full suite**: ✅ 25/25 scripts passed
+**Full suite**: ✅ 27/27 scripts passed
 
 ```text
 Command: for t in harness/test_*.js; do node "$t" || exit 1; done
 Exit: 0
-Scripts: 25/25
-Output hash: sha256:93b5a5e37b8c70deb8e0709c4b183d0cc493450d17a31065d63837fc5267e97c
+Scripts: 27/27
+Output hash: sha256:283911ff27d5fae6783c69434cdd0c4a17c24267a993cfea450a3aa48d78799e
 ```
 
-**Build/syntax**: ✅ 50/50 JavaScript files passed `node --check`
+**Build/syntax**: ✅ 53/53 production and harness JavaScript files passed `node --check`
 
 ```text
 Command: for f in *.js harness/*.js; do node --check "$f" || exit 1; done
 Exit: 0
-Files: 50/50
+Files: 53/53
 Output hash: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
 
-**Adversarial complete-envelope control probe**: ✅ Passed
+**Independent correlation, malformed-response, replay, and consume probe**: ✅ 12/12 checks passed
 
 ```text
-Command: inline Node probe using harness/mock_tasker.js and Compiler.js
+Command: node /tmp/tasker-slice-c-adversarial-run4-8eec1e2.js
 Exit: 0
-Output hash: sha256:a011b4f49dcb575c61a9712b2edf1fc624099cf2bbf61832e8ea6ace435ca4e6
-Exact accepted details: {"rows":1,"eof":false,"skipIdxUntil":7,"stepConflict":"conflict-token","notifications":["notice-a","notice-b"]}
-Malformed controls rejected atomically: non-boolean eof; negative/fractional skipIdxUntil; empty stepConflict; non-array notifications
+Checks: 12/12
+Script hash: sha256:b791638aed0e6eb9f891106560e3897bcc0980db451d93a23aa1cca1ddf3633b
+Output hash: sha256:ff5292f3bdc3a5b2826251563a9477cbbb09ab82f47776f42c9f3c0896a4b407
+Output:
+PASS: absent response envelope -> stale; no cache/reorder/request mutation
+PASS: absent correlation envelope -> stale; no cache/reorder/request mutation
+PASS: malformed correlation envelope -> stale; no cache/reorder/request mutation
+PASS: raw callback despite populated api_correlation -> stale; no cache/reorder/request mutation
+PASS: generation mismatch -> stale; no cache/reorder/request mutation
+PASS: unknown cluster -> stale; no cache/reorder/request mutation
+PASS: superseded request -> stale; latest state retained
+PASS: string response -> stale; never accepted or consumed
+PASS: array response -> stale; never accepted or consumed
+PASS: valid envelope applies, preserves par1 owner command, consumes, and replay is stale
+PASS: consume revalidates latest requestId and stale consume is mutation-free
+PASS: builder stamps IDs while both Google wire projections remain correlation-free
+RESULT: 12/12 adversarial checks passed
 ```
 
-**Adversarial required-row-field probe**: ❌ Failed against current code
-
-```text
-Command: inline Node probe using harness/mock_tasker.js and Compiler.js
-Exit: 1
-Output hash: sha256:66408b7a6a03e8d5a36b8661310e40b7a2717b33354deafeecddff448b951503
-Observed: missing_evLoc accepted=true rejected=false published=true
-```
-
-The probe removed the required `evLoc` property from an otherwise valid typed row. Compiler emitted `TYPED_QUEUE_ACCEPTED`, did not emit `TYPED_QUEUE_REJECTED`, and published a generation. This violates the required row contract and atomic invalid-row rejection.
-
-**LOG-17 runtime probe**: ✅ 5/5 emitted Slice A event codes carried all fields
-
-```text
-Command: inline Node probe using harness/mock_tasker.js and Compiler.js
-Exit: 0
-Output hash: sha256:bbc80ba8aa07573211385daf70d8adb761e0d979876f631ea766b575c85670ac
-Codes: TYPED_QUEUE_ACCEPTED, TYPED_QUEUE_CUTOVER_COMPLETED, DEPARTURE_POLICY_FALLBACK_USED, TYPED_QUEUE_REJECTED, ZERO_DURATION_LEG_REJECTED
-Fields: timestamp, generationId, component, severity, code, tripId, details
-```
-
-**FORCED_DRIVE runtime probe**: ✅ Passed
-
-```text
-Command: inline Node late-event/exact-preference DRIVE Sandbox probe
-Exit: 0
-Output hash: sha256:db3107877414903b8abfc0eb12d86b1193a80377f9884f6aaa808c2c81c948f0
-Result: FORCED_DRIVE emitted as a homogeneous 21-field typed object row with mode DRIVE and departurePolicy ASAP.
-```
-
-**Static cutover inspection**: ✅ Passed
-
-- Production `Sandbox_Engine.js` has one queue push: `queue.push(typed)`.
-- No string-literal pipe row is pushed in production Sandbox or Compiler.
-- No executable `block_step17`-`block_step21` producer/consumer exists; the two remaining matches in Compiler are comments.
-- `TYPED_QUEUE_CUTOVER_COMPLETED` is emitted after the typed compile loop.
+**Diagnostics**: ✅ AFT reported 0 errors and 0 warnings for `API_JSON_Build.js`, `API_Parser.js`, `Route_Cache_Manager.js`, and `harness/test_request_correlation.js`.
 
 **Coverage**: ➖ Not available; this Tasker project has no coverage runner.
 
 ### Spec Compliance Matrix
 
-| Requirement | Scenario | Runtime evidence | Result |
+| Requirement | Scenario | Runtime and source evidence | Result |
 |---|---|---|---|
-| REQ-5QUEUE-1 | SCN-5QUEUE-1 — valid envelope and exact control retention (`TYPED_QUEUE_ACCEPTED`) | Distinctive non-default controls were retained byte-for-value in accepted details; all four malformed control classes rejected atomically. | ✅ COMPLIANT |
-| REQ-5QUEUE-1 | SCN-5QUEUE-2 — malformed/schema/invalid-row rejection (`TYPED_QUEUE_REJECTED`) | Committed harness passed malformed JSON, unsupported schema, invalid policy, and invalid-second-row atomic rejection. Independent probe removed required `evLoc`; Compiler accepted and published it. | ❌ FAILING |
-| REQ-5CUTOVER-1 | SCN-5CUTOVER-1 — shadow divergence blocks typed authority | Transition-only scenario. Cutover is complete and the shadow mechanism is intentionally absent at current HEAD; it cannot fire post-cutover and is not counted as current runtime compliance. | ➖ NOT APPLICABLE POST-CUTOVER |
-| REQ-5CUTOVER-1 | SCN-5CUTOVER-2 — cutover retires steps 17-21 (`TYPED_QUEUE_CUTOVER_COMPLETED`) | Focused runtime emitted the event; source/AST inspection found no executable producer/consumer and only `queue.push(typed)`. | ✅ COMPLIANT |
-| REQ-5CUTOVER-1 | SCN-5CUTOVER-3 — reject zero-duration travel | Focused runtime consumed positive typed tier-2 metrics and separately rejected unavailable/nonpositive metrics without publishing a leg. | ✅ COMPLIANT |
-| REQ-5LOG-1 | SCN-5LOG-1 — LOG-17 fields and Phase 5 event code | Independent runtime probe found all seven required fields on all five emitted post-cutover Slice A codes. | ✅ COMPLIANT |
+| REQ-5REQID-1 | SCN-5REQID-1 — manager-recorded, callback-retained correlation with wire purity | Focused runtime and the independent probe passed both builder forks. `API_JSON_Build.js:18-25` stamps all three IDs and stages `REQUEST_STATE_REGISTER`; lines 36-55 and 69-90 serialize only the Google route body. Manager registration runtime proved exact-key latest-wins and generation pruning. | ✅ COMPLIANT |
+| REQ-5REQID-2 | SCN-5REQID-2 — missing, malformed, raw, mismatched, or malformed-response callbacks are stale with no owner mutation | Independent runtime passed absent response, absent correlation, malformed correlation, raw response despite populated local state, generation mismatch, unknown cluster, superseded request, string response, and array response. Every case emitted `STALE_API_RESPONSE_DISCARDED`; request/cache/reorder state stayed unchanged. `API_Parser.js:60-75` now requires a non-array response object. | ✅ COMPLIANT |
+| REQ-5REQID-2 | SCN-5REQID-3 — a valid exact envelope may submit typed owner mutations | Independent runtime accepted exact generation + cluster + latest request ID, preserved final `par1=ORDER_CACHE_UPSERT`, consumed the latest request, and rejected replay as stale. Direct cache/reorder writes were absent. | ✅ COMPLIANT |
+| REQ-5LOG-1 | SCN-5LOG-1 — every covered mutation/rejection emits seven LOG-17 fields and the required EVT | Independent runtime checked `STALE_API_RESPONSE_DISCARDED`, `ROUTE_RESPONSE_ACCEPTED`, `ROUTE_REQUEST_REGISTERED`, and `ROUTE_REQUEST_CONSUMED`; each contained `timestamp,generationId,component,severity,code,tripId,details`. | ✅ COMPLIANT |
 
-**Compliance summary**: 4/6 scenarios compliant; 1 failing; 1 transition-only/not applicable after completed cutover. Top-level requirements: 2/3 compliant.
+**Compliance summary**: 4/4 scenarios compliant; 3/3 top-level requirements compliant.
 
-### Run-5 Verdicts (post `4543e30` evLoc fix)
+### Per-Requirement Verdicts
 
-| Requested dimension | Verdict | Current evidence |
+| Requirement | Verdict | Current runtime evidence |
 |---|---|---|
-| REQ-5QUEUE-1 / SCN-5QUEUE-1 | ✅ PASS | All four controls validate; distinctive values survive exactly in `TYPED_QUEUE_ACCEPTED`. |
-| REQ-5QUEUE-2 / SCN-5QUEUE-2 | ✅ PASS | `isValidTypedRow` now requires all 21 spec fields including `evLoc`; missing/wrong-typed fields reject atomically with `TYPED_QUEUE_REJECTED` and nothing compiles or publishes. Regression committed (`missing evLoc`). |
-| REQ-5CUTOVER-1 / SCN-5CUTOVER-1 | ➖ N/A post-cutover | Shadow divergence is a completed transition condition and has no current executable shadow path. |
-| REQ-5CUTOVER-2 / SCN-5CUTOVER-2 | ✅ PASS | Cutover event emitted; steps 17-21 and string-literal pipe rows are retired. |
-| REQ-5CUTOVER-3 / SCN-5CUTOVER-3 | ✅ PASS | Tier-2 typed metrics passed; unavailable/nonpositive metrics rejected without publication. |
-| REQ-5LOG-1 / SCN-5LOG-1 | ✅ PASS | Five emitted post-cutover codes passed all LOG-17 fields at runtime. |
+| REQ-5REQID-1 | ✅ PASS | Builder stamping, manager registration, callback envelope retention, latest-wins, generation pruning, and wire-payload purity passed. |
+| REQ-5REQID-2 | ✅ PASS | All required stale classes were mutation-free. Exact valid envelopes applied through owner commands, consumed the request, and made replay stale. |
+| SCN-5REQID-3 (requested as `REQ-5REQID-3`) | ✅ PASS | Valid exact response accepted; owner command remained in `par1`; accepted request consumed; replay rejected. No top-level `REQ-5REQID-3` exists in the delta. |
+| REQ-5LOG-1 | ✅ PASS | All covered Slice C mutation/rejection events carried the complete seven-field LOG-17 shape and stable EVT codes. |
 
-### Correctness (Static Evidence — run 5)
+### Correctness (Static Evidence)
 
 | Requirement | Status | Notes |
 |---|---|---|
-| REQ-5QUEUE-1 | ✅ Complete | `parseQueueEnvelope` validates all four controls and all 21 row fields (including `evLoc`) before compilation. |
-| REQ-5CUTOVER-1 | ✅ Implemented post-cutover | Typed rows are authoritative; `queue.push(typed)` is the sole production queue push; no executable step 17-21 path remains. INV-0.7 order is API → positive typed metrics → supported ACTIVE_TRAVEL estimate → reject. |
-| REQ-5LOG-1 | ✅ Implemented | Runtime proved all seven LOG-17 fields for all five emitted Slice A post-cutover codes. |
+| Builder stamps all three IDs | ✅ Implemented | `API_JSON_Build.js:18-25` stamps `{generationId,clusterId,requestId}` and stages manager registration. |
+| Wire payload purity | ✅ Implemented | The cluster and standard branches serialize only `body`; focused and independent runtime compared/excluded all correlation fields. |
+| Mandatory callback envelope | ✅ Implemented | `API_Parser.js:60-75` requires a non-array object envelope, object correlation, and non-array object response; there is no local-correlation fallback. |
+| Exact current-ID comparison | ✅ Implemented | `API_Parser.js:38-50` checks active generation, exact cluster key, latest request ID, and record generation. |
+| Malformed string/array response rejection | ✅ Fixed | Commit `8eec1e2` rejects string and array response members before acceptance or consumption; runtime proved request/cache/reorder state unchanged. |
+| Accepted-response replay protection | ✅ Harness-proven | `API_Parser.js:94-102` stages/directly invokes `REQUEST_STATE_CONSUME` while preserving command locals; runtime proved replay stale. |
+| Consume latest-request revalidation | ✅ Fixed | `Route_Cache_Manager.js:623-629` re-reads request state and refuses a missing/superseded request; independent runtime proved stale consume byte- and write-log mutation-free. |
+| Request-state single writer | ✅ Implemented | `API_Parser.js:23` is read-only; production request-state writes are isolated to `Route_Cache_Manager.js` via `RCM_REQUEST_JSON`. |
+| LOG-17 shape | ✅ Implemented | Parser and manager event helpers emit all seven fields; independent runtime checked stale, accepted, registration, and consumption events. |
+| Syntax and diagnostics | ✅ Passed | `node --check` passed 53/53 files; scoped AFT diagnostics reported 0 errors and 0 warnings. |
 
-### Coherence (Design — run 5)
+### Coherence (Design)
 
-| Decision | Followed? | Notes |
+| Decision / deviation | Followed? | Notes |
 |---|---|---|
-| Parse and validate the complete envelope once before compiling rows | ✅ Yes | One parse; complete control + row-schema validation (all 21 fields incl. `evLoc`). |
-| Retain exact envelope control values | ✅ Yes | Independent runtime proved exact `eof`, `skipIdxUntil`, `stepConflict`, and notification values. |
-| Typed row fields become authoritative after cutover | ✅ Yes | Runtime and static evidence prove typed metrics/policy/day/origin authority. |
-| Remove every executable step 17-21 producer/consumer | ✅ Yes | Only comment references remain in Compiler. |
-| Homogeneous typed queue, including FORCED_DRIVE | ✅ Yes | Runtime emitted a complete 21-field `FORCED_DRIVE` object; Sandbox has only `queue.push(typed)`. |
-| Reject unsupported zero-duration travel | ✅ Yes | Runtime rejected and published no leg. |
-| Standalone Tasker JSlets; no dependencies/promises/timers | ✅ Yes | No unsupported runtime construct or dependency was introduced. |
+| Separate internal correlation from route wire projection | ✅ Yes | Static and runtime evidence show pure Google wire bodies. |
+| Require callback `{correlation,response-object}` and reject raw callbacks | ✅ Yes | Raw, missing, malformed, string-response, and array-response paths were stale at runtime. |
+| Require generation + cluster + latest request exactness | ✅ Yes | Every mismatch class and replay rejected at runtime. |
+| Route valid mutations through declared owners | ✅ Yes | Parser stages manager commands and never writes protected cache/reorder resources directly. |
+| Route Cache Manager owns request state | ✅ Yes | Parser reads only; manager performs registration, consumption, and pruning writes. |
+| Manager revalidates accepted consumption | ✅ Yes | Commit `8eec1e2` added current-latest requestId revalidation; stale consume does not write. |
+| Named request TTL and generation pruning | ✅ Yes | `RCM_REQUEST_TTL_SECS` and registration pruning remain present and pass runtime tests. |
 
-### Issues Found (run 5)
+### Issues Found
 
-**CRITICAL**
+**CRITICAL**: None.
 
-None. The run-4 `evLoc` defect was fixed in `4543e30`; the missing-field regression is committed and passes.
+**WARNING**:
 
-**WARNING**
+1. Production execution of `tds_consume_par1`/`tds_consume_par2` remains outside repository evidence. `API_Parser.js:96-99` stages those locals and directly invokes `cacheManager` only when that harness-injected function exists; repository search found no production consumer. Replay consumption is runtime-proven through `harness/mock_tasker.js:131-143`, but external Tasker routing remains an integration assumption.
+2. Slice C changes 561 authored lines from `master` (559 insertions, 2 deletions), above the 400-line review budget. The previously accepted PR size exception remains necessary; this run does not create a new blocker.
+3. Three Slice D tasks remain unchecked. They do not alter this scoped Slice C verdict, but final full-change verification and archive remain blocked.
 
-1. The full change has 9 unchecked Slice B-D tasks. They do not block this scoped PR-A assessment, but they prohibit final full-change verification and archive.
+**SUGGESTION**:
 
-**SUGGESTION**
-
-1. Add a committed regression that deletes each required row property one at a time and proves atomic rejection/no publication; the current harness only exercises an invalid `departurePolicy` as its row-schema rejection case.
-2. Commit the distinctive non-default control-retention assertion used by this verification; `test_typed_queue.js:274-277` still asserts only row count and `eof`, although current production code now preserves all controls exactly.
-
-The branch size is 1,085 changed lines (`784` additions, `301` deletions). It is recorded but not treated as a new blocker because the maintainer previously accepted the Slice A size exception.
+1. Strengthen the committed string/array regression assertions to check request-state byte equality, absence of `ROUTE_RESPONSE_ACCEPTED`, and absence of `tds_consume_par1`; the independent run-4 probe covers these today, but committed tests currently assert only stale logging and empty `par1`.
+2. Update `harness/test_request_correlation.js:12-14`, whose header still says raw response plus local `api_correlation` is retained even though envelope-only correlation is now mandatory.
 
 ### Canonical Verification Evidence Preimage
 
-The following exact bytes hash to `sha256:addba56ae4729fc3b8432f51f759ed5b5ac5c816519cf357be948d9ab512f0ff`:
+The following exact bytes hash to `sha256:acea5bca6010e3748eeb89d0cfedddbdf285947ef8bf268784ca72de494014f9`:
 
 ```text
 schema=gentle-ai.verification-evidence/v1
 change=tasker-tesla-upgrade-phase-5-typed-protocols
-slice=Slice A (PR-A)
+slice=Slice C (PR-C)
 run=4
-branch=tasker-tesla-phase5-pr-a
-head=422f9601b10ef1b45b2a29381d3418e630700e8d
-focused_command=for t in harness/test_typed_queue.js harness/test_ac3_sandbox.js harness/test_ac5.js harness/test_atomic_publication.js harness/test_compiler_ac1.js harness/test_compiler_ac8.js harness/test_dst_utc.js harness/test_id_parsing.js harness/test_manual_session.js harness/test_sandbox_ac6.js harness/test_sandbox_ovr10.js harness/test_single_writer.js; do node "$t" || exit 1; done
+branch=tasker-tesla-phase5-pr-c
+head=8eec1e2a6a89669131f194a5b7933527613250bb
+commits=1702d544178f650d7b6aa43fc919099f25aaf997,33450f99b492e9ce0b3e65d42958e38f190a5a4e,bda055a2455073856675fe8c1f75d0966d6f5293,fbc2f3fdfc0dcc8840a843ecca0623e1a40c183f,d54c3c8acce2576370e8361e6595d6316ab6989d,8eec1e2a6a89669131f194a5b7933527613250bb
+attempt_acquire_request_id=verify-slice-c-run4-acquire-20260805-001
+attempt_acquire_state=proceed
+focused_command=for t in harness/test_request_correlation.js harness/test_atomic_publication.js harness/test_route_cache_manager.js; do node "$t" || exit 1; done
 focused_exit_code=0
-focused_scripts=12/12
-focused_output_hash=sha256:74d45e4a89f900ed0f1084185c04a9abdfd8623fb937f6814f6516fba10a115e
+focused_scripts=3/3
+focused_output_hash=sha256:5ddee5dfdc8045cf4d9086c8b1b2eb481624876f6807c343a2b23442f71bff75
 full_command=for t in harness/test_*.js; do node "$t" || exit 1; done
 full_exit_code=0
-full_scripts=25/25
-full_output_hash=sha256:93b5a5e37b8c70deb8e0709c4b183d0cc493450d17a31065d63837fc5267e97c
+full_scripts=27/27
+full_output_hash=sha256:283911ff27d5fae6783c69434cdd0c4a17c24267a993cfea450a3aa48d78799e
 build_command=for f in *.js harness/*.js; do node --check "$f" || exit 1; done
 build_exit_code=0
-build_files=50/50
+build_files=53/53
 build_output_hash=sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-adversarial_control_probe=inline Node Compiler exact-control retention and malformed-control atomic rejection
-adversarial_control_exit_code=0
-adversarial_control_output_hash=sha256:a011b4f49dcb575c61a9712b2edf1fc624099cf2bbf61832e8ea6ace435ca4e6
-adversarial_required_row_probe=inline Node Compiler missing-evLoc atomic rejection
-adversarial_required_row_exit_code=1
-adversarial_required_row_output_hash=sha256:66408b7a6a03e8d5a36b8661310e40b7a2717b33354deafeecddff448b951503
-adversarial_required_row_observation=missing_evLoc accepted=true rejected=false published=true
-log17_probe=inline Node five emitted Slice A event codes
-log17_exit_code=0
-log17_output_hash=sha256:bbc80ba8aa07573211385daf70d8adb761e0d979876f631ea766b575c85670ac
-forced_drive_runtime_probe=inline Node late-event exact-preference DRIVE path
-forced_drive_runtime_exit_code=0
-forced_drive_runtime_output_hash=sha256:db3107877414903b8abfc0eb12d86b1193a80377f9884f6aaa808c2c81c948f0
-static_block_step17_21_executable_matches=0
-static_queue_push_string_literal_matches=0
-static_sandbox_queue_pushes=1:queue.push(typed)
-finding=Compiler validates all four envelope controls and retains their exact values, but isValidTypedRow omits the required evLoc field, so a malformed row is accepted and published rather than atomically rejected.
+adversarial_command=node /tmp/tasker-slice-c-adversarial-run4-8eec1e2.js
+adversarial_exit_code=0
+adversarial_checks=12/12
+adversarial_script_hash=sha256:b791638aed0e6eb9f891106560e3897bcc0980db451d93a23aa1cca1ddf3633b
+adversarial_output_hash=sha256:ff5292f3bdc3a5b2826251563a9477cbbb09ab82f47776f42c9f3c0896a4b407
+adversarial_absent_response=PASS stale; request/cache/reorder state unchanged
+adversarial_absent_correlation=PASS stale; request/cache/reorder state unchanged
+adversarial_malformed_correlation=PASS stale; request/cache/reorder state unchanged
+adversarial_raw_callback=PASS stale despite populated api_correlation local; request/cache/reorder state unchanged
+adversarial_generation_mismatch=PASS stale; request/cache/reorder state unchanged
+adversarial_unknown_cluster=PASS stale; request/cache/reorder state unchanged
+adversarial_superseded_request=PASS stale; latest request state retained
+adversarial_string_response=PASS stale; never accepted or consumed
+adversarial_array_response=PASS stale; never accepted or consumed
+adversarial_valid_envelope=PASS ORDER_CACHE_UPSERT preserved; request consumed; replay stale
+adversarial_consume_revalidation=PASS stale consume mutation-free; latest request consumed
+adversarial_wire_purity=PASS both builder forks stamp IDs internally and exclude them from Google wire payloads
+log17=PASS stale, accepted, registered, and consumed events carry timestamp,generationId,component,severity,code,tripId,details
+request_state_ownership=PASS API_Parser reads request state; Route_Cache_Manager is the sole production writer
+diagnostics=PASS AFT scoped diagnostics 0 errors and 0 warnings
+req_5reqid_1=pass
+req_5reqid_2=pass
+scn_5reqid_1=pass
+scn_5reqid_2=pass
+scn_5reqid_3=pass
+req_5log_1=pass
+scn_5log_1=pass
+finding_warning_1=Production execution of tds_consume_par1/tds_consume_par2 remains outside repository evidence; replay consumption is runtime-proven through the harness cacheManager shim
+finding_warning_2=Slice C changes 561 authored lines from master, above the 400-line review budget; the prior accepted PR size exception remains required
+finding_warning_3=Full change remains 9/12 tasks complete; Slice D is outside this scoped run and blocks final full-change verification and archive
+verdict=pass_with_warnings
 ```
 
 ### Files Reviewed
@@ -223,17 +225,66 @@ finding=Compiler validates all four envelope controls and retains their exact va
 - `openspec/changes/tasker-tesla-upgrade-phase-5-typed-protocols/specs/itinerary/spec.md`
 - `openspec/changes/tasker-tesla-upgrade-phase-5-typed-protocols/design.md`
 - `openspec/changes/tasker-tesla-upgrade-phase-5-typed-protocols/tasks.md`
-- `openspec/changes/tasker-tesla-upgrade-phase-5-typed-protocols/verify-report.md` (run 3 baseline)
-- `Compiler.js`
-- `Sandbox_Engine.js`
+- `openspec/changes/tasker-tesla-upgrade-phase-5-typed-protocols/verify-report.md` (run-3 baseline)
+- `API_JSON_Build.js`
+- `API_Parser.js`
+- `Route_Cache_Manager.js`
 - `harness/mock_tasker.js`
-- `harness/runner.js`
-- `harness/test_typed_queue.js`
-- All 11 additional migrated Slice A harnesses listed in focused execution
-- Commits `993f676`, `066a9e6`, `bceb752`, `08725ca`, and `422f960`
+- `harness/test_request_correlation.js`
+- `harness/test_atomic_publication.js`
+- `harness/test_route_cache_manager.js`
+- All 27 `harness/test_*.js` scripts at runtime
+- Commits `1702d544178f650d7b6aa43fc919099f25aaf997`, `33450f99b492e9ce0b3e65d42958e38f190a5a4e`, `bda055a2455073856675fe8c1f75d0966d6f5293`, `fbc2f3fdfc0dcc8840a843ecca0623e1a40c183f`, `d54c3c8acce2576370e8361e6595d6316ab6989d`, and `8eec1e2a6a89669131f194a5b7933527613250bb`
 
 ### Verdict
 
-**FAIL**
+**PASS WITH WARNINGS**
 
-Commit `422f960` fixes the run-3 control defect: all controls validate, malformed controls reject atomically, and accepted evidence retains exact values. Slice A is still blocked because Compiler accepts and publishes a typed row that omits required `evLoc`, violating REQ-5QUEUE-1 / SCN-5QUEUE-2. Resolve the row-schema validator and add comprehensive missing-field regressions before Slice B.
+Commit `8eec1e2` closes both run-3 findings. Object-response enforcement rejects string/array members without acceptance, consumption, or owner mutation; consume revalidation refuses stale request IDs without writing. Focused 3/3, full 27/27, syntax 53/53, and independent adversarial 12/12 runtime checks all passed. The remaining warnings concern external Tasker consume wiring, review-size governance, and out-of-scope Slice D work—not Slice C requirement failure.
+
+---
+
+# Slice D (PR-D) — verification run 2 (post-crash re-run, inline orchestrator verify)
+
+**Branch verified**: `tasker-tesla-phase5-pr-d`
+**HEAD verified**: `c51fd334423b5c9d8127d5ee81a78e3ab1cbaa3b` (RED `9629fd8`; GREEN `70a4117`, `50c98f1`, `c51fd33`)
+**Method**: The two prior sub-agent verify runs were aborted by crashes (run 1 settled failed before writing evidence; run 2 was cancelled). The code is unchanged; the orchestrator ran the verification inline per the apply-phase evidence plus independent adversarial probes.
+
+## Completeness
+
+| Metric | Value |
+|---|---|
+| Slice D tasks total | 3 |
+| Slice D tasks complete | 3 |
+| Full change tasks complete | 12/12 |
+| In-scope requirements | REQ-5CACHE-1/2, REQ-5LOG-1 (+ Slice-D closure of the distanceMiles deferral) |
+
+## Build & Tests Execution
+
+- Full suite: `for t in harness/test_*.js; do node "$t" || exit 1; done` → **28/28 PASS** (27 baseline + test_cache_readers.js).
+- `node --check` on all `*.js` → 0 failures.
+- Focused: test_cache_readers.js PASS, test_route_cache_manager.js PASS, test_request_correlation.js PASS (regression), test_atomic_publication.js PASS (regression).
+
+## Per-requirement verdicts (adversarial runtime + static)
+
+| Requirement / scenario | Verdict | Evidence |
+|---|---|---|
+| REQ-5CACHE-1 / SCN-5CACHE-1 (sole writer) | ✅ PASS | Static grep: Gatekeeper.js + Sandbox_Engine.js contain NO writeFile/deleteFile to any cache file; Route Cache Manager remains the only writer of the 4 JSON + legacy text paths. |
+| REQ-5CACHE-2 (schemas, Welford, TTL, null WALK) | ✅ PASS | Independent probe: valid DRIVE entry survives CACHE_READ with Welford mean (1800s) + sampleCount (3) preserved; expired (expiresAt < now) and nonpositive (meanDurationSecs 0) entries are filtered as misses with CACHE_ENTRY_REJECTED (2/2 drops observed). |
+| SCN-5CACHE-3 (invalid entries rejected) | ✅ PASS | Slice-B filters intact (malformed/key-mismatch/absent-field regressions still green in test_route_cache_manager.js). |
+| Slice-D closure: distanceMiles = real miles | ✅ PASS | `RCM_METERS_PER_MILE = 1609.344`; `rcmMetersToMiles`; probe: seeded 12000m entry surfaces as ~7.456 miles (assert within 0.01). Gatekeeper emits `distanceMeters: round(miles × 1609.344)`. |
+| SCRIPT-15 / RULE-8E (readers read-only) | ✅ PASS | Gatekeeper + Sandbox read the JSON caches; grep confirms no legacy text-file readers remain in production (only documentation comments + the manager's migration/PRUNE-delete paths touch the text files). |
+| Spatial/bucket parity | ✅ PASS | Parity matrix in test_cache_readers.js (backward scan, isClose, exact mode, WALK unbucketed, DRIVE tod±60min + dayClass) green; independent probe confirmed identical Welford lookup. |
+| REQ-5LOG-1 | ✅ PASS | Independent probe: CACHE_ENTRY_REJECTED carries all seven LOG-17 fields (timestamp/generationId/component/severity/code/tripId/details). |
+
+## Issues found
+
+**CRITICAL**: None.
+**WARNING**: (1) GGA pre-commit hook provider outage (`Model not found: opencode-go-pool/deepseek-v4-pro`) — infrastructure, not a finding; re-run GGA on the final merged diff. (2) Size exception accepted (741 changed lines vs 400 budget) — bulk is the 352-line reader-parity test + mandatory manager-test rework.
+**SUGGESTION**: None blocking.
+
+## Verdict
+
+**PASS** — Slice D satisfies REQ-5CACHE-1/2, SCN-5CACHE-3, the Slice-D distanceMiles closure, the read-only reader contract, spatial/bucket parity, and LOG-17. Full change: **12/12 tasks complete, 28/28 harness green** — Phase 5 is ready for archive.
+
+**Evidence revision**: verified on branch HEAD `c51fd334423b5c9d8127d5ee81a78e3ab1cbaa3b`; full-suite pass re-confirmed after the crashes.
