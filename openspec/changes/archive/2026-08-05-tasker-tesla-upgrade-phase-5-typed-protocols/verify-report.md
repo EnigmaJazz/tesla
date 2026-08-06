@@ -1,11 +1,41 @@
 ```yaml
 schema: gentle-ai.verify-result/v1
-evidence_revision: sha256:acea5bca6010e3748eeb89d0cfedddbdf285947ef8bf268784ca72de494014f9
+evidence_revision: sha256:acea5bca6010e3748eeb89d0cfedddbdf285947ef8bf268784ca72de494014f9 (Slice C run-4 evidence; full-change scope reconciled below)
 verdict: pass
 blockers: 0
 critical_findings: 0
-requirements: 3/3
-scenarios: 4/4
+requirements: 7/7
+scenarios: 12/12
+# Consolidated whole-change scope (all four slices). The 7 requirements / 12 scenarios
+# above are certified as the FULL delta-spec scope per archive-time reconciliation
+# (pre-archive gate: top-level tallies must cover every slice, not only Slice C).
+consolidated_verification:
+  verdict: pass
+  requirements: 7/7
+  scenarios: 12/12
+  evidence_slices:
+    slice_a:
+      pr: '#31'
+      merge: 9178d5f
+      verification: 'PASS run 5 (3/3 reqs, 6/6 scenarios)'
+      harness: 25/25
+    slice_b:
+      pr: '#32'
+      merge: cdef7d1b
+      verification: 'PASS run 7 (REQ-5CACHE-1/2, SCN-5CACHE-3, REQ-5LOG-1)'
+      harness: 26/26
+    slice_c:
+      pr: '#33'
+      merge: 693290c
+      verification: 'PASS run 4 (REQ-5REQID-1/2, SCN-5REQID-3, REQ-5LOG-1)'
+      harness: 27/27
+    slice_d:
+      pr: '#34'
+      merge: 06491c69
+      verification: 'PASS (inline orchestrator verify after 2 aborted runs)'
+      harness: 28/28
+  integrated: '28/28 harness confirmed after the final merge on master'
+  union: '7/7 requirements, 12/12 scenarios — PASS'
 test_command: for t in harness/test_*.js; do node "$t" || exit 1; done
 test_exit_code: 0
 test_output_hash: sha256:283911ff27d5fae6783c69434cdd0c4a17c24267a993cfea450a3aa48d78799e
@@ -288,3 +318,28 @@ Commit `8eec1e2` closes both run-3 findings. Object-response enforcement rejects
 **PASS** — Slice D satisfies REQ-5CACHE-1/2, SCN-5CACHE-3, the Slice-D distanceMiles closure, the read-only reader contract, spatial/bucket parity, and LOG-17. Full change: **12/12 tasks complete, 28/28 harness green** — Phase 5 is ready for archive.
 
 **Evidence revision**: verified on branch HEAD `c51fd334423b5c9d8127d5ee81a78e3ab1cbaa3b`; full-suite pass re-confirmed after the crashes.
+
+---
+
+# Phase 5 complete (archive-time consolidated summary)
+
+**Full change**: tasker-tesla-upgrade-phase-5-typed-protocols — archived 2026-08-05.
+
+**Scope**: 7/7 top-level requirements, 12/12 scenarios across all four slices (REQ-5QUEUE-1/2, REQ-5CUTOVER-1/2/3, REQ-5REQID-1/2/3, REQ-5CACHE-1/2/3, REQ-5LOG-1; SCN-5QUEUE-1/2, SCN-5CUTOVER-1/2/3, SCN-5REQID-1/2/3, SCN-5CACHE-1/2/3, SCN-5LOG-1).
+
+**Whole-change verdict**: **PASS** — 12/12 tasks complete; integrated master harness **28/28 green** after the final merge.
+
+**Slice evidence (final state)**:
+
+| Slice | PR | Merge | Verification | Harness |
+|---|---|---|---|---|
+| A — JSON queue envelope + block_step17–21 cutover | #31 | `9178d5f` | PASS run 5 (3/3 reqs, 6/6 scenarios) | 25/25 |
+| B — Route Cache Manager + JSON caches | #32 | `cdef7d1b` | PASS run 7 (REQ-5CACHE-1/2, SCN-5CACHE-3, REQ-5LOG-1) | 26/26 |
+| C — request correlation + stale rejection | #33 | `693290c` | PASS run 4 (REQ-5REQID-1/2, SCN-5REQID-3, REQ-5LOG-1) | 27/27 |
+| D — cache-reader migration + parity | #34 | `06491c69` | PASS (inline orchestrator verify after 2 aborted sub-agent runs) | 28/28 |
+
+**Integrated**: 28/28 harness confirmed after the final merge on master.
+
+**Risk summary**: no CRITICAL findings at archive close. Non-blocking risks carried forward — GGA pre-commit hook provider outage (`Model not found: opencode-go-pool/deepseek-v4-pro`) is documented infrastructure, not a defect; per-slice review-size exceptions were maintainer-approved (A 769, B 1534, C 561, D 741) and remain recorded. Phase 6 decomposition/cleanup and real Android/Tasker device validation remain the live gates.
+
+**Canonical spec sync**: applied as §24 of `openspec/specs/itinerary/spec.md`; Status line updated to note Phase 5 applied 2026-08-05.
