@@ -24,15 +24,23 @@ try {
         let leg = itinerary[0];
         let tripId = leg.tripId || leg.targetEventId || "";
 
+        // Forcefully release the engine block: staged OBSERVE_LATENESS_HALT
+        // clears the halt through the reducer so project() owns the global
+        // (REQ-6STATE-2/3). The primary DEPART_NOW envelope is staged last so
+        // the serial chain still delivers the departure command.
+        setLocal('par1', 'OBSERVE_LATENESS_HALT');
+        setLocal('par2', JSON.stringify({
+            generationId: global('TDS_Active_Generation') || (m && m.activeGeneration) || null,
+            halt: false,
+            at: nowSec
+        }));
+
         setLocal('par1', 'DEPART_NOW');
         setLocal('par2', JSON.stringify({
             generationId: global('TDS_Active_Generation') || (m && m.activeGeneration) || null,
             tripId: tripId,
             at: nowSec
         }));
-
-        // Forcefully release the engine block
-        setGlobal('TDS_Lateness_Halt', 'false');
 
         flash("Departing now for " + (leg.targetTitle || "destination") + ".");
     }

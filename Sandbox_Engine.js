@@ -423,9 +423,21 @@ function getRemainingStops(evId, desc, completedRaw) {
     return { secs: remSecs, arr: pendingArr };
 }
 
-try {
-    setGlobal('TDS_Lateness_Halt', 'false');
+// Phase 6: stage a typed reducer command through the serial par1/par2 pair.
+// The synchronous reducer shim (harness) applies it immediately; in the serial
+// Tasker task the last staged command reaches the reducer next. Used for the
+// OBSERVE_LATENESS_HALT / OBSERVE_STATUS / OBSERVE_BASE_LEAVE / OBSERVE_DEPARTURE
+// observations so the reducer stays the sole writer of the state file and
+// project() the sole writer of the five status globals (REQ-6STATE-2/3).
+function stageReducerCommand(name, payload) {
+    setLocal('par1', name);
+    setLocal('par2', JSON.stringify(payload));
+    if (typeof reducer === 'function') {
+        reducer(name, payload);
+    }
+}
 
+try {
     let idx = parseInt(local('idx'), 10) || 1; 
     let master = readActiveGeneration("master");
     GLOBAL_MASTER_ARR = master;
@@ -517,21 +529,16 @@ try {
                 
                 currentlyAtBase = (isAtHome || isAtAdHocBase || isAtBase);
                 let prevAtBase = (global('User_At_Base') === "true");
+                let oldItin = readActiveGeneration("itinerary");
                 if (currentlyAtBase && !prevAtBase) {
-                    setGlobal('User_At_Base', "true"); setGlobal('Base_Arrival_Unix', nowSec.toString());
                     // Phase 3 PR-B: stage OBSERVE_LIVE_BASE to the reducer. The reducer
                     // is the sole writer of TDS_Trip_State.json and tracks currentOrigin.
-                    // The legacy User_At_Base global remains as a compatibility shim for
-                    // components that have not yet been migrated to the reducer-managed
-                    // currentOrigin projection. PR-D will remove the legacy write.
-                    setLocal('par1', 'OBSERVE_LIVE_BASE');
-                    setLocal('par2', JSON.stringify({
+                    // Phase 6: the legacy User_At_Base/Base_Arrival_Unix writes are gone —
+                    // the reducer's project() owns those projections post-commit.
+                    stageReducerCommand('OBSERVE_LIVE_BASE', {
                         generationId: global('TDS_Active_Generation') || "gen:0:0000",
                         at: nowSec
-                    }));
-                    if (typeof reducer === 'function') {
-                        reducer('OBSERVE_LIVE_BASE', { generationId: global('TDS_Active_Generation') || "gen:0:0000", at: nowSec });
-                    }
+                    });
                     // Slice B (AC-5/0E): base arrival completes the active
                     // manual return. Read the reducer state, find the
                     // IN_PROGRESS/ARRIVED trip on TODAY's planning day (the
@@ -562,18 +569,29 @@ try {
                             at: nowSec,
                             planningDay: localPlanningDay(nowSec)
                         };
-                        setLocal('par1', 'COMPLETE_TRIP');
-                        setLocal('par2', JSON.stringify(completionPayload));
-                        if (typeof reducer === 'function') {
-                            reducer('COMPLETE_TRIP', completionPayload);
-                        }
+                        stageReducerCommand('COMPLETE_TRIP', completionPayload);
                     });
                 } else if (!currentlyAtBase && prevAtBase) {
-                    setGlobal('User_At_Base', "false");
+                    // Phase 6 (REQ-6STATE-3/4, SCN-6STATE-5/7): base departure clears
+                    // base state via OBSERVE_BASE_LEAVE and records the actual departure
+                    // of the active leg via OBSERVE_DEPARTURE (tripId from the head leg's
+                    // targetEventId; cross-day diff authority, REQ-6STATE-4). project()
+                    // owns the User_At_Base/Base_Arrival_Unix projections.
+                    stageReducerCommand('OBSERVE_BASE_LEAVE', {
+                        generationId: global('TDS_Active_Generation') || "gen:0:0000",
+                        at: nowSec
+                    });
+                    if (oldItin.length > 0 && oldItin[0].targetEventId) {
+                        stageReducerCommand('OBSERVE_DEPARTURE', {
+                            generationId: global('TDS_Active_Generation') || "gen:0:0000",
+                            tripId: oldItin[0].targetEventId,
+                            at: nowSec,
+                            planningDay: localPlanningDay(nowSec)
+                        });
+                    }
                 }
 
-                let pitStr = ""; 
-                let oldItin = readActiveGeneration("itinerary");
+                let pitStr = "";
                 if (oldItin.length > 0) {
                     let aLeg = oldItin[0];
                     if (aLeg.pitstopState === 'true' || aLeg.pitstopState === 'forced' || aLeg.pitstopState === 'handled') {
@@ -613,7 +631,11 @@ try {
                         }
                     } else resolvedStatus = "Idle";
                 }
-                setGlobal('Current_Status', resolvedStatus);
+                stageReducerCommand('OBSERVE_STATUS', {
+                    generationId: global('TDS_Active_Generation') || "gen:0:0000",
+                    status: resolvedStatus,
+                    at: nowSec
+                });
             }
         } else {
             currentlyAtBase = (global('User_At_Base') === "true");
@@ -865,6 +887,14 @@ try {
         // Slice A: the chain's local planning day, seeded at the pass start
         // and overridden by the head event's own local day at loop entry.
         let chainPlanningDay = localPlanningDay(nowSec);
+
+        // Phase 6 (REQ-6STATE-2): per-pass lateness-halt reset. Delivered as a
+        // staged OBSERVE_LATENESS_HALT so the reducer owns latenessHalt and
+        // project() owns the TDS_Lateness_Halt projection. This runs only after
+        // the pass has read its live User_At_Base/Current_Status/Base_Arrival_Unix
+        // inputs — a reducer commit here would otherwise re-project stale state
+        // bytes over those inputs before they are consumed.
+        stageReducerCommand('OBSERVE_LATENESS_HALT', { generationId: global('TDS_Active_Generation') || "gen:0:0000", halt: false, at: nowSec });
 
         // INV-0.3: a fresh pass with a stale away itinerary and live base must
         // plan from the actual base coords, not from the stale virtual origin.
@@ -1246,7 +1276,7 @@ try {
                                 s: ["SKIP_EVENT|" + evId, "IGNORE_paradox|" + evId]
                             };
                             stepConflict = JSON.stringify({ config: { notify: true, notifyTitle: "Drop-in Paradox", notifyText: "Arriving before open breaks timeline." }, menu: paradoxMenu });
-                            setGlobal('TDS_Lateness_Halt', 'true'); queue = []; skipIdx = idx; blockMode = null; break;
+                            stageReducerCommand('OBSERVE_LATENESS_HALT', { generationId: global('TDS_Active_Generation') || "gen:0:0000", halt: true, at: nowSec }); queue = []; skipIdx = idx; blockMode = null; break;
                         }
                     } else {
                         evStartTarget = closeUnix - (ev.duration || 0) - evArrBufSecs;
@@ -1340,7 +1370,7 @@ try {
                             s: ["SKIP_PITSTOP|" + evId, "FORCE_PITSTOP|" + evId]
                         };
                         stepConflict = JSON.stringify({ config: { notify: true, notifyTitle: "Pitstop Decision Required", notifyText: "Detour to " + activeBase.name + " causes lateness." }, menu: pitMenu });
-                        setGlobal('TDS_Lateness_Halt', 'true'); break; 
+                        stageReducerCommand('OBSERVE_LATENESS_HALT', { generationId: global('TDS_Active_Generation') || "gen:0:0000", halt: true, at: nowSec }); break; 
                     }
                     
                     let simArr = state.time + recTimeBase + timeToBase;
@@ -1416,7 +1446,7 @@ try {
                     s: ["LIFT|" + evId, "IGNORE_WALK|" + evId]
                 };
                 stepConflict = JSON.stringify({ config: { notify: true, notifyTitle: "Walk Limit Reached", notifyText: "Daily walking threshold breached." }, menu: walkMenu });
-                setGlobal('TDS_Lateness_Halt', 'true'); break; 
+                stageReducerCommand('OBSERVE_LATENESS_HALT', { generationId: global('TDS_Active_Generation') || "gen:0:0000", halt: true, at: nowSec }); break; 
             }
 
             let testTargetTime = state.time + estTravelSecs;
@@ -1637,7 +1667,7 @@ try {
                     rootMenu.s.push("HALT_ENGINE");
 
                     stepConflict = JSON.stringify({ config: { notify: true, notifyTitle: "⚠️ Late: " + safeUIEvTitle, notifyText: "Projected: " + latenessStr }, menu: rootMenu });
-                    setGlobal('TDS_Lateness_Halt', 'true'); queue = []; skipIdx = idx; blockMode = null; break; 
+                    stageReducerCommand('OBSERVE_LATENESS_HALT', { generationId: global('TDS_Active_Generation') || "gen:0:0000", halt: true, at: nowSec }); queue = []; skipIdx = idx; blockMode = null; break; 
                 } 
             }
 
