@@ -10,8 +10,10 @@ context: |
   Data stored as JSON files under Tasker/Tesla/Data/ (Itin_Master, TDS_Overrides, etc.).
   Architecture: Monolithic Alpha engine (V18.x) with modular satellite scripts
   (Compiler V24, Dispatcher V15, Gatekeeper, Dashboard, etc.), GPS-aware API integration.
-  No CI, no test framework, no linter, no type checker, no formatter.
-  Testing via manual Tasker execution and deterministic scenario verification.
+  No CI, no linter, no type checker, no formatter.
+  Testing via a deterministic Node harness at harness/ (mock_tasker.js vm sandbox mocking
+  Tasker primitives with pinned Date.now), run with `node harness/test_*.js` (28 scripts);
+  device flows remain manual-only (Tasker serial par1/par2 staging, %-expansion).
 
 rules:
   proposal:
@@ -32,9 +34,9 @@ rules:
       - Follow existing code patterns (Tasker-local variable conventions, ES5 patterns in satellites, ES6 in Alpha)
       - Do NOT introduce npm/Node dependencies — this is a Tasker environment
     tdd: false
-    test_command: "manual — verify via Tasker run or harness script"
+    test_command: "node harness/test_*.js"
   verify:
-    test_command: "manual — execute in Tasker and inspect output JSON"
+    test_command: "node harness/test_*.js"
     build_command: ""
     coverage_threshold: 0
   archive:
@@ -43,15 +45,15 @@ rules:
 testing:
   strict_tdd: false
   runner:
-    command: "none"
-    framework: "none — manual execution in Tasker environment"
+    command: "for f in harness/test_*.js; do node $f; done"
+    framework: "none (plain Node + vm sandbox)"
   layers:
     unit:
-      available: false
-      tool: "—"
+      available: true
+      tool: "node + harness/mock_tasker.js"
     integration:
-      available: false
-      tool: "—"
+      available: true
+      tool: "28 cross-component harness tests"
     e2e:
       available: false
       tool: "Tasker (manual execution)"
