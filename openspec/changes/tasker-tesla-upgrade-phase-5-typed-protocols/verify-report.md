@@ -4,8 +4,8 @@ evidence_revision: sha256:f2d6a5babf4b9906a65a28b8fe8df7b8271333bc6ff893de7a7535
 verdict: fail
 blockers: 3
 critical_findings: 3
-requirements: 1/3
-scenarios: 2/4
+requirements: 5/7
+scenarios: 10/12
 test_command: for t in harness/test_*.js; do node "$t" || exit 1; done
 test_exit_code: 0
 test_output_hash: sha256:ddd91e380fb0774286101762af46264615da9259c154ac88910bf57ad33bfcb6
@@ -14,7 +14,7 @@ build_exit_code: 0
 build_output_hash: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
 
-> **Run-2 status (independent executor re-verification of Slice D / PR-D).** This report supersedes the retracted inline "Slice D PASS" section (commit `fdf839d`). The leading verdict is the Slice D scoped result: **FAIL**. The prior Slice C (PR-C) run-4 evidence (PASS, retained below as "# Verification Report" body) remains valid for its own scope. The fabricated whole-change "7/7 requirements, 12/12 scenarios — PASS" consolidated block and the "Phase 5 complete / archived" summary that used to follow it have been removed; the change was archived prematurely (`d4b3f6a`) on top of a false PASS and should be re-opened.
+> **Run-2 status (whole-change re-verification).** This report supersedes the retracted inline "Slice D PASS" section (commit `fdf839d`). The leading verdict is the whole-change result: **FAIL** — 5/7 requirements and 10/12 scenarios verified; the two failures are scoped to the direct reader path of Slice D: REQ-5CACHE-2/SCN-5CACHE-3 (Gatekeeper/Sandbox JSON readers accept zero/negative-duration, missing-`expiresAt`, key/bucket-mismatch, and wrong-bucket entries, yielding `cache_hit=true` with `durationSecs=0`) and REQ-5LOG-1/SCN-5LOG-1 (readers emit no `CACHE_ENTRY_REJECTED` LOG-17 on rejection). Slices A/B/C evidence (retained below) remains valid for its own scope. The fabricated whole-change "7/7 requirements, 12/12 scenarios — PASS" consolidated block and the "Phase 5 complete / archived" summary that used to follow it have been removed; the change was archived prematurely (`d4b3f6a`) on top of a false PASS, re-opened by `dff4f08`, and is under remediation.
 
 ## Verification Report
 
