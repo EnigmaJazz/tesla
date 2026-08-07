@@ -82,3 +82,61 @@ listed in the design's slice-1 table, but task 1.12's 28/28 gate forces it.
 - Slice 2a: Compiler/Stop_Logger/Override_Handler reads, E2-1/3/4 inversion, `TDS_Depart_Memory` / `TDS_Completed_Stops` writes.
 - Slice 2b: Finaliser/Sandbox reads + E2-2, `readActiveGeneration` copies, vestigial merge deletion.
 - Slice 3: Alpha deletions, dead `readOrigin()`, config/testing docs, canonical spec sync.
+
+---
+
+# Apply Progress — Phase 6 State Decomposition, Slice 2a (PR 2a)
+
+**Change**: tasker-tesla-upgrade-phase-6-state-decomposition
+**Slice**: 2a — Read-side cutover: Compiler / Stop_Logger / Override_Handler (PR 2a of the stacked-to-main chain)
+**Branch**: `tasker-tesla-phase6-pr-2a` (from `master`, after PR 1 merged as dce6746)
+**Date**: 2026-08-07
+**Mode**: Standard (strict_tdd: false per `openspec/config.yaml`); RED-first where practical
+**Delivery**: auto-chain / stacked-to-main; review budget 400 changed lines
+
+## Status
+
+Slice 2a complete: tasks 2a.1–2a.6 all `[x]` in `tasks.md`. Full harness 28/28 green.
+Changed lines vs master: **232** (120 insertions + 112 deletions, incl. tests) — under the 400 budget.
+
+## Commits (on `tasker-tesla-phase6-pr-2a`)
+
+| SHA | Message |
+|---|---|
+| `bc9cd5b` | test(single-writer): RED — invert E2-1/E2-3 and PRUNE globals to state ownership |
+| `78e58b0` | feat(state): cut Compiler/Stop_Logger/Override_Handler memory reads over to trip state |
+
+Not pushed; PR delivery is the orchestrator's step.
+
+## Work Unit Evidence
+
+| Evidence | Required value |
+|---|---|
+| Focused test command and exact result | `node harness/test_single_writer.js` → RED confirmed first (3 assertion groups failed: PRUNE globals, E2-1, E2-3), then `PASS: Override Single Writer — … globals, propose-default, projection sync` (exit 0) after implementation. |
+| Runtime harness command/scenario and exact result | `for f in harness/test_*.js; do node $f; done` → **28 passed, 0 failed**. Includes `test_ac5.js` (Stop_Logger staging, Finaliser gate), `test_departure_day.js` (reducer OBSERVE_DEPARTURE state), `test_trip_lifecycle.js` (projection). |
+| Rollback boundary | Revert commits `bc9cd5b..78e58b0` (or the branch) — Finaliser/Sandbox still read the legacy globals (2b), reducer state retains records, `schemaVersion` stays 1. Independent of 2b/3. |
+
+## Task mapping
+
+- **2a.1** `Compiler.js`: `TDS_Depart_Memory` global read (:527) → `readFile("Tasker/Tesla/Data/TDS_Trip_State.json")` → `state.trips[tripId].departures[]` (last record = prior actual departure); prune loop + `newDepMem` accumulation + `setGlobal('TDS_Depart_Memory')` (:700) removed. `departChanged`/`departDiffMins` cross-day semantics preserved (REQ-6STATE-4, SCN-6STATE-7).
+- **2a.2** `Stop_Logger.js`: global read/append/dedup + `setGlobal('TDS_Completed_Stops')` (:43) removed; the staged `COMPLETE_STOP` command is the sole record path; reducer owns `state.completedStops`.
+- **2a.3** `Override_Handler.js`: `GLOBAL_MEMORIES` list (:74-78), the PRUNE memory loop (:640-646), and its now-dead helpers `pruneCsv` + `DEPART_WINDOW_SECS` deleted. Category projections (`eventOverrides` prune + `syncProjections`) retained. Closes the missing-`TDS_Completed_Stops` unbounded-growth gap (SCN-6STATE-2).
+- **2a.4** `test_single_writer.js`: E2-1 + E2-3 inverted to assert state reads and NO global writes; PRUNE globals section inverted to assert byte-identical (state-owned) globals. E2-4 re-scoped to 2b (Sandbox read cutover is 2b.2) per orchestrator.
+- **2a.5** `test_ac5.js` + `test_departure_day.js`: audited — **no** `TDS_Depart_Memory`/`TDS_Completed_Stops` assertions exist. `test_ac5.js` seeds Finaliser's `TDS_Completed_Dropins`/`TDS_Arrival_Memory` inputs (2b behavior, untouched); `test_departure_day.js` is already pure reducer-state. No edits needed.
+- **2a.6** Regression: 28/28 green (full loop).
+
+## Deviations from design
+
+1. **E2-4 inversion moved to 2b** (design work-unit table lists "E2-1/3/4 inversion" under 2a): the orchestrator's authoritative scope assigns E2-4 (Sandbox reads `TDS_Completed_Stops`) to slice 2b because the Sandbox `state.completedStops` read is task 2b.2. Inverting E2-4 in 2a would assert a read cutover that does not exist until 2b. `tasks.md` 2a.4 annotated accordingly.
+2. **`test_single_writer.js` PRUNE-globals section (:375-390) inverted in 2a** (not listed in the design's slice table): it asserted the exact `GLOBAL_MEMORIES` prune loop 2a.3 deletes; task 2a.6's 28/28 gate forces it. Same pattern as slice 1's `test_reducer_commands.js` companion.
+3. **Dead helpers removed with the prune loop**: `pruneCsv` (:607-618) and `DEPART_WINDOW_SECS` (:36) existed only to serve the deleted global-memory prune; removed in the same work unit (they would otherwise be dead code referencing the retired globals).
+4. **Compiler comment at the former `newDepMem.push` site**: replaced the memory-leak note with a state-authority note; no behavior change (rejected legs never reach state).
+
+## Issues found
+
+- **Reducer 30-day retention is declared but NOT yet implemented**: `Trip_State_Reducer.js` declares `DEFAULT_RETENTION_DAYS = 30` (:35) and its header documents pruning "on the next commit", but no pruning code exists — `STATE_STOP_RETENTION_APPLIED` appears only in the spec (SCN-6STATE-2). With the Override_Handler prune loop gone, the reducer is now the sole owner of departure/dropin/arrival/stop retention, but nothing enforces the 30-day bound yet. **This must land before archive** — likely as a slice-3 or post-slice-3 follow-up; flagging so verify/archive does not assume SCN-6STATE-2 is fully evidenced. The slice-2a tasks (remove the handler prune, assert no global reads) are complete; the reducer retention implementation is a separate unit.
+
+## Not in this slice (deferred to PR 2b/3 — NOT touched)
+
+- Slice 2b: Finaliser (`TDS_Completed_Dropins`/`TDS_Arrival_Memory` reads :93-95, writes :167-168), Sandbox `state.completedStops` read (:18), E2-2/E2-4 inversion, vestigial merge deletion.
+- Slice 3: Alpha deletions, dead Sandbox `readOrigin()`, config/testing docs, canonical spec sync.

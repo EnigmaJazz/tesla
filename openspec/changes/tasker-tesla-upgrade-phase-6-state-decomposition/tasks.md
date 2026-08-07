@@ -42,12 +42,12 @@ Delivery `auto-chain`; D1 (caller = Sandbox_Engine.js:571) & D3 (v1) confirmed; 
 
 ## Slice 2a — Compiler / Stop_Logger / Override_Handler (PR 2a)
 
-- [ ] 2a.1 `Compiler.js`:527/:700 — read `state.trips[tripId].departures[]` for prune + `departChanged`/`departDiffMins`; remove `setGlobal('TDS_Depart_Memory')` [REQ-6STATE-1/4 SCN-6STATE-1/7]
-- [ ] 2a.2 `Stop_Logger.js`:43 — remove `setGlobal('TDS_Completed_Stops')`; `COMPLETE_STOP` staging (:51) sole path [REQ-6STATE-1 SCN-6STATE-1]
-- [ ] 2a.3 `Override_Handler.js`:74-78/:640-646 — delete `GLOBAL_MEMORIES` list + prune loop; reducer 30-day retention owns [REQ-6STATE-1 SCN-6STATE-2]
-- [ ] 2a.4 `harness/test_single_writer.js` — invert E2-1 (:523), E2-3 (:557), E2-4 (:586): assert state reads, not global writes [REQ-6STATE-8 SCN-6STATE-11]
-- [ ] 2a.5 `harness/test_ac5.js` + `test_departure_day.js` — update `TDS_Depart_Memory`/`TDS_Completed_Stops` assertions to state reads [REQ-6STATE-8 SCN-6STATE-11]
-- [ ] 2a.6 Regression: full harness loop green 28/28 [REQ-6STATE-8 SCN-6STATE-11]
+- [x] 2a.1 `Compiler.js`:527/:700 — read `state.trips[tripId].departures[]` for prune + `departChanged`/`departDiffMins`; remove `setGlobal('TDS_Depart_Memory')` [REQ-6STATE-1/4 SCN-6STATE-1/7]
+- [x] 2a.2 `Stop_Logger.js`:43 — remove `setGlobal('TDS_Completed_Stops')`; `COMPLETE_STOP` staging (:51) sole path [REQ-6STATE-1 SCN-6STATE-1]
+- [x] 2a.3 `Override_Handler.js`:74-78/:640-646 — delete `GLOBAL_MEMORIES` list + prune loop; reducer 30-day retention owns [REQ-6STATE-1 SCN-6STATE-2]
+- [x] 2a.4 `harness/test_single_writer.js` — invert E2-1 (:523) + E2-3 (:557): assert state reads, not global writes [REQ-6STATE-8 SCN-6STATE-11] (E2-4 re-scoped to 2b by orchestrator: Sandbox read cutover is 2b.2)
+- [x] 2a.5 `harness/test_ac5.js` + `test_departure_day.js` — audit `TDS_Depart_Memory`/`TDS_Completed_Stops` assertions; none exist (test_ac5 only seeds Finaliser inputs = 2b) [REQ-6STATE-8 SCN-6STATE-11]
+- [x] 2a.6 Regression: full harness loop green 28/28 [REQ-6STATE-8 SCN-6STATE-11]
 
 ## Slice 2b — Finaliser / Sandbox + E2-2 (PR 2b)
 
