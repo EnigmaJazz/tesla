@@ -36,6 +36,11 @@ var DEFAULT_RETENTION_DAYS = 30;
 // Slice B: manual action expiry for the unique manual return request
 // (canonical MANUAL-13 manual-action deadline; no magic numbers).
 var MANUAL_ACTION_EXPIRY_SECS = 4 * 3600;
+// FU1 (REQ-6FU-3): upper bound on the ordered sub-command list inside one
+// REDUCER_BATCH envelope. Covers the COMPLETE_TRIP x N manual-trip loop on a
+// base-arrival pass with margin; an oversized batch is rejected whole. Mirrored
+// in TDS_State_Command.js (Tasker scripts are standalone; byte-exact copy).
+var MAX_REDUCER_BATCH_SIZE = 32;
 
 var VALID_POLICIES = { MANUAL: true, RECOVERY: true, EOD: true, SAFETY: true, VEHICLE: true };
 
@@ -317,7 +322,31 @@ var COMMANDS = [
   // schemaVersion stays 1 — no fields are added, only dead fields activate.
   { name: "OBSERVE_BASE_LEAVE", validate: function(p) { return validateFields(p, [{name:"at",type:"number",required:true}]); }, apply: applyObserveBaseLeave },
   { name: "OBSERVE_LATENESS_HALT", validate: function(p) { return validateFields(p, [{name:"halt",type:"any",required:true},{name:"at",type:"number",required:true}]); }, apply: applyObserveLatenessHalt },
-  { name: "OBSERVE_STATUS", validate: function(p) { return validateFields(p, [{name:"status",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: applyObserveStatus }
+  { name: "OBSERVE_STATUS", validate: function(p) { return validateFields(p, [{name:"status",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: applyObserveStatus },
+  // FU1 (REQ-6FU-1/3): the REDUCER_BATCH envelope. The validate mirrors the
+  // router's envelope-shape contract (generationId, non-empty commands array,
+  // well-formed {command,payload} entries, no nesting, size-guarded) as
+  // defense in depth; applyBatch then validates each sub-command byte-exact
+  // against its own per-command fields (SCN-6FU-7) and applies in order.
+  { name: "REDUCER_BATCH", validate: function(p) {
+      const common = validateCommon(p);
+      if (!common.valid) return common;
+      if (!Array.isArray(p.commands) || p.commands.length === 0) return { valid: false, reason: "commands must be a non-empty array" };
+      if (p.commands.length > MAX_REDUCER_BATCH_SIZE) return { valid: false, reason: "commands exceeds MAX_REDUCER_BATCH_SIZE" };
+      for (let i = 0; i < p.commands.length; i++) {
+        const entry = p.commands[i];
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return { valid: false, reason: "command entries must be objects" };
+        if (typeof entry.command !== "string" || !entry.command) return { valid: false, reason: "entry command must be a non-empty string" };
+        if (entry.command === "REDUCER_BATCH") return { valid: false, reason: "nested REDUCER_BATCH is forbidden" };
+        if (entry.payload === null || typeof entry.payload !== "object" || Array.isArray(entry.payload)) return { valid: false, reason: "entry payload must be a JSON object" };
+        let known = false;
+        for (let j = 0; j < COMMANDS.length; j++) {
+          if (COMMANDS[j].name === entry.command) { known = true; break; }
+        }
+        if (!known) return { valid: false, reason: "unknown reducer sub-command: " + entry.command };
+      }
+      return { valid: true };
+    }, apply: applyBatch }
 ];
 function parseCommand(name, payload, context) {
   if (typeof name !== "string" || !name) return { valid: false, reason: "missing command name" };
@@ -329,6 +358,39 @@ function parseCommand(name, payload, context) {
   const validation = cmd.validate(payload);
   if (!validation.valid) return { valid: false, reason: validation.reason };
   return { valid: true, apply: function(state) { return cmd.apply(state, payload, context); } };
+}
+// FU1 (REQ-6FU-2, SCN-6FU-4/5/7): apply one REDUCER_BATCH in staging order.
+// Each sub-command is validated byte-exact against the same per-command
+// contract as a direct command; an invalid sub-command is logged with
+// BATCH_SUBCOMMAND_REJECTED and skipped WITHOUT mutating state, while valid
+// sub-commands before and after still apply — all-or-nothing is forbidden.
+// The single commit + single projection happen after the loop in reduce()
+// (D4); partial-failure lives at the apply/validate level, never the write
+// level. batchStats carries applied/skipped counts and the last valid
+// RETURN_TO_BASE payload so reduce() logs delivery and stages SESSION_OPEN
+// only after a successful commit.
+var batchStats = null;
+function applyBatch(state, payload) {
+  let running = state;
+  const stats = { applied: 0, skipped: 0, returnToBasePayload: null };
+  batchStats = stats;
+  const commands = payload.commands;
+  for (let i = 0; i < commands.length; i++) {
+    const entry = commands[i];
+    const sub = parseCommand(entry.command, entry.payload, null);
+    if (!sub.valid) {
+      stats.skipped += 1;
+      logEvent("warn", "BATCH_SUBCOMMAND_REJECTED", entry.payload && entry.payload.tripId || null, {
+        command: entry.command, reason: sub.reason, index: i,
+        generationId: entry.payload && entry.payload.generationId || null
+      });
+      continue;
+    }
+    stats.applied += 1;
+    running = sub.apply(running, entry.payload, null);
+    if (entry.command === "RETURN_TO_BASE") stats.returnToBasePayload = entry.payload;
+  }
+  return running;
 }
 function commit(oldRaw, newState) {
   const content = JSON.stringify(newState);
@@ -612,14 +674,28 @@ function reduce(command, payload, context) {
     logEvent("warn", "STATE_PROJECTION_SKIPPED", payload && payload.tripId || null, { generationId: genId, command: command, reason: commitResult.reason });
     return "ERROR: " + commitResult.reason;
   }
-  logEvent("info", "TRIP_STATE_COMMAND_ACCEPTED", payload && payload.tripId || null, { generationId: genId, command: command });
+  if (command === "REDUCER_BATCH") {
+    // FU1 (REQ-6FU-1, SCN-6FU-2): every sub-command applied in order, one
+    // atomic commit; report applied/skipped exactly as validated.
+    logEvent("info", "REDUCER_BATCH_DELIVERED", null, {
+      generationId: genId, command: command, count: payload.commands.length,
+      applied: batchStats ? batchStats.applied : 0, skipped: batchStats ? batchStats.skipped : 0
+    });
+  } else {
+    logEvent("info", "TRIP_STATE_COMMAND_ACCEPTED", payload && payload.tripId || null, { generationId: genId, command: command });
+  }
   project(newState);
   // Slice B (REQ-4ADAPTER-4): RETURN_TO_BASE stages SESSION_OPEN so the
   // Manual Action Handler runs next and commits the session + manual trip
-  // records. No candidate itinerary is ever serialized or prepended.
+  // records. No candidate itinerary is ever serialized or prepended. FU1:
+  // a valid RETURN_TO_BASE inside a batch stages it identically (D2 primary
+  // stays the last applied sub-command; the staged session is the same).
   if (command === "RETURN_TO_BASE") {
     setLocal('par1', 'SESSION_OPEN');
     setLocal('par2', JSON.stringify(buildSessionOpenPayload(payload)));
+  } else if (command === "REDUCER_BATCH" && batchStats && batchStats.returnToBasePayload) {
+    setLocal('par1', 'SESSION_OPEN');
+    setLocal('par2', JSON.stringify(buildSessionOpenPayload(batchStats.returnToBasePayload)));
   }
   return "OK";
 }
