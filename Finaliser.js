@@ -88,13 +88,31 @@ try {
     let pLat = parseFloat(pLocRaw.split(",")[0]); let pLon = parseFloat(pLocRaw.split(",")[1]);
     let cLat = parseFloat(cLocRaw.split(",")[0]); let cLon = parseFloat(cLocRaw.split(",")[1]);
     
-    // E1 (RULE-8C): Completed_Dropins / Arrival_Memory are documented
-    // transient global state, not OVR top-level arrays.
-    let completedRaw = global('TDS_Completed_Dropins') || "";
-    let completed = completedRaw ? completedRaw.split(",") : [];
-    let arrivalMemRaw = global('TDS_Arrival_Memory') || "";
-    
-    let stateChanged = false;
+    // Phase 6 (REQ-6STATE-1): Completed_Dropins / Arrival_Memory are
+    // trip-state-only. Purge protection and the arrival latch read
+    // state.completedDropins and state.trips[].observedArrivalUnix — the
+    // legacy globals are no longer read or written here.
+    let completed = [];
+    let arrivalMemRaw = "";
+    let stateTrips = null;
+    try {
+        const stRaw = readFile("Tasker/Tesla/Data/TDS_Trip_State.json") || "";
+        if (stRaw) {
+            const parsedState = JSON.parse(stRaw);
+            const dropinMap = parsedState.completedDropins || {};
+            for (let dk in dropinMap) {
+                if (dropinMap.hasOwnProperty(dk)) completed.push(dk);
+            }
+            stateTrips = parsedState.trips || null;
+            if (stateTrips) {
+                for (let tk in stateTrips) {
+                    if (stateTrips.hasOwnProperty(tk) && typeof stateTrips[tk].observedArrivalUnix === "number") {
+                        arrivalMemRaw += (arrivalMemRaw.length > 0 ? "," : "") + tk + "~" + stateTrips[tk].observedArrivalUnix;
+                    }
+                }
+            }
+        }
+    } catch (e) {}
     let survivingEvents = [];
     
     for (let i = 0; i < validEvents.length; i++) {
@@ -118,7 +136,6 @@ try {
                 if (ev.isDropin || nowSec > ev.end) {
                     if (completed.indexOf(ev.id) === -1) {
                         completed.push(ev.id);
-                        stateChanged = true;
                         // Phase 3 PR-C: stage COMPLETE_DROPIN for the Trip State Reducer.
                         // The legacy Completed_Dropins OVR write below remains as a
                         // read-side shim for components that have not yet been migrated
@@ -144,7 +161,6 @@ try {
             if (!isNaN(dCurr) && dCurr <= 200) {
                 if (arrivalMemRaw.indexOf(ev.id + "~") === -1) {
                     arrivalMemRaw += (arrivalMemRaw.length > 0 ? "," : "") + ev.id + "~" + nowSec;
-                    stateChanged = true;
                     // Phase 3 PR-B: record arrival observation in reducer-managed state.
                     // The legacy Arrival_Memory override remains as a read-side fallback
                     // for components that have not yet been migrated to state.trips[].
@@ -162,11 +178,6 @@ try {
     }
     
     validEvents = survivingEvents;
-    
-    if (stateChanged) {
-        setGlobal('TDS_Completed_Dropins', completed.join(","));
-        setGlobal('TDS_Arrival_Memory', arrivalMemRaw);
-    }
 
     let nextGeoCoords = "NONE";
     let nextGeoTitle  = "NONE";
@@ -220,34 +231,6 @@ try {
 
     setLocal('next_geo_coords', nextGeoCoords);
     setLocal('next_geo_title', nextGeoTitle);
-    
-    // ==========================================
-    // OVERRIDE PROTECTION MERGE
-    // ==========================================
-    let overrideFile = "Tasker/Tesla/Data/TDS_Action_Lock.json";
-    let activeOverride = null;
-
-    try {
-        let ovRaw = readFile(overrideFile) || "{}";
-        activeOverride = JSON.parse(ovRaw);
-    } catch(e) { activeOverride = null; }
-
-    if (activeOverride && activeOverride.type) {
-        if (nowSec - activeOverride.timestamp < 7200) {
-            let newItinStr = global('Engine_Output_Itinerary') || "[]"; 
-            let newItin = JSON.parse(newItinStr);
-            let currentMasterRaw = readFile("Tasker/Tesla/Data/Itin_Master.json") || "[]";
-            let currentMaster = JSON.parse(currentMasterRaw);
-            
-            if (currentMaster.length > 0 && currentMaster[0].targetEventId === activeOverride.eventId) {
-                newItin.unshift(currentMaster[0]); 
-                setGlobal('Engine_Output_Itinerary', JSON.stringify(newItin));
-            }
-        }
-        // Stale lock: migration-only (REQ-4SESSION-2). The lock is never
-        // authoritative and is cleared only by the Manual Action Handler via
-        // the typed release below; Finaliser never writes it directly.
-    }
 
     // ==========================================
     // MANUAL SESSION RELEASE (REQ-4ADAPTER-7)
@@ -346,45 +329,6 @@ try {
     }
     
     setLocal('active_geofences', geofences.join("|"));
-
-    // ==========================================
-    // MULTI-DROPIN CLUSTERING (SEQUENTIAL & TEMPORAL BOUNDARIES)
-    // ==========================================
-    let optimizeQueue = [];
-    let currentCluster = [];
-    let lastDropinTime = 0;
-    
-    for (let j = 0; j < validEvents.length; j++) {
-        let ve = validEvents[j];
-        
-        let veEnd = (ve.isDropin && ve.deadline) ? ve.deadline : ve.end;
-        if (veEnd <= nowSec) continue;
-
-        if (ve.isDropin) {
-            if (currentCluster.length > 0 && (ve.start - lastDropinTime > 14400)) {
-                if (currentCluster.length > 1) {
-                    // [SURGICAL UPGRADE: Time-Gap Anchor Fix]
-                    optimizeQueue.push({ waypoints: currentCluster, destination: { coords: currentCluster[currentCluster.length-1].coords, id: "TIME_GAP_ANCHOR" } });
-                }
-                currentCluster = [];
-            }
-            currentCluster.push(ve);
-            lastDropinTime = ve.start;
-        } else {
-            if (currentCluster.length > 1) { 
-                optimizeQueue.push({ waypoints: currentCluster, destination: { coords: ve.coords, id: ve.id } });
-            }
-            currentCluster = [];
-        }
-    }
-
-    if (currentCluster.length > 1) {
-        let eAnchor = (global('Home_Coords') || "0,0");
-        if (activeBaseCoords !== "0,0") eAnchor = activeBaseCoords;
-        optimizeQueue.push({ waypoints: currentCluster, destination: { coords: eAnchor, id: "EOD_ANCHOR" } });
-    }
-
-    writeFile("Tasker/Tesla/Data/TDS_Optimize_Queue.json", JSON.stringify(optimizeQueue), false);
 
     setLocal('tds_temp_json', "");
     setLocal('raw_base_data', "");
