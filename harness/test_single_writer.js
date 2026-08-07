@@ -458,9 +458,10 @@ try {
 // TDS_Arrival_Memory / TDS_Completed_Stops) off TDS_Overrides.json. Phase 6
 // (REQ-6STATE-1) moves them again: the four memories are trip-state-only and
 // the legacy globals are no longer authoritative. These tests prove the
-// mutators stage reducer commands as the sole record path and that Sandbox
-// reads the PREFS file (global-memory reads/writes are gone).
-// E2-2 (Finaliser) and E2-4 (Sandbox) invert in slice 2b — untouched here.
+// mutators stage reducer commands as the sole record path and that every
+// reader consumes trip state (E2-1/E2-3 inverted in slice 2a; E2-2 Finaliser
+// and E2-4 Sandbox inverted in slice 2b) — no global memory read or write
+// remains anywhere.
 
 const fs = require('node:fs');
 const DATA = "Tasker/Tesla/Data/";
@@ -578,8 +579,12 @@ try {
   fail('E2 Compiler state read: ' + (e && e.message ? e.message : e));
 }
 
-// E2-2: Finaliser writes Completed_Dropins / Arrival_Memory to globals, never OVR,
-// and its staged COMPLETE_DROPIN is accepted by the reducer.
+// E2-2: Finaliser reads Completed_Dropins / Arrival_Memory from trip state —
+// state.completedDropins and state.trips[].observedArrivalUnix — and writes NO
+// memory globals (REQ-6STATE-1, SCN-6STATE-1). The staged COMPLETE_DROPIN is
+// accepted by the reducer; purge protection reads the state map, so an
+// already-completed dropin is never re-staged and never survives into the
+// published candidate.
 try {
   const dropinId = 'abc123_s44tm8';
   const tempEvents = [
@@ -600,18 +605,50 @@ try {
     TDS_Previous_Loc: '52.1,-2.2',
     TDS_Active_Generation: 'gen:1700000000:abcd'
   };
-  const files = {
+  const emptyState = JSON.stringify({
+    schemaVersion: 1,
+    revision: 0,
+    generationId: 'gen:1700000000:abcd',
+    currentOrigin: 'LIVE_BASE',
+    currentPlanningDay: '',
+    userAtBase: false,
+    baseArrivalUnix: null,
+    latenessHalt: false,
+    currentStatus: '',
+    manualReturnCompleted: false,
+    trips: {},
+    stops: {},
+    manualSessions: {},
+    completedDropins: {}
+  });
+  const baseFiles = {
     [DATA + 'Itin_Master.json']: '[]',
+    [DATA + 'TDS_Trip_State.json']: emptyState,
     [OVR_FILE]: '{}'
   };
-  const store = runScriptFile(FINALISER_PATH, { locals: locals, globals: globals, files: files, nowMs: nowSec * 1000 });
-  assert(store.globals['TDS_Completed_Dropins'] !== undefined, 'Finaliser must write TDS_Completed_Dropins global');
-  assert(store.globals['TDS_Completed_Dropins'].indexOf(dropinId) !== -1, 'Completed_Dropins global must hold the dropin id');
+  const store = runScriptFile(FINALISER_PATH, { locals: locals, globals: globals, files: baseFiles, nowMs: nowSec * 1000 });
+  assert(store.globals['TDS_Completed_Dropins'] === undefined, 'Finaliser must NOT write the TDS_Completed_Dropins global');
+  assert(store.globals['TDS_Arrival_Memory'] === undefined, 'Finaliser must NOT write the TDS_Arrival_Memory global');
   assert.strictEqual(store.files[OVR_FILE], '{}', 'Finaliser must not write TDS_Overrides.json');
+  // The completion record lands in reducer state — state.completedDropins is
+  // the sole dropin-completion authority (trip-state-only, SCN-6STATE-1).
+  const st = JSON.parse(store.files[DATA + 'TDS_Trip_State.json']);
+  assert(st.completedDropins && st.completedDropins[dropinId], 'state.completedDropins must hold the completed dropin');
   const rejected = store.flashLog.find(function (f) { return f.indexOf('Reducer rejected COMPLETE_DROPIN') !== -1; });
   assert(!rejected, 'Finaliser COMPLETE_DROPIN must be accepted by the reducer');
+
+  // Purge protection from state: a dropin already in state.completedDropins is
+  // not re-staged (state revision unchanged) and does not survive into the
+  // published candidate.
+  const doneState = JSON.parse(emptyState);
+  doneState.completedDropins[dropinId] = { dropinId: dropinId, tripId: dropinId, completedUnix: nowSec - 7200, generationId: 'gen:1700000000:abcd' };
+  const store2 = runScriptFile(FINALISER_PATH, { locals: locals, globals: globals, files: Object.assign({}, baseFiles, { [DATA + 'TDS_Trip_State.json']: JSON.stringify(doneState) }), nowMs: nowSec * 1000 });
+  const st2 = JSON.parse(store2.files[DATA + 'TDS_Trip_State.json']);
+  assert.strictEqual(st2.revision, 0, 'pre-completed dropin must not be re-staged (revision unchanged)');
+  const candidate = JSON.parse(store2.locals['par1']);
+  assert(candidate.events.length === 0, 'completed dropin must not survive into the published candidate');
 } catch (e) {
-  fail('E2 Finaliser global write: ' + (e && e.message ? e.message : e));
+  fail('E2 Finaliser state read: ' + (e && e.message ? e.message : e));
 }
 
 // E2-3: Stop_Logger stages COMPLETE_STOP as the sole record path — the reducer
@@ -636,34 +673,56 @@ try {
   fail('E2 Stop_Logger state record: ' + (e && e.message ? e.message : e));
 }
 
-// E2-4: Sandbox reads Completed_Stops from the transient global and
-// Route_Defaults from the PREFS file — never from OVR.
+// E2-4: Sandbox reads Completed_Stops from trip state — state.completedStops —
+// and Route_Defaults from the PREFS file, never from OVR and never from a
+// legacy global (REQ-6STATE-1, SCN-6STATE-1).
 try {
   const sandboxSource = fs.readFileSync(SANDBOX_PATH, 'utf8');
-  assert(sandboxSource.indexOf("global('TDS_Completed_Stops')") !== -1, 'Sandbox must read Completed_Stops from the transient global');
+  assert(sandboxSource.indexOf("global('TDS_Completed_Stops')") === -1, 'Sandbox must not read Completed_Stops from a global');
+  assert(sandboxSource.indexOf('parsedState.completedStops') !== -1, 'Sandbox must read state.completedStops');
   assert(sandboxSource.indexOf("getPrefs('Route_Defaults')") !== -1, 'Sandbox must read Route_Defaults from PREFS');
   assert(sandboxSource.indexOf("getOvr('Completed_Stops')") === -1, 'Sandbox must not read Completed_Stops from OVR');
   assert(sandboxSource.indexOf("getOvr('Route_Defaults')") === -1, 'Sandbox must not read Route_Defaults from OVR');
 
-  // Behavioral: a seeded PREFS file + Completed_Stops global must flow into a
-  // Sandbox run without a crash, and OVR must stay untouched.
+  // Behavioral: a seeded state.completedStops map + PREFS file must flow into
+  // a Sandbox run without a crash, OVR must stay untouched, and no
+  // TDS_Completed_Stops global may be read or written.
   const prefsJson = JSON.stringify({ schemaVersion: 2, seriesPreferences: {}, Route_Defaults: 'home^DRIVE' });
+  const stateJson = JSON.stringify({
+    schemaVersion: 1,
+    revision: 0,
+    generationId: 'gen:1700000000:abcd',
+    currentOrigin: 'LIVE_BASE',
+    currentPlanningDay: '',
+    userAtBase: false,
+    baseArrivalUnix: null,
+    latenessHalt: false,
+    currentStatus: '',
+    manualReturnCompleted: false,
+    trips: {},
+    stops: {},
+    manualSessions: {},
+    completedStops: {
+      [ID_RECENT + '_5']: { stopId: ID_RECENT + '_5', tripId: ID_RECENT, completedUnix: nowSec - 3600, generationId: 'gen:1700000000:abcd' }
+    }
+  });
   const files = {
     [DATA + 'Itin_Master.json']: '[]',
     [DATA + 'TDS_Master.json']: '[]',
+    [DATA + 'TDS_Trip_State.json']: stateJson,
     [PREFS_FILE]: prefsJson,
     [OVR_FILE]: '{}'
   };
   const globals = {
     User_At_Base: 'true',
     User_Loc: '51.9,-2.1',
-    Current_Status: 'Idle',
-    TDS_Completed_Stops: ID_RECENT + '_5'
+    Current_Status: 'Idle'
   };
   const store = runScriptFile(SANDBOX_PATH, { locals: { idx: '1', virtual_time: String(nowSec), virtual_loc: '51.9,-2.1' }, globals: globals, files: files, nowMs: nowSec * 1000 });
   assert.strictEqual(store.files[OVR_FILE], '{}', 'Sandbox must not write TDS_Overrides.json');
+  assert(store.globals['TDS_Completed_Stops'] === undefined, 'Sandbox must NOT write the TDS_Completed_Stops global');
 } catch (e) {
-  fail('E2 Sandbox PREFS/Completed Stops reads: ' + (e && e.message ? e.message : e));
+  fail('E2 Sandbox state Completed_Stops read: ' + (e && e.message ? e.message : e));
 }
 
 // ---------- Slice F (RULE-8C): OVR/PREFS single-writer ownership guard ----------

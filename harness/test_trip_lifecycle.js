@@ -3,7 +3,10 @@
 // R-TRIP-7 (Arrival_Memory migration), R-TRIP-8 (User_At_Base migration).
 process.env.TZ = 'UTC';
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { createSandbox } = require('./mock_tasker');
+const { runScript } = require('./runner');
 
 const nowSec = 1700000000;
 const DATA = 'Tasker/Tesla/Data/';
@@ -175,6 +178,56 @@ function testProjectionWritesFiveGlobalsPostCommit() {
   assert.strictEqual(store.globals['TDS_Manual_Return_Completed'], 'false', 'TDS_Manual_Return_Completed must project initial false');
 }
 
+function testSandboxCompletedStopsSnapshotFromState() {
+  // REQ-6STATE-1 (SCN-6STATE-1): Sandbox consumes completed stops from the
+  // state.completedStops map — one snapshot read at module top, before its
+  // consumers — never from the legacy TDS_Completed_Stops global.
+  const sandboxSrc = fs.readFileSync(path.resolve(__dirname, '..', 'Sandbox_Engine.js'), 'utf8');
+  assert(sandboxSrc.indexOf("global('TDS_Completed_Stops')") === -1, 'Sandbox must not read the TDS_Completed_Stops global');
+  assert(sandboxSrc.indexOf('parsedState.completedStops') !== -1, 'Sandbox must read state.completedStops');
+  const consumerIdx = sandboxSrc.indexOf('function getRemainingStops');
+  assert(consumerIdx !== -1 && sandboxSrc.slice(0, consumerIdx).indexOf('parsedState.completedStops') !== -1,
+    'completedStops snapshot must be read at module top, before its consumers');
+
+  // Behavioral: a seeded state.completedStops map flows through a Sandbox run
+  // without a crash, without OVR writes, and without any memory-global write.
+  const stopId = 'trip_x_kx8f00_5';
+  const stateJson = JSON.stringify({
+    schemaVersion: 1,
+    revision: 0,
+    generationId: GEN_ID,
+    currentOrigin: 'LIVE_BASE',
+    currentPlanningDay: '',
+    userAtBase: false,
+    baseArrivalUnix: null,
+    latenessHalt: false,
+    currentStatus: '',
+    manualReturnCompleted: false,
+    trips: {},
+    stops: {},
+    manualSessions: {},
+    completedStops: {
+      [stopId]: { stopId: stopId, tripId: 'trip_x_kx8f00', completedUnix: nowSec - 3600, generationId: GEN_ID }
+    }
+  });
+  const files = {
+    [DATA + 'Itin_Master.json']: '[]',
+    [DATA + 'TDS_Master.json']: '[]',
+    [DATA + 'TDS_Overrides.json']: '{}',
+    [DATA + 'TDS_Trip_State.json']: stateJson
+  };
+  const globals = {
+    User_At_Base: 'true',
+    User_Loc: '51.9,-2.1',
+    Current_Status: 'Idle'
+  };
+  const { sandbox, store } = createSandbox({ files: files, globals: globals, locals: { idx: '1', virtual_time: String(nowSec), virtual_loc: '51.9,-2.1' }, nowMs: nowSec * 1000 });
+  runScript(path.resolve(__dirname, '..', 'Sandbox_Engine.js'), sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  assert(store.globals['TDS_Completed_Stops'] === undefined, 'Sandbox must NOT write the TDS_Completed_Stops global');
+  assert.strictEqual(store.files[DATA + 'TDS_Overrides.json'], '{}', 'Sandbox must not write TDS_Overrides.json');
+}
+
 function testProjectionSkippedOnCommitFailure() {
   const { sandbox, store } = createSandbox({
     nowMs: nowSec * 1000,
@@ -211,6 +264,7 @@ try {
   testObserveStatusRejectsInvalid();
   testProjectionWritesFiveGlobalsPostCommit();
   testProjectionSkippedOnCommitFailure();
+  testSandboxCompletedStopsSnapshotFromState();
   console.log('PASS: trip-lifecycle: arrival, live-base origin, idempotency, atomicity, status observations, projection');
 } catch (e) {
   fail(e.message);
