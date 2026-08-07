@@ -33,13 +33,19 @@ var HANDLER_SCHEMA_VERSION = 1;
 var HANDLER_EXPIRY_SECS = 4 * 3600;
 var HANDLER_ID_RETRY_MAX = 16;
 var HANDLER_SCOPES = ["PRESERVE_ACTIVE_TRIP", "SUPPRESS_REPLAN_REPLACEMENT"];
+// FU1 (REQ-6FU-3): upper bound on the ordered sub-command list inside one
+// REDUCER_BATCH envelope. Covers the COMPLETE_TRIP x N manual-trip loop on a
+// base-arrival pass with margin; an oversized batch is rejected whole with
+// BATCH_ENVELOPE_REJECTED (never truncated). Mirrored in Trip_State_Reducer.js
+// (Tasker scripts are standalone; constants are copied byte-exact).
+var MAX_REDUCER_BATCH_SIZE = 32;
 const COMPONENT = "TDS_State_Command";
 
 // Exact command table — every command maps to exactly one declared owner.
 const REDUCER_COMMANDS = ["SET_OVERRIDE", "REMOVE_OVERRIDE", "DEPART_NOW", "RETURN_TO_BASE", "COMPLETE_STOP",
   "START_UNPLANNED_STOP", "END_UNPLANNED_STOP", "COMPLETE_DROPIN", "CANCEL_ACTION", "RESET_ACTIONS",
   "OBSERVE_DEPARTURE", "OBSERVE_ARRIVAL", "RECONCILE_GENERATION", "COMPLETE_TRIP", "EXPIRE_TRIP", "OBSERVE_LIVE_BASE",
-  "OBSERVE_BASE_LEAVE", "OBSERVE_LATENESS_HALT", "OBSERVE_STATUS"];
+  "OBSERVE_BASE_LEAVE", "OBSERVE_LATENESS_HALT", "OBSERVE_STATUS", "REDUCER_BATCH"];
 const OVERRIDE_COMMANDS = ["APPLY_OVERRIDE", "APPEND_OVERRIDE", "SET_DEFAULT", "PRUNE"];
 const MANUAL_COMMANDS = ["SESSION_OPEN", "SESSION_CLOSE", "RELEASE", "ENQUEUE_REORDER"];
 const PUBLISHER_COMMANDS = ["PUBLISH_GENERATION"];
@@ -76,7 +82,14 @@ const REDUCER_REQUIRED_FIELDS = {
   // pattern; only required-ness is enforced for "any"), status:string required.
   OBSERVE_BASE_LEAVE: [{ name: "at", type: "number", required: true }],
   OBSERVE_LATENESS_HALT: [{ name: "halt", type: "any", required: true }, { name: "at", type: "number", required: true }],
-  OBSERVE_STATUS: [{ name: "status", type: "string", required: true }, { name: "at", type: "number", required: true }]
+  OBSERVE_STATUS: [{ name: "status", type: "string", required: true }, { name: "at", type: "number", required: true }],
+  // FU1 (REQ-6FU-3): the REDUCER_BATCH envelope carries generationId plus the
+  // ordered commands array. Envelope SHAPE is special-cased in validateCommand
+  // (like ENQUEUE_REORDER): commands non-empty array, entries well-formed
+  // {command,payload} objects, nested batches forbidden, size-guarded. Per
+  // sub-command FIELD parity is enforced by the reducer (SCN-6FU-7) so one bad
+  // payload is skipped, never a whole-batch drop (REQ-6FU-2).
+  REDUCER_BATCH: [{ name: "generationId", type: "string", required: true }]
 };
 
 // Trusted reorder producers (REQ-4REORDER-2): a legacy-null generationId is
@@ -147,6 +160,26 @@ function validateCommand(command, payload) {
     if (!isNonEmptyString(payload.actionId)) return "actionId must be a non-empty string";
     if (!isNonEmptyString(payload.tripId)) return "tripId must be a non-empty string";
     if (payload.at !== undefined && (typeof payload.at !== "number" || isNaN(payload.at) || !isFinite(payload.at))) return "at must be a number";
+  } else if (command === "REDUCER_BATCH") {
+    // FU1 envelope contract (REQ-6FU-3, SCN-6FU-6): generationId valid,
+    // commands a non-empty array within MAX_REDUCER_BATCH_SIZE, each entry a
+    // well-formed {command,payload} object naming a known non-batch reducer
+    // command. A malformed envelope is rejected here with BATCH_ENVELOPE_REJECTED
+    // and no owner/file change (REQ-4CMD-1). Sub-command FIELD validation is
+    // byte-exact REDUCER_REQUIRED_FIELDS parity at the reducer (SCN-6FU-7),
+    // which skip-and-logs a bad payload instead of dropping the whole batch
+    // (REQ-6FU-2) — so this pre-check never deep-validates sub-command fields.
+    if (!validGenerationId(payload.generationId)) return "invalid generationId";
+    if (!Array.isArray(payload.commands) || payload.commands.length === 0) return "commands must be a non-empty array";
+    if (payload.commands.length > MAX_REDUCER_BATCH_SIZE) return "commands exceeds MAX_REDUCER_BATCH_SIZE";
+    for (let i = 0; i < payload.commands.length; i++) {
+      const entry = payload.commands[i];
+      if (!isObject(entry)) return "command entries must be objects";
+      if (!isNonEmptyString(entry.command)) return "entry command must be a non-empty string";
+      if (entry.command === "REDUCER_BATCH") return "nested REDUCER_BATCH is forbidden";
+      if (OWNER[entry.command] !== "Trip_State_Reducer") return "unknown reducer sub-command: " + entry.command;
+      if (!isObject(entry.payload)) return "entry payload must be a JSON object";
+    }
   } else if (REDUCER_REQUIRED_FIELDS[command]) {
     // Mirror the reducer's validateCommon + validateFields contract so a
     // bad payload can never reach an owner (REQ-4CMD-1).
@@ -384,7 +417,9 @@ function routeCommand(command, payload) {
   const rejectReason = validateCommand(command, payload);
   if (rejectReason) {
     setLocal('tds_state_owner', '');
-    stateCmdLogEvent("warn", "STATE_COMMAND_REJECTED", { command: command, reason: rejectReason });
+    // FU1 (SCN-6FU-6): a malformed REDUCER_BATCH envelope is logged with its
+    // own event code; single-command rejections keep STATE_COMMAND_REJECTED.
+    stateCmdLogEvent("warn", command === "REDUCER_BATCH" ? "BATCH_ENVELOPE_REJECTED" : "STATE_COMMAND_REJECTED", { command: command, reason: rejectReason });
     setLocal('return_value', "ERROR: " + rejectReason);
     return;
   }
@@ -400,6 +435,17 @@ function routeCommand(command, payload) {
     if (command === "RETURN_TO_BASE" || command === "SESSION_OPEN") {
       ensureUniqueManualIds(payload);
       setLocal('par2', JSON.stringify(payload));
+    } else if (command === "REDUCER_BATCH") {
+      // FU1 (REQ-4SESSION-1): re-mint colliding manual ids on a nested
+      // RETURN_TO_BASE sub-command so the reducer trip and the staged
+      // SESSION_OPEN always agree; write the re-minted envelope back to %par2
+      // for the serial owner run.
+      for (let i = 0; i < payload.commands.length; i++) {
+        if (payload.commands[i].command === "RETURN_TO_BASE") {
+          ensureUniqueManualIds(payload.commands[i].payload);
+        }
+      }
+      setLocal('par2', JSON.stringify(payload));
     }
     if (command === "ENQUEUE_REORDER") {
       setLocal('return_value', enqueueReorder(payload));
@@ -407,7 +453,7 @@ function routeCommand(command, payload) {
       setLocal('return_value', typeof reducer === "function" ? reducer(command, payload) : "OK");
       // Slice B (REQ-4ADAPTER-4): RETURN_TO_BASE stages SESSION_OPEN for the
       // Manual Action Handler; run the staged owner now (serial task parity).
-      if (command === "RETURN_TO_BASE" && local('par1') === "SESSION_OPEN") {
+      if ((command === "RETURN_TO_BASE" || command === "REDUCER_BATCH") && local('par1') === "SESSION_OPEN") {
         let staged = null;
         try { staged = local('par2') ? JSON.parse(local('par2')) : null; } catch (e) { staged = null; }
         if (!staged) {
