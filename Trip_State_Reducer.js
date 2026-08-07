@@ -492,6 +492,101 @@ function applyObserveStatus(state, payload) {
   next.revision = state.revision + 1;
   return next;
 }
+// Phase 6 (REQ-6STATE-1, SCN-6STATE-2): 30-local-planning-day retention.
+// The Override Handler's GLOBAL_MEMORIES prune was removed in slice 2a; the
+// reducer is now the sole owner of stop/dropin/departure/arrival retention
+// (STATE_STOP_RETENTION_APPLIED). Records older than DEFAULT_RETENTION_DAYS
+// local planning days are pruned on the next commit. Active trips
+// (IN_PROGRESS/ARRIVED), the current generation's trip, and manual sessions
+// are exempt. DST-safe: the cutoff is today's LOCAL midnight minus a fixed
+// DEFAULT_RETENTION_DAYS * 86400 seconds, never UTC date arithmetic, so a
+// transition inside the window cannot shift the bound.
+function localDayBoundaryUnix(unixSec) {
+  const d = new Date(unixSec * 1000);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000;
+}
+function retentionCutoffUnix(unixSec) {
+  return localDayBoundaryUnix(unixSec) - DEFAULT_RETENTION_DAYS * 86400;
+}
+function applyRetentionPrune(state) {
+  const cutoff = retentionCutoffUnix(nowSec());
+  const activeGenerationId = state.currentGeneration || state.generationId || state.lastReconciledGeneration || null;
+  const next = JSON.parse(JSON.stringify(state));
+  let pruned = false;
+  const prunedCounts = { departures: 0, arrivals: 0, stops: 0, dropins: 0 };
+  const tripIds = Object.keys(next.trips);
+  for (let i = 0; i < tripIds.length; i++) {
+    const tripId = tripIds[i];
+    const tr = next.trips[tripId];
+    if (!tr) continue;
+    // Header contract: active trips and the current generation's trip are exempt.
+    if (tr.lifecycleState === 'IN_PROGRESS' || tr.lifecycleState === 'ARRIVED' || tripId === activeGenerationId) continue;
+    if (Array.isArray(tr.departures)) {
+      const before = tr.departures.length;
+      tr.departures = tr.departures.filter(function (d) { return d && d.at >= cutoff; });
+      if (tr.departures.length !== before) { prunedCounts.departures += before - tr.departures.length; pruned = true; }
+    }
+    if (typeof tr.observedArrivalUnix === 'number' && tr.observedArrivalUnix < cutoff) {
+      delete tr.observedArrivalUnix;
+      delete tr.observedArrivalAccuracyM;
+      prunedCounts.arrivals += 1;
+      pruned = true;
+    }
+    if (Array.isArray(tr.completedStops)) {
+      const before = tr.completedStops.length;
+      tr.completedStops = tr.completedStops.filter(function (stopId) {
+        const rec = next.completedStops && next.completedStops[stopId];
+        return rec && rec.completedUnix >= cutoff;
+      });
+      if (tr.completedStops.length !== before) { prunedCounts.stops += before - tr.completedStops.length; pruned = true; }
+    }
+    if (Array.isArray(tr.completedDropins)) {
+      const before = tr.completedDropins.length;
+      tr.completedDropins = tr.completedDropins.filter(function (dropinId) {
+        const rec = next.completedDropins && next.completedDropins[dropinId];
+        return rec && rec.completedUnix >= cutoff;
+      });
+      if (tr.completedDropins.length !== before) { prunedCounts.dropins += before - tr.completedDropins.length; pruned = true; }
+    }
+  }
+  // Timestamped top-level maps are the authority for stop/dropin age. Drop
+  // entries older than the bound (unless an active trip still owns them) so
+  // the maps cannot grow without limit.
+  if (next.completedStops) {
+    const keys = Object.keys(next.completedStops);
+    for (let j = 0; j < keys.length; j++) {
+      const rec = next.completedStops[keys[j]];
+      if (!rec || rec.completedUnix >= cutoff) continue;
+      const owner = rec.tripId && next.trips[rec.tripId];
+      const ownerExempt = owner && (owner.lifecycleState === 'IN_PROGRESS' || owner.lifecycleState === 'ARRIVED' || rec.tripId === activeGenerationId);
+      if (ownerExempt) continue;
+      delete next.completedStops[keys[j]];
+      prunedCounts.stops += 1;
+      pruned = true;
+    }
+  }
+  if (next.completedDropins) {
+    const keys = Object.keys(next.completedDropins);
+    for (let j = 0; j < keys.length; j++) {
+      const rec = next.completedDropins[keys[j]];
+      if (!rec || rec.completedUnix >= cutoff) continue;
+      const owner = rec.tripId && next.trips[rec.tripId];
+      const ownerExempt = owner && (owner.lifecycleState === 'IN_PROGRESS' || owner.lifecycleState === 'ARRIVED' || rec.tripId === activeGenerationId);
+      if (ownerExempt) continue;
+      delete next.completedDropins[keys[j]];
+      prunedCounts.dropins += 1;
+      pruned = true;
+    }
+  }
+  if (!pruned) return state;
+  next.revision = state.revision + 1;
+  logEvent('info', 'STATE_STOP_RETENTION_APPLIED', null, {
+    retentionDays: DEFAULT_RETENTION_DAYS,
+    cutoffUnix: cutoff,
+    pruned: prunedCounts
+  });
+  return next;
+}
 function reduce(command, payload, context) {
   const parsed = parseCommand(command, payload, context);
   const genId = payload && payload.generationId || null;
@@ -501,7 +596,13 @@ function reduce(command, payload, context) {
   }
   const oldRaw = readFile(PHASE3_STATE_PATH) || "";
   const oldState = loadState();
-  const newState = parsed.apply(oldState, payload, context);
+  // Phase 6 (REQ-6STATE-1, SCN-6STATE-2): the 30-day retention prune runs on
+  // every accepted commit (the Override Handler's GLOBAL_MEMORIES prune was
+  // removed in slice 2a; the reducer is now the sole owner of stop/dropin/
+  // departure/arrival retention). Pure apply-style: revision bump when records
+  // are pruned, exact no-op when nothing is older than the bound.
+  const applied = parsed.apply(oldState, payload, context);
+  const newState = applyRetentionPrune(applied);
   const commitResult = commit(oldRaw, newState);
   if (!commitResult.ok) {
     logEvent("error", "GENERATION_VALIDATION_FAILED", null, { generationId: genId, reason: commitResult.reason, command: command });
