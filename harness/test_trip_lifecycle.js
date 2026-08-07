@@ -86,6 +86,116 @@ function testObserveLiveBaseRejectsInvalid() {
   assert(!store.files[STATE] || JSON.parse(store.files[STATE]).currentOrigin === 'LIVE_BASE', 'invalid payload must not change currentOrigin from default');
 }
 
+// ============================================================
+// Phase 6 slice 1 (PR 1): status observations (REQ-6STATE-3),
+// projection (REQ-6STATE-2, SCN-6STATE-3/4), and the five
+// R-TRIP-8 globals written post-commit by project().
+// ============================================================
+
+function testObserveBaseLeaveClearsAndProjects() {
+  const { sandbox, store } = make();
+  runCmd(sandbox, store, 'OBSERVE_LIVE_BASE', { generationId: GEN_ID, at: nowSec });
+  const r = runCmd(sandbox, store, 'OBSERVE_BASE_LEAVE', { generationId: GEN_ID, at: nowSec + 120 });
+  assert.strictEqual(r, 'OK', 'OBSERVE_BASE_LEAVE must be accepted');
+  const state = JSON.parse(store.files[STATE]);
+  assert.strictEqual(state.userAtBase, false, 'base leave must clear userAtBase');
+  assert.strictEqual(state.baseArrivalUnix, null, 'base leave must clear baseArrivalUnix');
+  assert.strictEqual(store.globals['User_At_Base'], 'false', 'projection must write User_At_Base=false');
+  assert.strictEqual(store.globals['Base_Arrival_Unix'], '', 'projection must write Base_Arrival_Unix as empty (null)');
+  assert.strictEqual(state.revision, 2, 'revision must increment for observe + leave');
+}
+
+function testObserveBaseLeaveIdempotent() {
+  const { sandbox, store } = make();
+  runCmd(sandbox, store, 'OBSERVE_LIVE_BASE', { generationId: GEN_ID, at: nowSec });
+  runCmd(sandbox, store, 'OBSERVE_BASE_LEAVE', { generationId: GEN_ID, at: nowSec + 120 });
+  const r2 = runCmd(sandbox, store, 'OBSERVE_BASE_LEAVE', { generationId: GEN_ID, at: nowSec + 240 });
+  assert.strictEqual(r2, 'OK', 'repeat OBSERVE_BASE_LEAVE must be accepted');
+  const state = JSON.parse(store.files[STATE]);
+  assert.strictEqual(state.revision, 2, 'repeat base leave must be a no-op (revision unchanged)');
+  assert.strictEqual(state.userAtBase, false, 'base leave stays clear');
+}
+
+function testObserveLatenessHaltCoercesAndProjects() {
+  const { sandbox, store } = make();
+  const r = runCmd(sandbox, store, 'OBSERVE_LATENESS_HALT', { generationId: GEN_ID, halt: true, at: nowSec });
+  assert.strictEqual(r, 'OK', 'OBSERVE_LATENESS_HALT must be accepted');
+  let state = JSON.parse(store.files[STATE]);
+  assert.strictEqual(state.latenessHalt, true, 'halt:true must coerce to true');
+  assert.strictEqual(store.globals['TDS_Lateness_Halt'], 'true', 'projection must write TDS_Lateness_Halt=true');
+  // string "true" coerces identically and is a no-op against the same value
+  runCmd(sandbox, store, 'OBSERVE_LATENESS_HALT', { generationId: GEN_ID, halt: 'true', at: nowSec + 60 });
+  state = JSON.parse(store.files[STATE]);
+  assert.strictEqual(state.latenessHalt, true, "halt:'true' must coerce to true");
+  assert.strictEqual(state.revision, 1, "halt:'true' with the same value must be a no-op (revision unchanged)");
+  // false clears and re-projects
+  runCmd(sandbox, store, 'OBSERVE_LATENESS_HALT', { generationId: GEN_ID, halt: false, at: nowSec + 120 });
+  state = JSON.parse(store.files[STATE]);
+  assert.strictEqual(state.latenessHalt, false, 'halt:false must clear');
+  assert.strictEqual(store.globals['TDS_Lateness_Halt'], 'false', 'projection must write TDS_Lateness_Halt=false');
+  assert.strictEqual(state.revision, 2, 'clear must bump revision');
+}
+
+function testObserveStatusSetsAndProjects() {
+  const { sandbox, store } = make();
+  const r = runCmd(sandbox, store, 'OBSERVE_STATUS', { generationId: GEN_ID, status: 'Driving (Pitstop)', at: nowSec });
+  assert.strictEqual(r, 'OK', 'OBSERVE_STATUS must be accepted');
+  const state = JSON.parse(store.files[STATE]);
+  assert.strictEqual(state.currentStatus, 'Driving (Pitstop)', 'currentStatus must be set');
+  assert.strictEqual(store.globals['Current_Status'], 'Driving (Pitstop)', 'projection must write Current_Status');
+  assert.strictEqual(state.revision, 1, 'revision must increment');
+}
+
+function testObserveStatusIdempotent() {
+  const { sandbox, store } = make();
+  runCmd(sandbox, store, 'OBSERVE_STATUS', { generationId: GEN_ID, status: 'Idle', at: nowSec });
+  const r2 = runCmd(sandbox, store, 'OBSERVE_STATUS', { generationId: GEN_ID, status: 'Idle', at: nowSec + 60 });
+  assert.strictEqual(r2, 'OK', 'repeat OBSERVE_STATUS must be accepted');
+  const state = JSON.parse(store.files[STATE]);
+  assert.strictEqual(state.revision, 1, 'same status must be a no-op (revision unchanged)');
+}
+
+function testObserveStatusRejectsInvalid() {
+  const { sandbox, store } = make();
+  const r = runCmd(sandbox, store, 'OBSERVE_STATUS', { generationId: GEN_ID, at: nowSec });
+  assert.match(r, /^ERROR:/, 'missing status must be rejected');
+  const logs = parseLog(store);
+  const rejection = logs.find(function (l) { return l.code === 'GENERATION_VALIDATION_FAILED'; });
+  assert(rejection, 'invalid payload must log GENERATION_VALIDATION_FAILED');
+  assert(!store.files[STATE] || !JSON.parse(store.files[STATE]).currentStatus, 'invalid payload must not write status');
+}
+
+function testProjectionWritesFiveGlobalsPostCommit() {
+  const { sandbox, store } = make();
+  runCmd(sandbox, store, 'OBSERVE_LIVE_BASE', { generationId: GEN_ID, at: nowSec });
+  assert.strictEqual(store.globals['User_At_Base'], 'true', 'User_At_Base must project committed state');
+  assert.strictEqual(store.globals['Base_Arrival_Unix'], String(nowSec), 'Base_Arrival_Unix must project committed state');
+  assert.strictEqual(store.globals['TDS_Lateness_Halt'], 'false', 'TDS_Lateness_Halt must project initial false');
+  assert.strictEqual(store.globals['Current_Status'], '', 'Current_Status must project initial empty');
+  assert.strictEqual(store.globals['TDS_Manual_Return_Completed'], 'false', 'TDS_Manual_Return_Completed must project initial false');
+}
+
+function testProjectionSkippedOnCommitFailure() {
+  const { sandbox, store } = createSandbox({
+    nowMs: nowSec * 1000,
+    globals: {
+      User_At_Base: 'true', Base_Arrival_Unix: String(nowSec),
+      TDS_Lateness_Halt: 'false', Current_Status: 'At Home', TDS_Manual_Return_Completed: 'true'
+    },
+    failures: { tornWrites: [STATE] }
+  });
+  const r = runCmd(sandbox, store, 'OBSERVE_STATUS', { generationId: GEN_ID, status: 'Driving', at: nowSec });
+  assert.match(r, /^ERROR:/, 'torn state write must fail the commit');
+  const logs = parseLog(store);
+  const skipped = logs.find(function (l) { return l.code === 'STATE_PROJECTION_SKIPPED'; });
+  assert(skipped, 'commit failure must log STATE_PROJECTION_SKIPPED');
+  assert.strictEqual(skipped.severity, 'warn', 'STATE_PROJECTION_SKIPPED must be warn severity');
+  assert.strictEqual(skipped.details.command, 'OBSERVE_STATUS', 'STATE_PROJECTION_SKIPPED must name the command');
+  assert.strictEqual(store.globals['User_At_Base'], 'true', 'prior global bytes must be preserved when projection is skipped');
+  assert.strictEqual(store.globals['Current_Status'], 'At Home', 'prior Current_Status bytes must be preserved');
+  assert.strictEqual(store.globals['TDS_Manual_Return_Completed'], 'true', 'prior manual-return bytes must be preserved');
+}
+
 try {
   testObserveArrivalMintsTrip();
   testObserveArrivalIsIdempotent();
@@ -93,7 +203,15 @@ try {
   testObserveLiveBaseSetsOrigin();
   testObserveLiveBaseIdempotentNoSpuriousLog();
   testObserveLiveBaseRejectsInvalid();
-  console.log('PASS: trip-lifecycle: arrival, live-base origin, idempotency, atomicity');
+  testObserveBaseLeaveClearsAndProjects();
+  testObserveBaseLeaveIdempotent();
+  testObserveLatenessHaltCoercesAndProjects();
+  testObserveStatusSetsAndProjects();
+  testObserveStatusIdempotent();
+  testObserveStatusRejectsInvalid();
+  testProjectionWritesFiveGlobalsPostCommit();
+  testProjectionSkippedOnCommitFailure();
+  console.log('PASS: trip-lifecycle: arrival, live-base origin, idempotency, atomicity, status observations, projection');
 } catch (e) {
   fail(e.message);
 }
