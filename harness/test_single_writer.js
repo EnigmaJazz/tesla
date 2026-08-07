@@ -16,8 +16,9 @@
 //   APPEND_OVERRIDE      — append + alsoAppendLate, invalid-ID rejection.
 //   SET_DEFAULT          — set/wipe/clearAll against seriesPreferences.
 //   PRUNE                — whitelist survival, 24h retention, 12h future
-//                          exclusion, four-hour Depart window, and global
-//                          memory CSV pruning.
+//                          exclusion. The four memory globals are
+//                          trip-state-only (REQ-6STATE-1/2) and are never
+//                          touched by the handler.
 //   Propose-default      — third categorized occurrence proposes a default.
 //   Projection sync      — eventOverrides map and CSV projections agree.
 
@@ -372,19 +373,26 @@ try {
   fail('PRUNE retention section threw: ' + (e && e.message ? e.message : e));
 }
 
-// ---------- PRUNE: global memory CSV pruning ----------
+// ---------- PRUNE: memory globals are state-owned (REQ-6STATE-1/2) ----------
+// The four memory globals are trip-state-only; the reducer's 30-day state
+// retention owns departures/dropins/arrivals/stops. PRUNE must leave every
+// seeded memory global byte-identical (no read, no write) — including
+// TDS_Completed_Stops, the key previously missing from GLOBAL_MEMORIES
+// (SCN-6STATE-2: no unbounded growth, and never touching the global).
 
 try {
   const globals = {
     "TDS_Depart_Memory": ID_DEPART_OK + "~depart," + ID_DEPART_FAR + "~depart",
     "TDS_Completed_Dropins": ID_RECENT + "~done," + ID_STALE + "~done",
-    "TDS_Arrival_Memory": ID_FUTURE_OK + "~arrive"
+    "TDS_Arrival_Memory": ID_FUTURE_OK + "~arrive",
+    "TDS_Completed_Stops": ID_RECENT + "_5," + ID_STALE + "_12"
   };
   const r = runHandler({}, "PRUNE", { nowSec: nowSec, whitelistMap: {} }, {}, globals);
   const g = r.store.globals;
-  assert.equal(g["TDS_Depart_Memory"], ID_DEPART_OK + "~depart", 'Depart window keeps 2h-ahead, prunes 5h-ahead');
-  assert.equal(g["TDS_Completed_Dropins"], ID_RECENT + "~done", '24h retention keeps recent, prunes stale dropin');
-  assert.equal(g["TDS_Arrival_Memory"], ID_FUTURE_OK + "~arrive", 'future within 12h exclusion survives arrival');
+  assert.equal(g["TDS_Depart_Memory"], ID_DEPART_OK + "~depart," + ID_DEPART_FAR + "~depart", 'PRUNE must leave TDS_Depart_Memory byte-identical');
+  assert.equal(g["TDS_Completed_Dropins"], ID_RECENT + "~done," + ID_STALE + "~done", 'PRUNE must leave TDS_Completed_Dropins byte-identical');
+  assert.equal(g["TDS_Arrival_Memory"], ID_FUTURE_OK + "~arrive", 'PRUNE must leave TDS_Arrival_Memory byte-identical');
+  assert.equal(g["TDS_Completed_Stops"], ID_RECENT + "_5," + ID_STALE + "_12", 'PRUNE must leave TDS_Completed_Stops byte-identical');
 } catch (e) {
   fail('PRUNE globals section threw: ' + (e && e.message ? e.message : e));
 }
@@ -445,12 +453,14 @@ try {
   fail('projection sync section threw: ' + (e && e.message ? e.message : e));
 }
 
-// ---------- Slice E: OVR top-level memory arrays -> documented transient globals ----------
+// ---------- Slice E: memory arrays -> trip state (Phase 6 cutover) ----------
 // E1 moved the memory arrays (TDS_Depart_Memory / TDS_Completed_Dropins /
-// TDS_Arrival_Memory / TDS_Completed_Stops) off TDS_Overrides.json into
-// transient globals, and Sandbox_Engine reads Route_Defaults from the PREFS
-// file. These tests prove the mutators write globals (never OVR), that their
-// staged reducer commands are accepted, and that Sandbox reads the new homes.
+// TDS_Arrival_Memory / TDS_Completed_Stops) off TDS_Overrides.json. Phase 6
+// (REQ-6STATE-1) moves them again: the four memories are trip-state-only and
+// the legacy globals are no longer authoritative. These tests prove the
+// mutators stage reducer commands as the sole record path and that Sandbox
+// reads the PREFS file (global-memory reads/writes are gone).
+// E2-2 (Finaliser) and E2-4 (Sandbox) invert in slice 2b — untouched here.
 
 const fs = require('node:fs');
 const DATA = "Tasker/Tesla/Data/";
@@ -466,9 +476,16 @@ function runScriptFile(scriptPath, opts) {
   return store;
 }
 
-// E2-1: Compiler writes Depart_Memory to the transient global, never OVR.
+// E2-1: Compiler reads departures from reducer state (state.trips[].departures[])
+// for the cross-day departChanged/departDiffMins signal — no TDS_Depart_Memory
+// global write (REQ-6STATE-1/4, SCN-6STATE-1/7).
 try {
-  const futureEventStart = nowSec + 3600;
+  // Cross-day signal: the event must be on the NEXT UTC day (diffDays === 1)
+  // and inside the relevance window. nowSec is 2023-11-14T22:13:20Z; the
+  // next UTC day starts at utcDayBoundaryUnix(nowSec) + 86400.
+  const SECONDS_PER_DAY = 86400;
+  const tomorrowStart = nowSec - (nowSec % SECONDS_PER_DAY) + SECONDS_PER_DAY;
+  const futureEventStart = tomorrowStart + 3600;
   const masterJson = JSON.stringify([
     {
       id: 'abc123_kx8f00',
@@ -514,17 +531,51 @@ try {
     Arrival_Buffer_Mins: '5',
     Departure_Buffer_Mins: '5'
   };
+  // Prior-day actual departure for the same event lives in reducer state
+  // (recorded by OBSERVE_DEPARTURE), not in a TDS_Depart_Memory global.
+  const priorDayState = JSON.stringify({
+    schemaVersion: 1,
+    revision: 2,
+    generationId: 'gen:1700000000:abcd',
+    currentOrigin: 'LIVE_BASE',
+    currentPlanningDay: '2026-10-23',
+    userAtBase: false,
+    baseArrivalUnix: null,
+    latenessHalt: false,
+    currentStatus: '',
+    manualReturnCompleted: false,
+    trips: {
+      'abc123_kx8f00': {
+        tripId: 'abc123_kx8f00',
+        lifecycleState: 'IN_PROGRESS',
+        departures: [{ at: nowSec - 86400, planningDay: '2026-10-23' }],
+        completedStops: [],
+        completedDropins: [],
+        lastActivityUnix: nowSec - 86400,
+        currentPlanningDay: '2026-10-23'
+      }
+    },
+    stops: {},
+    manualSessions: {}
+  });
   const files = {
     [DATA + 'TDS_Master.json']: masterJson,
     [DATA + 'Itin_Master.json']: '[]',
+    [DATA + 'TDS_Trip_State.json']: priorDayState,
     [OVR_FILE]: '{}'
   };
   const store = runScriptFile(COMPILER_PATH, { locals: locals, globals: globals, files: files, nowMs: nowSec * 1000 });
-  assert(store.globals['TDS_Depart_Memory'] !== undefined, 'Compiler must write TDS_Depart_Memory global');
-  assert(store.globals['TDS_Depart_Memory'].indexOf('abc123_kx8f00') !== -1, 'Depart_Memory global must hold the planned departure');
+  assert(store.globals['TDS_Depart_Memory'] === undefined, 'Compiler must NOT write the TDS_Depart_Memory global');
   assert.strictEqual(store.files[OVR_FILE], '{}', 'Compiler must not write TDS_Overrides.json');
+  // The departure-change signal derives from state, not a global: the prior
+  // day's actual departure for the event is nowSec-86400, the compiled leg is
+  // planned for futureEventStart, so depart_changed must be 'true' with the
+  // diff computed against the state record.
+  assert.strictEqual(store.locals['depart_changed'], 'true', 'depart_changed must reflect the state departure record');
+  const diffMins = parseInt(store.locals['depart_diff_mins'], 10);
+  assert(diffMins > 0, 'depart_diff_mins must be computed from the state record, got: ' + store.locals['depart_diff_mins']);
 } catch (e) {
-  fail('E2 Compiler global write: ' + (e && e.message ? e.message : e));
+  fail('E2 Compiler state read: ' + (e && e.message ? e.message : e));
 }
 
 // E2-2: Finaliser writes Completed_Dropins / Arrival_Memory to globals, never OVR,
@@ -563,20 +614,26 @@ try {
   fail('E2 Finaliser global write: ' + (e && e.message ? e.message : e));
 }
 
-// E2-3: Stop_Logger writes Completed_Stops to the transient global, never OVR,
-// and its staged COMPLETE_STOP is accepted by the reducer.
+// E2-3: Stop_Logger stages COMPLETE_STOP as the sole record path — the reducer
+// owns state.completedStops; no TDS_Completed_Stops global write (REQ-6STATE-1,
+// SCN-6STATE-1).
 try {
   const locals = { active_target_id: ID_RECENT, ld_selected: '5m' };
   const store = runScriptFile(STOP_LOGGER_PATH, { locals: locals, globals: { TDS_Active_Generation: 'gen:1700000000:abcd' }, files: {}, nowMs: nowSec * 1000 });
-  assert(store.globals['TDS_Completed_Stops'] !== undefined, 'Stop_Logger must write TDS_Completed_Stops global');
-  assert(store.globals['TDS_Completed_Stops'].indexOf(ID_RECENT + '_5') !== -1, 'Completed_Stops global must hold <id>_5 entry');
+  assert(store.globals['TDS_Completed_Stops'] === undefined, 'Stop_Logger must NOT write the TDS_Completed_Stops global');
   assert(store.files[OVR_FILE] === undefined, 'Stop_Logger must not create TDS_Overrides.json');
   const rejected = store.flashLog.find(function (f) { return f.indexOf('Reducer rejected COMPLETE_STOP') !== -1; });
   assert(!rejected, 'Stop_Logger COMPLETE_STOP must be accepted by the reducer');
   const done = store.flashLog.find(function (f) { return f.indexOf('5m stop marked as completed') !== -1; });
   assert(done, 'Stop_Logger must flash the completion message');
+  // The stop lands in reducer state: state.completedStops holds the exact
+  // stopId keyed by the stable stop entry (trip-state-only, SCN-6STATE-2).
+  const stRaw = store.files[DATA + 'TDS_Trip_State.json'];
+  assert(stRaw, 'COMPLETE_STOP must write reducer state');
+  const st = JSON.parse(stRaw);
+  assert(st.completedStops && st.completedStops[ID_RECENT + '_5'], 'state.completedStops must hold the completed stop');
 } catch (e) {
-  fail('E2 Stop_Logger global write: ' + (e && e.message ? e.message : e));
+  fail('E2 Stop_Logger state record: ' + (e && e.message ? e.message : e));
 }
 
 // E2-4: Sandbox reads Completed_Stops from the transient global and

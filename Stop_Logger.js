@@ -1,9 +1,9 @@
 // ==========================================
 // AD-HOC STOP LOGGER (v2)
-// Appends [EventID]_[Duration] to TDS_Completed_Stops
-// (documented transient global; the Override Handler owns
-// TDS_Overrides.json — RULE-8C).
-// Bypasses JSON write if an "Extra" unplanned stop is selected.
+// Stages an exact COMPLETE_STOP command for the Trip State Reducer, which
+// records the stop in state.completedStops (trip-state-only — REQ-6STATE-1).
+// The legacy TDS_Completed_Stops global is no longer read or written.
+// Bypasses the command if an "Extra" unplanned stop is selected.
 // ==========================================
 
 try {
@@ -24,28 +24,15 @@ try {
             let cleanStop = selStop.replace(/[^0-9]/g, ""); 
             
             if (cleanStop.length > 0) {
-                // E1 (RULE-8C): Completed_Stops is documented transient global
-                // state, not an OVR top-level array. Stop_Logger owns the
-                // TDS_Completed_Stops global; the reducer owns trip state.
-                let currentStops = global('TDS_Completed_Stops') || "";
+                // Phase 6 (REQ-6STATE-1): completed stops are trip-state-only.
+                // The COMPLETE_STOP command staged below is the sole record
+                // path — the reducer owns state.completedStops. No global
+                // read or write of TDS_Completed_Stops remains.
                 let newStopEntry = evId + "_" + cleanStop;
 
-                // Append to the comma-separated inventory, preventing double-logging
-                if (currentStops.length > 0) {
-                    if (currentStops.indexOf(newStopEntry) === -1) {
-                        currentStops += "," + newStopEntry;
-                    }
-                } else {
-                    currentStops = newStopEntry;
-                }
-
-                // Write the updated inventory to the transient global
-                setGlobal('TDS_Completed_Stops', currentStops);
                 // Slice C (REQ-4ADAPTER-5): stage an exact COMPLETE_STOP for
                 // the Trip State Reducer — stable stopId, lastIndexOf trip
-                // core, never a direct state write. The transient global above
-                // remains the read-side source for components that have not
-                // yet migrated to state.completedStops.
+                // core, never a direct state write.
                 let stopId = newStopEntry;
                 let tripId = evId.substring(0, evId.lastIndexOf("_"));
                 setLocal("par1", "COMPLETE_STOP");
