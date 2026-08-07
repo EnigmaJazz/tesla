@@ -43,10 +43,10 @@ Chain strategy: stacked-to-main
 
 ## PR 3 — FU2 Tail (never before PR 1)
 
-- [ ] 3.1 `Sandbox_Engine.js` (:612-632): if `!currentlyAtBase && !prevAtBase && leaveSec>0` head leg in window, stage `OBSERVE_DEPARTURE` `oldItin[0].targetEventId` (REQ-6FU-5, REQ-6STATE-4, SCN-6FU-10, SCN-6STATE-8)
-- [ ] 3.2 Once-per-leg guard: skip when last `departures[]` matches day/window; exclusive with base-leave (:574-591) (REQ-6FU-5, SCN-6FU-11)
-- [ ] 3.3 Tests: SCN-6FU-10 observed once; SCN-6FU-11 re-entry no stage/pollution; base-leave not double-observed (REQ-6FU-5)
-- [ ] 3.4 Suite regression `node harness/test_*.js`
+- [x] 3.1 `Sandbox_Engine.js` (:612-632): if `!currentlyAtBase && !prevAtBase && leaveSec>0` head leg in window, stage `OBSERVE_DEPARTURE` `oldItin[0].targetEventId` (REQ-6FU-5, REQ-6STATE-4, SCN-6FU-10, SCN-6STATE-8)
+- [x] 3.2 Once-per-leg guard: skip when last `departures[]` matches day/window; exclusive with base-leave (:574-591) (REQ-6FU-5, SCN-6FU-11)
+- [x] 3.3 Tests: SCN-6FU-10 observed once; SCN-6FU-11 re-entry no stage/pollution; base-leave not double-observed (REQ-6FU-5)
+- [x] 3.4 Suite regression `node harness/test_*.js`
 
 ## Docs
 

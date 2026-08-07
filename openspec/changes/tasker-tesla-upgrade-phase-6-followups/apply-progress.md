@@ -109,3 +109,90 @@ produced by the hook before it failed.
 - PR 2: 2.0–2.4 (Finaliser / D5 gate) — not implemented.
 - PR 3: 3.1–3.4 (FU2 non-base departure edge) — not implemented.
 - Docs: 4.1 (canonical-sync note) — not implemented.
+
+---
+
+# Apply Progress — Phase 6 Follow-ups (PR 3: FU2 Tail)
+
+**Change:** `tasker-tesla-upgrade-phase-6-followups`
+**Batch:** PR 3 — FU2 non-base-origin departure edge (RED → GREEN)
+**Mode:** Standard (strict_tdd: false per openspec/config.yaml) with mandated
+RED-first sequence for `test_fu2_departure_edge.js` (REQ-6FU-5).
+**Date:** 2026-08-08
+**Branch:** `tasker-tesla-phase6-followups-pr-3` (from master, stacked-to-main)
+**Status:** PR 3 complete — 4/4 tasks (3.1–3.4); PR 2 (2.x, D5-deferred) and
+Docs (4.1) untouched.
+
+---
+
+## Work Unit Evidence
+
+| Evidence | Required value |
+|---|---|
+| Focused test command and exact result | `node harness/test_fu2_departure_edge.js` — RED pre-fix: 3/3 sections FAIL (non-base window entry stages 0 `OBSERVE_DEPARTURE`; no departure record lands). GREEN post-fix: PASS, all 3 sections (edge stages once in the batch, delivered by one router call; re-entry does not re-stage; base-leave not double-observed, applied sub-commands total exactly 6 = 4+2 so departure applied once). |
+| Runtime harness command/scenario and exact result | `for f in harness/test_*.js; do node $f; done` — **30/30 PASS** (29 prior + `test_fu2_departure_edge.js`). Serial-mode Sandbox with non-base head leg in its departure window → ONE `TDS_State_Command` invocation → `OBSERVE_DEPARTURE` lands in `trips[].departures[]`, lifecycleState IN_PROGRESS, `currentStatus` set; guard suppresses re-entry and cross-pass base-leave double observation. |
+| Rollback boundary | Drop the FU2 edge trigger + guard block in `Sandbox_Engine.js` (the 31-line addition inside the active-leg window branch) and delete `harness/test_fu2_departure_edge.js`. This reverts the two commits on this branch (`2e9839c`, `76a7e0f`) without removing any FU1 batch staging (PR 1) or touching Finaliser (PR 2). |
+
+## RED → GREEN evidence (REQ-6FU-5, SCN-6FU-10/11)
+
+| Step | Result |
+|---|---|
+| RED test written first (`test_fu2_departure_edge.js`) | Confirmed FAIL: `non-base window entry must stage exactly one OBSERVE_DEPARTURE (RED pre-fix: got 0)` — proves the non-base departure is never observed today; dependent sections cascade-fail. |
+| GREEN implementation (`76a7e0f`) | `test_fu2_departure_edge.js` PASS — all 3 sections; full suite 30/30. |
+
+## Commits (PR 3)
+
+| SHA | Message | Δ lines |
+|---|---|---|
+| `2e9839c` | test(sandbox): FU2 RED — non-base departure observation + once-per-leg guard | 255 |
+| `76a7e0f` | feat(sandbox): observe non-base-origin head-leg departure in active-leg window | 37 (+34/−3) |
+
+All authored by Enigmajazz <jamesdow1@btinternet.com>; no AI attribution.
+Pre-commit hook (gga) failed with a transient provider error (`UnknownError` /
+`Unexpected server error`) on the RED commit, identical to PR 1; both commits
+used `--no-verify` and are noted here per instruction. No review findings were
+produced by the hook before it failed.
+
+## Files changed (committed, vs master)
+
+| File | Action | What was done |
+|---|---|---|
+| `Sandbox_Engine.js` | Modified | FU2 edge inside the active-leg window branch (:631-638): when `!currentlyAtBase && !prevAtBase` and the head leg is in its departure window, stage `OBSERVE_DEPARTURE` with `oldItin[0].targetEventId` via `stageReducerCommand` (delivered in the FU1 `REDUCER_BATCH`). Once-per-leg guard: skip when the last `departures[]` record for the trip already matches the current planning day (`localPlanningDay(nowSec)`); mutually exclusive with the base-leave branch (prevAtBase true). No change to Compiler's cross-day diff baseline. |
+| `harness/test_fu2_departure_edge.js` | Created | SCN-6FU-10 (non-base window entry stages once, lands via one router call), SCN-6FU-11 (re-entry no stage/pollution; base-leave not double-observed across passes). |
+
+## Deviations / decisions
+
+1. **Guard granularity is the planning day, not the window seconds**: the
+   design's "matches the current `{planningDay, window-entry}`" is implemented
+   as `lastDep.planningDay === localPlanningDay(nowSec)` — a departure observed
+   for the trip on the current planning day suppresses re-staging. This covers
+   both per-pass spam (the reducer only dedupes identical `at`) and the
+   cross-pass base-leave case (after OBSERVE_BASE_LEAVE projects
+   `User_At_Base=false`, a later away pass would otherwise re-fire the edge;
+   the guard suppresses it — proven by the base-leave section).
+2. **Log-code assertion uses the real reducer contract**: the spec EVT name
+   `OBSERVE_DEPARTURE_ACCEPTED` is not a reducer log code; the batch path logs
+   `REDUCER_BATCH_DELIVERED` with applied/skipped counts. The test asserts
+   applied sub-command totals (4 + 2 = 6) so the departure provably applied
+   exactly once, instead of asserting a nonexistent event code.
+3. **Edge placement is the status-resolution window branch** (:631-638, the
+   `leaveSec > 0 && nowSec >= leaveSec - 600 && nowSec <= latestValidDepart`
+   block), not :612-632 as the tasks.md anchor suggests — line numbers shifted
+   after the FU1 batch change. Same block; the resolvedStatus assignment the
+   anchor described is inside it.
+4. **apply-progress.md + tasks.md `[x]` marks left UNCOMMITTED** (per
+   instruction) so they do not add to the PR; committed Δ vs master is 289
+   lines (286 add / 3 del), well under the 400-line budget.
+
+## Workload / PR boundary
+
+- Mode: **stacked PR slice** (stacked-to-main), `auto-chain`
+- Boundary: FU2 tail only — the Sandbox active-leg departure edge + once-per-leg
+  guard + SCN-6FU-10/11 tests. Starts where PR 1 left off (REDUCER_BATCH live);
+  ends where PR 2 Finaliser (D5-deferred) and Docs 4.1 begin. Finaliser.js and
+  Alpha.js untouched; `schemaVersion` stays 1.
+
+## Remaining tasks (NOT this batch)
+
+- PR 2: 2.0–2.4 (Finaliser / D5 gate) — deferred by user decision (D5), not implemented.
+- Docs: 4.1 (canonical-sync note) — not implemented.
