@@ -910,8 +910,11 @@ function testDepartNowCommandAdapter() {
   if (s.runError) throw new Error(s.runError.message);
 
   assert(!s.writeLog.some(function (w) { return w.path === DATA + 'Itin_Master.json'; }), 'Depart_Now.js must not write Itin_Master.json directly');
-  assert.strictEqual(box.local('par1'), 'DEPART_NOW', 'Depart Now must stage the typed DEPART_NOW command');
-  const staged = JSON.parse(box.local('par2'));
+  // FU1 (REQ-6FU-4): one REDUCER_BATCH envelope with DEPART_NOW last.
+  assert.strictEqual(box.local('par1'), 'REDUCER_BATCH', 'Depart Now must stage the REDUCER_BATCH envelope');
+  const env = JSON.parse(box.local('par2'));
+  assert.strictEqual(env.commands[env.commands.length - 1].command, 'DEPART_NOW', 'primary DEPART_NOW must be the last sub-command');
+  const staged = env.commands[env.commands.length - 1].payload;
   assert.strictEqual(staged.tripId, 'leg1', 'Depart Now must stage the selected leg trip id');
   assert.strictEqual(staged.at, nowSec, 'Depart Now must stage the departure unix timestamp');
 
@@ -959,8 +962,11 @@ function testReturnToBaseCommandAdapter() {
   if (s.runError) throw new Error(s.runError.message);
 
   assert(!s.writeLog.some(function (w) { return w.path === DATA + 'Itin_Master.json'; }), 'Return_to_Base.js must not write Itin_Master.json directly');
-  assert.strictEqual(box.local('par1'), 'RETURN_TO_BASE', 'Return to Base must stage the typed RETURN_TO_BASE command');
-  const staged = JSON.parse(box.local('par2'));
+  // FU1 (REQ-6FU-4): one REDUCER_BATCH envelope with RETURN_TO_BASE last.
+  assert.strictEqual(box.local('par1'), 'REDUCER_BATCH', 'Return to Base must stage the REDUCER_BATCH envelope');
+  const env = JSON.parse(box.local('par2'));
+  assert.strictEqual(env.commands[env.commands.length - 1].command, 'RETURN_TO_BASE', 'primary RETURN_TO_BASE must be the last sub-command');
+  const staged = env.commands[env.commands.length - 1].payload;
   assert.strictEqual(staged.policy, 'MANUAL', 'RETURN_TO_BASE must carry an explicit return policy');
   assert(/^(action|manual_return)_[0-9a-z]+$/.test(staged.actionId) && /^manual_return_[0-9a-z]+$/.test(staged.tripId),
     'RETURN_TO_BASE must carry collision-safe underscore+base-36 ids');
