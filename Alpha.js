@@ -42,8 +42,6 @@ function utcDayBoundaryUnix(unixSec) {
 }
 
 try {
-    try { writeFile("Tasker/Tesla/Data/TDS_Optimize_Queue.json", "[]", false); } catch(e){}
-
     let nowSec       = Math.floor(Date.now() / 1000);
     let fetchStartMs = forceMs(global('TIMEMS')); 
     let cutoffMs     = fetchStartMs + 691200000;  
@@ -255,8 +253,6 @@ try {
     setLocal('raw_base_data', baseStr);
     setLocal('locs_to_fetch', fetchList.join("^^"));
     setLocal('orphaned_travel_ids', orphanedTravel.join("|"));
-
-    setGlobal('TDS_Count', validEvents.length.toString());
     // Phase 2 RULE-8A: Alpha no longer clears the live master files.
     // Generation_Publisher owns all writes to TDS_Master.* and Itin_Master.*.
 
