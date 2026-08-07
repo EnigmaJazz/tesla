@@ -117,8 +117,16 @@ section('adapter-depart-now-stages-typed', function () {
   const { sandbox, store } = make(files, { TDS_Active_Generation: GEN_ID });
   runScript(DEPART_NOW, sandbox, store);
   if (store.runError) throw new Error(store.runError.message);
-  assert.strictEqual(sandbox.local('par1'), 'DEPART_NOW', 'Depart Now must stage the typed DEPART_NOW command');
-  const payload = JSON.parse(sandbox.local('par2'));
+  // FU1 (REQ-6FU-4, SCN-6FU-8): one REDUCER_BATCH envelope with DEPART_NOW
+  // LAST inside the batch — primary-last preserved, halt observation delivered.
+  assert.strictEqual(sandbox.local('par1'), 'REDUCER_BATCH', 'Depart Now must stage the REDUCER_BATCH envelope');
+  const env = JSON.parse(sandbox.local('par2'));
+  assert.strictEqual(env.generationId, GEN_ID, 'batch must carry the active generation');
+  assert.strictEqual(env.commands.length, 2, 'batch must carry halt + depart');
+  assert.strictEqual(env.commands[0].command, 'OBSERVE_LATENESS_HALT', 'halt release must precede the primary');
+  assert.strictEqual(env.commands[0].payload.halt, false, 'halt release must clear the halt');
+  assert.strictEqual(env.commands[1].command, 'DEPART_NOW', 'primary DEPART_NOW must be the last sub-command');
+  const payload = env.commands[1].payload;
   assert.strictEqual(payload.tripId, 'today_leg', 'DEPART_NOW must carry the selected leg trip id');
   assert.strictEqual(typeof payload.at, 'number', 'DEPART_NOW must carry a departure unix timestamp');
   assert.strictEqual(payload.generationId, GEN_ID, 'DEPART_NOW must carry the active generation');
@@ -133,8 +141,15 @@ section('adapter-return-to-base-stages-typed', function () {
   const { sandbox, store } = make({ [DATA + 'TDS_Run_Manifest.json']: manifest() }, globals);
   runScript(RETURN_TO_BASE, sandbox, store);
   if (store.runError) throw new Error(store.runError.message);
-  assert.strictEqual(sandbox.local('par1'), 'RETURN_TO_BASE', 'Return to Base must stage the typed RETURN_TO_BASE command');
-  const payload = JSON.parse(sandbox.local('par2'));
+  // FU1 (REQ-6FU-4): one REDUCER_BATCH envelope with RETURN_TO_BASE LAST
+  // inside the batch — both secondary observations delivered, primary last.
+  assert.strictEqual(sandbox.local('par1'), 'REDUCER_BATCH', 'Return to Base must stage the REDUCER_BATCH envelope');
+  const env = JSON.parse(sandbox.local('par2'));
+  assert.strictEqual(env.commands.length, 3, 'batch must carry status + halt + return');
+  assert.strictEqual(env.commands[0].command, 'OBSERVE_STATUS', 'status observation must precede the primary');
+  assert.strictEqual(env.commands[1].command, 'OBSERVE_LATENESS_HALT', 'halt release must precede the primary');
+  assert.strictEqual(env.commands[2].command, 'RETURN_TO_BASE', 'primary RETURN_TO_BASE must be the last sub-command');
+  const payload = env.commands[2].payload;
   assert.strictEqual(payload.policy, 'MANUAL', 'RETURN_TO_BASE must carry an explicit return policy');
   assert(/^(action|manual_return)_[0-9a-z]+$/.test(payload.actionId) && /^manual_return_[0-9a-z]+$/.test(payload.tripId),
     'RETURN_TO_BASE must carry collision-safe underscore+base-36 ids');
@@ -142,6 +157,46 @@ section('adapter-return-to-base-stages-typed', function () {
   assert(payload.durationSecs > 0, 'RETURN_TO_BASE must carry positive route metrics');
   assert(payload.planningDay === todayDay, 'RETURN_TO_BASE must carry the local planning day');
   assert.strictEqual(store.writeLog.length, 0, 'Return to Base must not prepend a candidate or write any file');
+});
+
+// FU1 (REQ-6FU-4, SCN-6FU-8): the adapter batch must reach the reducer whole —
+// the halt release AND the primary command both apply, neither sacrificed.
+section('adapter-batch-delivers-halt-and-primary', function () {
+  const itin = JSON.stringify([{ tripId: 'today_leg', targetEventId: 'ev_x_kx8f00', mode: 'DRIVE',
+    departUnix: nowSec + 600, arriveUnix: nowSec + 2400, targetTitle: 'Work', targetCoords: awayCoords }]);
+  const planned = { trips: {
+    today_leg: { tripId: 'today_leg', lifecycleState: 'PLANNED', departUnix: nowSec + 600, arriveUnix: nowSec + 2400, durationSecs: 1800, currentPlanningDay: todayDay },
+    other: { tripId: 'other', lifecycleState: 'PLANNED', departUnix: nowSec + 7200, arriveUnix: nowSec + 9000, durationSecs: 1800, currentPlanningDay: todayDay }
+  } };
+  const files = { [DATA + 'TDS_Run_Manifest.json']: manifest(), [DATA + 'Itin_Master.' + GEN_ENC + '.json']: itin, [STATE]: seededState(planned.trips) };
+  const { sandbox, store } = make(files, { TDS_Active_Generation: GEN_ID });
+  runScript(DEPART_NOW, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  const r = runRouter(sandbox, store, sandbox.local('par1'), JSON.parse(sandbox.local('par2')));
+  assert.strictEqual(r, 'OK', 'Depart Now batch must be accepted by the router: ' + r);
+  const state = JSON.parse(store.files[STATE]);
+  assert.strictEqual(state.trips.today_leg.lifecycleState, 'IN_PROGRESS', 'DEPART_NOW must apply from the batch');
+  assert.strictEqual(state.trips.today_leg.manualDeparture, true, 'DEPART_NOW must record manualDeparture');
+  assert.strictEqual(state.trips.today_leg.actualDepartUnix, nowSec, 'DEPART_NOW must record actualDepartUnix');
+  assert.strictEqual(state.trips.other.lifecycleState, 'PLANNED', 'unselected trips must stay untouched');
+  assert.strictEqual(state.latenessHalt, false, 'OBSERVE_LATENESS_HALT must apply from the batch');
+
+  // Return to Base: both observations + the manual trip + the SESSION_OPEN
+  // staged by the reducer after the batch commits.
+  const rGlobals = {
+    TDS_Return_Coords: homeCoords, TDS_Return_Mode: 'DRIVE', TDS_Return_Name: 'Base',
+    User_Loc: awayCoords, Car_Loc: awayCoords, TDS_Active_Generation: GEN_ID
+  };
+  const { sandbox: s2, store: st2 } = make({ [DATA + 'TDS_Run_Manifest.json']: manifest() }, rGlobals);
+  runScript(RETURN_TO_BASE, s2, st2);
+  if (st2.runError) throw new Error(st2.runError.message);
+  const r2 = runRouter(s2, st2, s2.local('par1'), JSON.parse(s2.local('par2')));
+  assert(r2.indexOf('OK') === 0, 'Return to Base batch must be accepted: ' + r2);
+  const st = JSON.parse(st2.files[STATE]);
+  assert(st.trips[TRIP_ID], 'RETURN_TO_BASE must record the manual trip from the batch');
+  assert.strictEqual(st.currentStatus.indexOf('Heading Home') !== -1, true, 'OBSERVE_STATUS must apply from the batch');
+  assert.strictEqual(st.latenessHalt, false, 'OBSERVE_LATENESS_HALT must apply from the batch');
+  assert(JSON.parse(st2.files[SESSIONS]).sessions[ACTION_ID], 'SESSION_OPEN staged after the batch must open the session');
 });
 
 // ---------------------------------------------------------------------

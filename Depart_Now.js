@@ -23,23 +23,23 @@ try {
     if (itinerary.length > 0) {
         let leg = itinerary[0];
         let tripId = leg.tripId || leg.targetEventId || "";
+        let genId = global('TDS_Active_Generation') || (m && m.activeGeneration) || null;
 
-        // Forcefully release the engine block: staged OBSERVE_LATENESS_HALT
-        // clears the halt through the reducer so project() owns the global
-        // (REQ-6STATE-2/3). The primary DEPART_NOW envelope is staged last so
-        // the serial chain still delivers the departure command.
-        setLocal('par1', 'OBSERVE_LATENESS_HALT');
+        // FU1 (REQ-6FU-4, SCN-6FU-8): the halt release and the primary
+        // DEPART_NOW are staged as ONE REDUCER_BATCH envelope with DEPART_NOW
+        // LAST inside the batch. The serial Tasker model delivers only the
+        // final par1/par2, so the batch carries both observations to the
+        // router; the primary-last contract is preserved semantically (the
+        // primary is the last sub-command the reducer applies) and the halt
+        // observation is no longer sacrificed. project() owns the global
+        // (REQ-6STATE-2/3).
+        setLocal('par1', 'REDUCER_BATCH');
         setLocal('par2', JSON.stringify({
-            generationId: global('TDS_Active_Generation') || (m && m.activeGeneration) || null,
-            halt: false,
-            at: nowSec
-        }));
-
-        setLocal('par1', 'DEPART_NOW');
-        setLocal('par2', JSON.stringify({
-            generationId: global('TDS_Active_Generation') || (m && m.activeGeneration) || null,
-            tripId: tripId,
-            at: nowSec
+            generationId: genId,
+            commands: [
+                { command: 'OBSERVE_LATENESS_HALT', payload: { generationId: genId, halt: false, at: nowSec } },
+                { command: 'DEPART_NOW', payload: { generationId: genId, tripId: tripId, at: nowSec } }
+            ]
         }));
 
         flash("Departing now for " + (leg.targetTitle || "destination") + ".");
