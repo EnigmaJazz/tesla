@@ -80,6 +80,24 @@ try {
         let actionId = "action_" + b36;
         let tripId = "manual_return_" + b36;
 
+        // Phase 6 (REQ-6STATE-2/3): status + lateness-halt observations stage
+        // through the reducer so project() owns Current_Status and
+        // TDS_Lateness_Halt. The primary RETURN_TO_BASE envelope is staged last
+        // so the serial chain still delivers the manual-return command.
+        let modeDict = { "LIFT": "Lift", "WALK": "Walking", "TRANSIT": "Public Transport", "DRIVE": "Driving" };
+        setLocal('par1', 'OBSERVE_STATUS');
+        setLocal('par2', JSON.stringify({
+            generationId: global('TDS_Active_Generation') || (m && m.activeGeneration) || null,
+            status: (modeDict[rMode] || "Traveling") + " (Heading Home)",
+            at: nowSec
+        }));
+        setLocal('par1', 'OBSERVE_LATENESS_HALT');
+        setLocal('par2', JSON.stringify({
+            generationId: global('TDS_Active_Generation') || (m && m.activeGeneration) || null,
+            halt: false,
+            at: nowSec
+        }));
+
         setLocal('par1', 'RETURN_TO_BASE');
         setLocal('par2', JSON.stringify({
             generationId: global('TDS_Active_Generation') || (m && m.activeGeneration) || null,
@@ -95,10 +113,6 @@ try {
             distanceMiles: distMiles,
             planningDay: localPlanningDay(nowSec)
         }));
-
-        let modeDict = { "LIFT": "Lift", "WALK": "Walking", "TRANSIT": "Public Transport", "DRIVE": "Driving" };
-        setGlobal('Current_Status', (modeDict[rMode] || "Traveling") + " (Heading Home)");
-        setGlobal('TDS_Lateness_Halt', 'false');
 
         flash("Return to " + rName + " via " + modeDict[rMode] + " queued.");
     }
