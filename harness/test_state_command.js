@@ -202,5 +202,109 @@ try {
   assert(/ERROR: invalid generationId format/.test(reconcileGen.sandbox.local('return_value')), 'malformed RECONCILE generationId must be rejected');
 } catch (e) { fail('typed validation: ' + e.message); }
 
+// ---------------------------------------------------------------------
+// FU1 (REQ-6FU-3, SCN-6FU-6): a malformed REDUCER_BATCH envelope is rejected
+// whole with BATCH_ENVELOPE_REJECTED — no owner, no file change.
+// ---------------------------------------------------------------------
+function batchRejectCase(name, par2) {
+  try {
+    const { sandbox, store } = make({ globals: { TDS_Active_Generation: ACTIVE_GEN } });
+    sandbox.setLocal('par1', 'REDUCER_BATCH');
+    sandbox.setLocal('par2', JSON.stringify(par2));
+    runRouter(sandbox, store);
+    assert(store.runError === undefined, name + ' must not crash');
+    assert.strictEqual(sandbox.local('return_value').slice(0, 5), 'ERROR', name + ' must return ERROR');
+    assert.strictEqual(sandbox.local('tds_state_owner'), '', name + ' must not set an owner');
+    assert(!store.writeLog.some(function (w) { return w.path === STATE_FILE; }), name + ' must not write state');
+    const rej = logs(store).filter(function (l) { return l.code === 'BATCH_ENVELOPE_REJECTED'; });
+    assert(rej.length >= 1 && logFieldsOk(rej[0]), name + ' must log BATCH_ENVELOPE_REJECTED with all LOG-17 fields');
+  } catch (e) { fail(name + ': ' + e.message); }
+}
+// MAX_REDUCER_BATCH_SIZE = 32 in TDS_State_Command.js; 33 entries is oversized.
+batchRejectCase('batch missing commands', { generationId: ACTIVE_GEN });
+batchRejectCase('batch non-array commands', { generationId: ACTIVE_GEN, commands: 'nope' });
+batchRejectCase('batch empty commands', { generationId: ACTIVE_GEN, commands: [] });
+batchRejectCase('batch non-object entry', { generationId: ACTIVE_GEN, commands: ['DEPART_NOW'] });
+batchRejectCase('batch nested REDUCER_BATCH', { generationId: ACTIVE_GEN, commands: [{ command: 'REDUCER_BATCH', payload: { commands: [] } }] });
+batchRejectCase('batch unknown sub-command', { generationId: ACTIVE_GEN, commands: [{ command: 'NOT_A_CMD', payload: {} }] });
+batchRejectCase('batch bad generationId', { generationId: 'nope', commands: [{ command: 'OBSERVE_STATUS', payload: { generationId: ACTIVE_GEN, status: 'Idle', at: 100 } }] });
+batchRejectCase('batch oversized', { generationId: ACTIVE_GEN, commands: Array(33).fill({ command: 'OBSERVE_LATENESS_HALT', payload: { generationId: ACTIVE_GEN, halt: false, at: 100 } }) });
+
+// SCN-4CMD-3 / SCN-6FU-2: a valid REDUCER_BATCH routes to exactly the reducer
+// (one owner entry) and every sub-command applies in order.
+try {
+  const { sandbox, store } = make({ globals: { TDS_Active_Generation: ACTIVE_GEN } });
+  sandbox.setLocal('par1', 'REDUCER_BATCH');
+  sandbox.setLocal('par2', JSON.stringify({
+    generationId: ACTIVE_GEN,
+    commands: [
+      { command: 'OBSERVE_LIVE_BASE', payload: { generationId: ACTIVE_GEN, at: 100 } },
+      { command: 'OBSERVE_STATUS', payload: { generationId: ACTIVE_GEN, status: 'Idle', at: 100 } },
+      { command: 'OBSERVE_LATENESS_HALT', payload: { generationId: ACTIVE_GEN, halt: false, at: 100 } }
+    ]
+  }));
+  runRouter(sandbox, store);
+  assert(store.runError === undefined, 'valid batch must not crash');
+  assert.strictEqual(sandbox.local('tds_state_owner'), 'Trip_State_Reducer', 'REDUCER_BATCH must route to exactly the reducer');
+  assert.strictEqual(sandbox.local('return_value'), 'OK', 'valid batch must be accepted');
+  const state = JSON.parse(store.files[STATE_FILE]);
+  assert.strictEqual(state.userAtBase, true, 'OBSERVE_LIVE_BASE must apply');
+  assert.strictEqual(state.currentStatus, 'Idle', 'OBSERVE_STATUS must apply');
+  assert.strictEqual(state.latenessHalt, false, 'OBSERVE_LATENESS_HALT must apply');
+  const routed = logs(store).filter(function (l) { return l.code === 'STATE_COMMAND_ROUTED'; });
+  assert(routed.length === 1 && routed[0].details.owner === 'Trip_State_Reducer', 'batch must be routed once to the reducer');
+  const delivered = logs(store).find(function (l) { return l.code === 'REDUCER_BATCH_DELIVERED'; });
+  assert(delivered && delivered.details.applied === 3 && delivered.details.skipped === 0, 'delivery log must report all applied');
+} catch (e) { fail('batch routing: ' + e.message); }
+
+// REQ-6FU-2 (SCN-6FU-4): partial failure — a malformed COMPLETE_TRIP between
+// valid sub-commands is logged-and-skipped without mutation; the valid
+// sub-commands before and after still apply in order.
+try {
+  const { sandbox, store } = make({ globals: { TDS_Active_Generation: ACTIVE_GEN } });
+  sandbox.setLocal('par1', 'REDUCER_BATCH');
+  sandbox.setLocal('par2', JSON.stringify({
+    generationId: ACTIVE_GEN,
+    commands: [
+      { command: 'OBSERVE_LIVE_BASE', payload: { generationId: ACTIVE_GEN, at: 100 } },
+      { command: 'COMPLETE_TRIP', payload: { generationId: ACTIVE_GEN, tripId: 't1' } },
+      { command: 'OBSERVE_STATUS', payload: { generationId: ACTIVE_GEN, status: 'At Home', at: 100 } }
+    ]
+  }));
+  runRouter(sandbox, store);
+  assert(store.runError === undefined, 'partial-failure batch must not crash');
+  assert.strictEqual(sandbox.local('return_value'), 'OK', 'the envelope is well-formed; rejection is per sub-command');
+  const state = JSON.parse(store.files[STATE_FILE]);
+  assert.strictEqual(state.userAtBase, true, 'valid sub-command before the bad one must apply');
+  assert.strictEqual(state.currentStatus, 'At Home', 'valid sub-command after the bad one must apply');
+  assert(!state.trips.t1, 'the invalid COMPLETE_TRIP must not mutate state');
+  const rej = logs(store).filter(function (l) { return l.code === 'BATCH_SUBCOMMAND_REJECTED'; });
+  assert(rej.length === 1 && logFieldsOk(rej[0]) && rej[0].details.command === 'COMPLETE_TRIP' && rej[0].details.index === 1,
+    'BATCH_SUBCOMMAND_REJECTED must be logged once naming the command and index');
+  const delivered = logs(store).find(function (l) { return l.code === 'REDUCER_BATCH_DELIVERED'; });
+  assert(delivered && delivered.details.applied === 2 && delivered.details.skipped === 1, 'delivery log must report applied/skipped');
+} catch (e) { fail('batch partial-failure: ' + e.message); }
+
+// REQ-6FU-3 (SCN-6FU-7): nested parity — a sub-command payload failing its
+// REDUCER_REQUIRED_FIELDS entry is skipped with byte-identical rejection
+// semantics to a direct invalid command; valid neighbours still apply.
+try {
+  const { sandbox, store } = make({ globals: { TDS_Active_Generation: ACTIVE_GEN } });
+  sandbox.setLocal('par1', 'REDUCER_BATCH');
+  sandbox.setLocal('par2', JSON.stringify({
+    generationId: ACTIVE_GEN,
+    commands: [
+      { command: 'OBSERVE_STATUS', payload: { generationId: ACTIVE_GEN, at: 100 } },
+      { command: 'OBSERVE_STATUS', payload: { generationId: ACTIVE_GEN, status: 'Driving', at: 100 } }
+    ]
+  }));
+  runRouter(sandbox, store);
+  const state = JSON.parse(store.files[STATE_FILE]);
+  assert.strictEqual(state.currentStatus, 'Driving', 'the valid sub-command must apply');
+  const rej = logs(store).filter(function (l) { return l.code === 'BATCH_SUBCOMMAND_REJECTED'; });
+  assert(rej.length === 1 && rej[0].details.reason === 'missing status',
+    'sub-command must be rejected byte-identical to a direct invalid command');
+} catch (e) { fail('batch nested parity: ' + e.message); }
+
 if (failures > 0) { console.log('FAIL: state-command — ' + failures + ' group(s) failed'); process.exit(1); }
-console.log('PASS: state-command — router contract, single-owner routing, adapter staging, typed validation');
+console.log('PASS: state-command — router contract, single-owner routing, adapter staging, typed validation, batch envelope');
