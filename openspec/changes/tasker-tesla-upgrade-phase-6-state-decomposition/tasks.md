@@ -51,12 +51,12 @@ Delivery `auto-chain`; D1 (caller = Sandbox_Engine.js:571) & D3 (v1) confirmed; 
 
 ## Slice 2b — Finaliser / Sandbox + E2-2 (PR 2b)
 
-- [ ] 2b.1 `Finaliser.js`:93/:95/:167-168 — read `state.completedDropins` + `state.trips[].observedArrivalUnix`; remove setGlobal writes [REQ-6STATE-1 SCN-6STATE-1]
-- [ ] 2b.2 `Sandbox_Engine.js`:18 — read `state.completedStops` once at module top (single-snapshot-per-pass) [REQ-6STATE-1 SCN-6STATE-1]
-- [ ] 2b.3 `harness/test_single_writer.js` — invert E2-2 (:571): assert state reads [REQ-6STATE-8 SCN-6STATE-11]
-- [ ] 2b.4 `harness/test_trip_lifecycle.js` — assert Sandbox reads `state.completedStops` snapshot [REQ-6STATE-1 SCN-6STATE-1]
-- [ ] 2b.5 `Finaliser.js`:224-250/:387 — delete vestigial override-merge + `Engine_Output_Itinerary` (:244) + `TDS_Optimize_Queue` write; itinerary unchanged [REQ-6STATE-5 SCN-6STATE-8]
-- [ ] 2b.6 Regression: full harness loop green 28/28 [REQ-6STATE-8 SCN-6STATE-11]
+- [x] 2b.1 `Finaliser.js`:93/:95/:167-168 — read `state.completedDropins` + `state.trips[].observedArrivalUnix`; remove setGlobal writes [REQ-6STATE-1 SCN-6STATE-1]
+- [x] 2b.2 `Sandbox_Engine.js`:18 — read `state.completedStops` once at module top (single-snapshot-per-pass) [REQ-6STATE-1 SCN-6STATE-1]
+- [x] 2b.3 `harness/test_single_writer.js` — invert E2-2 (:571): assert state reads [REQ-6STATE-8 SCN-6STATE-11]
+- [x] 2b.4 `harness/test_trip_lifecycle.js` — assert Sandbox reads `state.completedStops` snapshot [REQ-6STATE-1 SCN-6STATE-1]
+- [x] 2b.5 `Finaliser.js`:224-250/:387 — delete vestigial override-merge + `Engine_Output_Itinerary` (:244) + `TDS_Optimize_Queue` write; itinerary unchanged [REQ-6STATE-5 SCN-6STATE-8]
+- [x] 2b.6 Regression: full harness loop green 28/28 [REQ-6STATE-8 SCN-6STATE-11]
 
 ## Slice 3 — Vestigial deletion + docs (PR 3)
 
