@@ -199,3 +199,64 @@ transient provider error (`err_1b181616`, "Unexpected server error") for both co
 ## Not in this slice (deferred to PR 3 — NOT touched)
 
 - Slice 3: Alpha `TDS_Optimize_Queue` clear (:45) + `TDS_Count` write (:259), dead Sandbox `readOrigin()`, `openspec/config.yaml` + `testing-capabilities.md` docs, canonical `openspec/specs/itinerary/spec.md` §8 migration contract.
+
+---
+
+# Apply Progress — Phase 6 State Decomposition, Slice 3 (PR 3)
+
+**Change**: tasker-tesla-upgrade-phase-6-state-decomposition
+**Slice**: 3 — Vestigial deletion + config/testing docs + reducer retention (PR 3, FINAL slice of the stacked-to-main chain)
+**Branch**: `tasker-tesla-phase6-pr-3` (from `master`, after PR 2b merged as 5801c43)
+**Date**: 2026-08-07
+**Mode**: Standard (strict_tdd: false per `openspec/config.yaml`); RED-first for the retention unit
+**Delivery**: auto-chain / stacked-to-main; review budget 400 changed lines
+
+## Status
+
+Slice 3 complete: tasks 3.1–3.7 all `[x]` in `tasks.md`. Full harness 28/28 green.
+Changed lines vs master: measured with `git diff --stat` before the docs commit (see below) — well under the 400 budget.
+After this slice the Phase 6 chain is fully landed: four memory globals have zero live get/set, the five status globals are reducer-projected, the canonical spec carries the migration contract, and the 30-day reducer retention (`STATE_STOP_RETENTION_APPLIED`) is implemented and harness-covered.
+
+## Commits (on `tasker-tesla-phase6-pr-3`)
+
+| SHA | Message |
+|---|---|
+| `b67c8ae` | test(reducer): RED — retention prune bound and STATE_STOP_RETENTION_APPLIED |
+| `26768ba` | feat(state): enforce 30-day retention prune on reducer commits |
+| `c45e1c7` | refactor(state): remove vestigial Alpha queue/count writes and dead Sandbox readOrigin |
+| (docs commit, this file) | docs(sdd): sync Phase 6 slice 3 docs, canonical spec, and apply progress — carries `tasks.md` `[x]` marks + this progress file (SHA not self-referenced) |
+
+Not pushed; PR delivery is the orchestrator's step.
+
+## Work Unit Evidence
+
+| Evidence | Required value |
+|---|---|
+| Focused test command and exact result | `node harness/test_trip_lifecycle.js` → RED confirmed first ("old departures must be pruned": the unmodified reducer kept the 31-day-old departure), then `PASS: trip-lifecycle: … projection, retention` (16 test groups, exit 0) after the reducer implementation. |
+| Runtime harness command/scenario and exact result | `for f in harness/test_*.js; do node $f; done` → **28 passed, 0 failed**. Includes the reducer-heavy suites (`test_reducer_commands.js` atomicity + projection, `test_stop_lifecycle.js`, `test_departure_day.js`, `test_single_writer.js` E2-1..E2-4) — all unaffected by the per-commit prune because their seeded records are now-relative (prune no-ops). |
+| Rollback boundary | Revert the four slice-3 commits (or the branch) — Alpha/Sandbox vestigial writes and the local `readOrigin` return, docs revert, and the reducer falls back to declared-but-unimplemented retention (the pre-slice state). Slices 1/2a/2b behavior is untouched; `schemaVersion` stays 1. |
+
+## Task mapping
+
+- **3.1** `Alpha.js`: `TDS_Optimize_Queue` clear (:45) and `TDS_Count` write (:259) removed. `Tesla_Last_Sync`/`Daily_Walk_Meters` kept — they are live day-tracking (Sandbox_Engine.js:747 reads `Daily_Walk_Meters`), not trip state.
+- **3.2** `Sandbox_Engine.js`: dead local `readOrigin()` (:169-182) deleted — no call sites existed; `TDS_Helper.js:51` remains canonical (harness `test_reader_convergence.js`/`test_release_commands.js` exercise the helper, unaffected).
+- **3.3** `openspec/config.yaml`: `apply.test_command`/`verify.test_command` → `node harness/test_*.js`; `testing.runner.command` → the same loop; `framework` → "none (plain Node + vm sandbox)"; `layers.unit.available` → true (`node + harness/mock_tasker.js`); `layers.integration.available` → true (28 cross-component tests); e2e/coverage/linter/type_checker/formatter stay false; `context` drops the stale "manual execution only" claim (keeps "No CI" and "no linter/type checker/formatter").
+- **3.4** `openspec/testing-capabilities.md`: mirrors config; `Detected` → 2026-08-07; the "could be created as a standalone JS file" note replaced with the actual `harness/` layout (mock_tasker.js, runner.js, day_utils.js, 28 scripts under `test_*.js`).
+- **3.5** Canonical `openspec/specs/itinerary/spec.md` §8 (OWN-8): the "ephemeral globals pending Phase 3 migration" sentence replaced with the migration contract — 4 memory keys trip-state-only with no live get/set; 5 globals state-backed read-only projections written by `project()` (MAY project committed state, MUST NOT be authoritative); resolver-copies retention (REQ-6STATE-6: byte-identical `readActiveGeneration` copies stay, `TDS_Helper.readActiveGeneration` canonical). No other canonical section touched. Landed in this PR per task 3.5 (the original design deferred it to archive).
+- **3.6** Verify: full loop 28/28; grep across production code (excl. `_archive`) — only explanatory comments mention the four memory globals, zero live get/set; `project()` read-back covered by `testProjectionWritesFiveGlobalsPostCommit`/`testProjectionSkippedOnCommitFailure`/`testAtomicity`.
+- **3.7** `Trip_State_Reducer.js`: implemented the declared-but-missing 30-day retention. `applyRetentionPrune(state)` is a pure apply-style function (clone → prune → revision bump on change → exact no-op returning the input state when nothing is old). Prunes `trips[].departures[]`, `observedArrivalUnix` (+stale `observedArrivalAccuracyM`), `trips[].completedStops[]`/`completedDropins[]` array ids, and the timestamped top-level `completedStops`/`completedDropins` maps; logs `STATE_STOP_RETENTION_APPLIED` (info) with `retentionDays`, `cutoffUnix`, and per-category prune counts. DST-safe local-day cutoff: today's LOCAL midnight minus `DEFAULT_RETENTION_DAYS * 86400`, never UTC date arithmetic. Header contract honored: active trips (IN_PROGRESS/ARRIVED), the current generation's trip, and manual sessions are exempt (map entries owned by active trips are also exempt). Wired into `reduce()` after `parsed.apply(...)` so every accepted commit runs the prune. `schemaVersion` stays 1. Harness: `testRetentionPrunesOldRecords` + `testRetentionNoopWhenNothingOld` added to `test_trip_lifecycle.js` (28 files, no new suite).
+
+## Deviations from design
+
+1. **Retention implementation landed in slice 3** (design.md File Changes table and the review-workload table list slice 3 as "Alpha, Sandbox (readOrigin), config.yaml, testing-capabilities.md, canonical spec sync" — no reducer row). Task 3.7 was added to `tasks.md` after the design (slice-2a apply flagged `STATE_STOP_RETENTION_APPLIED` as declared-but-unimplemented and "must land before archive"); the orchestrator placed it in this final slice. Scope follows the task text.
+2. **Retention prune runs after `apply`** inside `reduce()` (not as a standalone command): "on the next commit" is implemented as a per-commit pass, so any accepted command triggers retention; a no-op command still commits the pruned state when records were prunable. This matches the header contract ("pruned on the next commit").
+3. **"Any other per-trip history" scoped to the named vectors**: departures arrays, arrival observation, and the stop/dropin records (map + trip arrays). Planned `departUnix`/`arriveUnix` and lifecycle timestamps (`createdAt`, `lastActivityUnix`, `completedUnix`) are part of the trip record, not accumulating history lists, and are left intact. Manual sessions untouched (exempt per header).
+4. **The four commits** are grouped as RED test / GREEN reducer / vestigial deletions / docs (work-unit-commits), mirroring the 2a/2b commit shape.
+
+## Issues found
+
+- None. The one RED-iteration correction was a test-side keying bug (the current-generation trip was keyed `current_gen_trip` with `tripId: GEN_ID` while the exemption compares the map KEY to the generation id; fixed by keying `[GEN_ID]`).
+
+## Not in this slice (deferred — NOT touched)
+
+- Nothing: this is the final slice of the Phase 6 chain. Remaining for verify/archive: sdd-verify report, archive move, and the design Open Questions (batch-staging mechanism; non-base-origin departure observation) are follow-ups outside this change's scope.

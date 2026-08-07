@@ -1,19 +1,19 @@
 ## Testing Capabilities
 
 **Strict TDD Mode**: disabled
-**Detected**: 2026-07-19
+**Detected**: 2026-08-07
 
 ### Test Runner
 
-- Command: `none`
-- Framework: none — manual execution in Tasker environment
+- Command: `for f in harness/test_*.js; do node $f; done`
+- Framework: none (plain Node + vm sandbox)
 
 ### Test Layers
 
 | Layer       | Available | Tool        |
 | ----------- | --------- | ----------- |
-| Unit        | ❌        | —           |
-| Integration | ❌        | —           |
+| Unit        | ✅        | node + harness/mock_tasker.js |
+| Integration | ✅        | 28 cross-component harness tests |
 | E2E         | ❌        | Tasker (manual execution) |
 
 ### Coverage
@@ -31,6 +31,6 @@
 
 ### Context
 
-This is a Tasker Android automation project. The JavaScript runs inside Tasker's proprietary JSlet engine, not Node.js. There is no `package.json`, no `node_modules`, no test framework, no linter, no type checker, and no formatter. All testing is done by running the scripts in Tasker and inspecting the output JSON files (Itin_Master.json, TDS_Overrides.json, etc.) or by reading `local()`/`global()` variable dumps.
+This is a Tasker Android automation project. The JavaScript runs inside Tasker's proprietary JSlet engine, not Node.js. There is no `package.json`, no `node_modules`, no linter, no type checker, and no formatter. There is no CI; testing runs locally in Node.
 
-A deterministic scenario harness could be created as a standalone JS file that mocks the Tasker APIs — this is a potential improvement for a future change.
+A deterministic Node harness lives at `harness/`: `mock_tasker.js` builds a `vm` sandbox mocking the Tasker primitives (`local`/`setLocal`/`global`/`setGlobal`/`readFile`/`writeFile`/`flash`) with pinned `Date.now`; `runner.js` loads a production script into that sandbox; `day_utils.js` holds the shared DST-safe day-boundary helpers. The suite is 28 scripts under `harness/test_*.js`, run with `for f in harness/test_*.js; do node $f; done`. Scripts are exercised with synthetic data through their side effects; device flows (serial `par1`/`par2` staging, `%`-expansion) remain manual-only in Tasker.

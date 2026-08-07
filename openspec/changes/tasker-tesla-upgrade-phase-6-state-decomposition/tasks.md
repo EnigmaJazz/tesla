@@ -60,9 +60,10 @@ Delivery `auto-chain`; D1 (caller = Sandbox_Engine.js:571) & D3 (v1) confirmed; 
 
 ## Slice 3 — Vestigial deletion + docs (PR 3)
 
-- [ ] 3.1 `Alpha.js`:45/:259 — remove `TDS_Optimize_Queue` clear + `TDS_Count` write; keep `Tesla_Last_Sync`/`Daily_Walk_Meters` [REQ-6STATE-5 SCN-6STATE-8]
-- [ ] 3.2 `Sandbox_Engine.js`:159-168 — delete dead `readOrigin()`; TDS_Helper.js:51 canonical [REQ-6STATE-5]
-- [ ] 3.3 `openspec/config.yaml` — `apply`/`verify.test_command` → `node harness/test_*.js`; `testing.runner`/`layers.unit`/`layers.integration` → harness reality [REQ-6STATE-7 SCN-6STATE-10]
-- [ ] 3.4 `openspec/testing-capabilities.md` — mirror config; `Detected` → 2026-08-07; replace "could be created" with `harness/` layout (mock_tasker.js, runner.js, day_utils.js, 28 tests) [REQ-6STATE-7 SCN-6STATE-10]
-- [ ] 3.5 Canonical `openspec/specs/itinerary/spec.md` §8 (~:98) — migration contract (4 keys state-only; 5 globals state-backed) + resolver-copies retention; applied at archive [REQ-6STATE-1/6 SCN-6STATE-9]
-- [ ] 3.6 Verify: full loop 28/28; grep — no live get/set of 4 memory globals; `project()` read-back verified [REQ-6STATE-8 SCN-6STATE-11]
+- [x] 3.1 `Alpha.js`:45/:259 — remove `TDS_Optimize_Queue` clear + `TDS_Count` write; keep `Tesla_Last_Sync`/`Daily_Walk_Meters` [REQ-6STATE-5 SCN-6STATE-8]
+- [x] 3.2 `Sandbox_Engine.js`:159-168 — delete dead `readOrigin()`; TDS_Helper.js:51 canonical [REQ-6STATE-5]
+- [x] 3.3 `openspec/config.yaml` — `apply`/`verify.test_command` → `node harness/test_*.js`; `testing.runner`/`layers.unit`/`layers.integration` → harness reality [REQ-6STATE-7 SCN-6STATE-10]
+- [x] 3.4 `openspec/testing-capabilities.md` — mirror config; `Detected` → 2026-08-07; replace "could be created" with `harness/` layout (mock_tasker.js, runner.js, day_utils.js, 28 tests) [REQ-6STATE-7 SCN-6STATE-10]
+- [x] 3.5 Canonical `openspec/specs/itinerary/spec.md` §8 (~:98) — migration contract (4 keys state-only; 5 globals state-backed) + resolver-copies retention; applied at archive [REQ-6STATE-1/6 SCN-6STATE-9]
+- [x] 3.6 Verify: full loop 28/28; grep — no live get/set of 4 memory globals; `project()` read-back verified [REQ-6STATE-8 SCN-6STATE-11]
+- [x] 3.7 `Trip_State_Reducer.js` — implement 30-day retention prune (DEFAULT_RETENTION_DAYS=30 declared at :35, never implemented): prune trips/departures/completedDropins/completedStops/observedArrivalUnix older than 30 local planning days on the next commit after Override_Handler prune loop removal; log STATE_STOP_RETENTION_APPLIED; add harness coverage [REQ-6STATE-1 SCN-6STATE-2]
