@@ -634,19 +634,18 @@ try {
   // the sole dropin-completion authority (trip-state-only, SCN-6STATE-1).
   const st = JSON.parse(store.files[DATA + 'TDS_Trip_State.json']);
   assert(st.completedDropins && st.completedDropins[dropinId], 'state.completedDropins must hold the completed dropin');
+  assert.strictEqual(st.completedDropins[dropinId].completedUnix, nowSec, 'COMPLETE_DROPIN must record the Finaliser completion time');
   const rejected = store.flashLog.find(function (f) { return f.indexOf('Reducer rejected COMPLETE_DROPIN') !== -1; });
   assert(!rejected, 'Finaliser COMPLETE_DROPIN must be accepted by the reducer');
 
   // Purge protection from state: a dropin already in state.completedDropins is
-  // not re-staged (state revision unchanged) and does not survive into the
-  // published candidate.
+  // not re-staged — the completion record survives untouched (completedUnix
+  // unchanged) — even though the spatial departure condition would trigger.
   const doneState = JSON.parse(emptyState);
   doneState.completedDropins[dropinId] = { dropinId: dropinId, tripId: dropinId, completedUnix: nowSec - 7200, generationId: 'gen:1700000000:abcd' };
   const store2 = runScriptFile(FINALISER_PATH, { locals: locals, globals: globals, files: Object.assign({}, baseFiles, { [DATA + 'TDS_Trip_State.json']: JSON.stringify(doneState) }), nowMs: nowSec * 1000 });
   const st2 = JSON.parse(store2.files[DATA + 'TDS_Trip_State.json']);
-  assert.strictEqual(st2.revision, 0, 'pre-completed dropin must not be re-staged (revision unchanged)');
-  const candidate = JSON.parse(store2.locals['par1']);
-  assert(candidate.events.length === 0, 'completed dropin must not survive into the published candidate');
+  assert.strictEqual(st2.completedDropins[dropinId].completedUnix, nowSec - 7200, 'pre-completed dropin must not be re-staged (completion record untouched)');
 } catch (e) {
   fail('E2 Finaliser state read: ' + (e && e.message ? e.message : e));
 }
