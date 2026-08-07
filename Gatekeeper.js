@@ -16,6 +16,7 @@
 
 (function() {
     const METERS_PER_MILE = 1609.344; // Slice D: JSON distanceMiles field unit
+    const CACHE_MODE_WALK = "WALK";   // route-entry mode constant (manager parity)
 
     function forceSeconds(val) {
         let v = parseFloat(val); 
@@ -42,13 +43,39 @@
         return getDist(parseFloat(pA[0]), parseFloat(pA[1]), parseFloat(pB[0]), parseFloat(pB[1])) <= 200;
     }
 
+    // Remediation (REQ-5CACHE-2 SCN-5CACHE-3, REQ-5LOG-1): the direct readers
+    // must reject exactly what the manager's rcmFilterRouteEntries rejects and
+    // emit reader-origin CACHE_ENTRY_REJECTED LOG-17 on every drop. No
+    // require/import (Tasker standalone isolation) — the filter is duplicated
+    // inline per repo convention; Route_Cache_Manager.js remains the SOLE
+    // writer of every cache file (this script stays read-only).
+    function gkRouteKey(o, d, m, bucket, dayClass) {
+        return o + "~~" + d + "~~" + m + "~~" + (bucket === null ? "null" : bucket) + "~~" + dayClass;
+    }
+    function gkTempKey(o, d, m, apiUnix) {
+        return o + "~~" + d + "~~" + m + "~~" + apiUnix;
+    }
+    function gkRejectCacheEntry(reason, key, extra) {
+        flash(JSON.stringify({
+            timestamp: Date.now(),
+            generationId: global('TDS_Active_Generation') || null,
+            component: "Gatekeeper",
+            severity: "warn",
+            code: "CACHE_ENTRY_REJECTED",
+            tripId: null,
+            details: Object.assign({ reason: reason, key: key }, extra || {})
+        }));
+    }
+
     // Slice D (REQ-5CACHE-1/2): read-only JSON cache accessor. The Route Cache
     // Manager is the SOLE writer of TDS_Route_Cache.json / Temp_Route_Cache.json
     // / TDS_Order_Cache.json; this script only ever reads them (never writes).
-    // Expired entries (expiresAt <= now) are dropped here, exactly as the
-    // manager's CACHE_READ filters them (SCN-5CACHE-3), so a reader can never
-    // resurrect a pruned route.
-    function readCacheJson(path, nowSec) {
+    // kind selects the entry contract: "route"/"temp" entries are filtered
+    // inline exactly like the manager's rcmFilterRouteEntries/rcmFilterTempEntries
+    // (SCN-5CACHE-3) and each drop emits CACHE_ENTRY_REJECTED (REQ-5LOG-1);
+    // "order" entries keep the original validation (clusterKey/result is checked
+    // by the caller; only expired entries drop here).
+    function readCacheJson(path, nowSec, kind) {
         let raw = "";
         try { raw = readFile(path) || ""; } catch (e) { return null; }
         if (!raw) return null;
@@ -59,8 +86,43 @@
             let keys = Object.keys(obj.entries);
             for (let i = 0; i < keys.length; i++) {
                 let e = obj.entries[keys[i]];
-                if (!e || typeof e !== "object") continue;
-                if (typeof e.expiresAt === "number" && e.expiresAt <= nowSec) continue; // expired = miss
+                if (kind === "order") {
+                    if (!e || typeof e !== "object") continue;
+                    if (typeof e.expiresAt === "number" && e.expiresAt <= nowSec) continue; // expired = miss
+                    out[keys[i]] = e;
+                    continue;
+                }
+                if (kind === "temp") {
+                    if (!e || typeof e !== "object") { gkRejectCacheEntry("temp entry not an object", keys[i]); continue; }
+                    if (typeof e.originCell !== "string" || typeof e.destinationCell !== "string" || typeof e.mode !== "string"
+                        || typeof e.meanDurationSecs !== "number" || !isFinite(e.meanDurationSecs) || typeof e.sampleCount !== "number" || !isFinite(e.sampleCount)
+                        || typeof e.m2 !== "number" || !isFinite(e.m2) || typeof e.distanceMiles !== "number" || !isFinite(e.distanceMiles)
+                        || typeof e.apiUnix !== "number" || !isFinite(e.apiUnix) || typeof e.targetUnix !== "number" || !isFinite(e.targetUnix)
+                        || e.dayClass === undefined || e.bucket === undefined
+                        || (e.dayClass !== null && (typeof e.dayClass !== "number" || !isFinite(e.dayClass)))
+                        || (e.bucket !== null && (typeof e.bucket !== "number" || !isFinite(e.bucket)))
+                        || typeof e.createdAt !== "number" || typeof e.updatedAt !== "number") {
+                        gkRejectCacheEntry("temp entry malformed fields", keys[i]); continue;
+                    }
+                    if (typeof e.expiresAt !== "number" || e.expiresAt <= nowSec) { gkRejectCacheEntry("temp entry expired", keys[i], { expiresAt: e.expiresAt }); continue; }
+                    if (!(e.meanDurationSecs > 0)) { gkRejectCacheEntry("temp entry nonpositive duration", keys[i]); continue; }
+                    if (gkTempKey(e.originCell, e.destinationCell, e.mode, e.apiUnix) !== keys[i]) { gkRejectCacheEntry("temp key mismatch", keys[i]); continue; }
+                    out[keys[i]] = e;
+                    continue;
+                }
+                // route kind: replicate rcmFilterRouteEntries exactly
+                if (!e || typeof e !== "object") { gkRejectCacheEntry("route entry not an object", keys[i]); continue; }
+                if (typeof e.originCell !== "string" || typeof e.destinationCell !== "string" || typeof e.mode !== "string"
+                    || typeof e.meanDurationSecs !== "number" || !isFinite(e.meanDurationSecs) || typeof e.sampleCount !== "number" || !isFinite(e.sampleCount)
+                    || typeof e.m2 !== "number" || !isFinite(e.m2) || typeof e.distanceMiles !== "number" || !isFinite(e.distanceMiles)
+                    || typeof e.dayClass !== "number" || (e.bucket !== null && typeof e.bucket !== "number") || typeof e.createdAt !== "number" || typeof e.updatedAt !== "number") {
+                    gkRejectCacheEntry("route entry malformed fields", keys[i]); continue;
+                }
+                if (e.mode === CACHE_MODE_WALK && e.bucket !== null) { gkRejectCacheEntry("walk entry must have null bucket", keys[i]); continue; }
+                if (e.mode !== CACHE_MODE_WALK && e.bucket === null) { gkRejectCacheEntry("non-walk entry must have numeric bucket", keys[i]); continue; }
+                if (typeof e.expiresAt !== "number" || e.expiresAt <= nowSec) { gkRejectCacheEntry("route entry expired", keys[i], { expiresAt: e.expiresAt }); continue; }
+                if (!(e.meanDurationSecs > 0)) { gkRejectCacheEntry("route entry nonpositive duration", keys[i]); continue; }
+                if (gkRouteKey(e.originCell, e.destinationCell, e.mode, e.bucket, e.dayClass) !== keys[i]) { gkRejectCacheEntry("route key/bucket mismatch", keys[i]); continue; }
                 out[keys[i]] = e;
             }
             return { schemaVersion: obj.schemaVersion, entries: out };
@@ -144,7 +206,7 @@
             // JSON (read-only; the manager is the sole writer). The legacy row
             // shape origin|destination.id|wpIdStr|result is preserved by the
             // JSON clusterKey (first three fields) + result array.
-            let orderCache = readCacheJson("Tasker/Tesla/Data/TDS_Order_Cache.json", Math.floor(Date.now() / 1000));
+            let orderCache = readCacheJson("Tasker/Tesla/Data/TDS_Order_Cache.json", Math.floor(Date.now() / 1000), "order");
             if (orderCache) {
                 let oKeys = Object.keys(orderCache.entries);
                 for (let c = 0; c < oKeys.length; c++) {
@@ -179,7 +241,7 @@
                 // manager's JSON (read-only; the manager is the sole writer).
                 // distanceMiles in the JSON holds actual miles. Expired rows are
                 // already dropped by readCacheJson (expired = miss).
-                let routeCache = readCacheJson("Tasker/Tesla/Data/TDS_Route_Cache.json", nowSec);
+                let routeCache = readCacheJson("Tasker/Tesla/Data/TDS_Route_Cache.json", nowSec, "route");
                 if (routeCache) {
                     let rKeys = Object.keys(routeCache.entries);
                     for (let i = rKeys.length - 1; i >= 0; i--) {
@@ -204,7 +266,7 @@
 
                 if (cachedDurSecs === -1) {
                     // Slice D: session-cache reads come from the manager's JSON.
-                    let tempCache = readCacheJson("Tasker/Tesla/Data/Temp_Route_Cache.json", nowSec);
+                    let tempCache = readCacheJson("Tasker/Tesla/Data/Temp_Route_Cache.json", nowSec, "temp");
                     if (tempCache) {
                         let tKeys = Object.keys(tempCache.entries);
                         for (let t = tKeys.length - 1; t >= 0; t--) {
