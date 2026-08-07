@@ -14,8 +14,22 @@ let OVR = {};
 try { OVR = JSON.parse(ovrRaw); } catch(e) {}
 function getOvr(key) { return OVR[key] || ""; }
 
-// E1 (RULE-8C): Completed_Stops is documented transient global state.
-let completedStopsRaw = global('TDS_Completed_Stops') || "";
+// Phase 6 (REQ-6STATE-1): Completed_Stops is trip-state-only. The snapshot is
+// read ONCE at module top (single-snapshot-per-pass) from
+// state.completedStops; the legacy global is no longer read or written.
+let completedStopsRaw = "";
+try {
+    const stRaw = readFile("Tasker/Tesla/Data/TDS_Trip_State.json") || "";
+    if (stRaw) {
+        const parsedState = JSON.parse(stRaw);
+        const stopMap = parsedState.completedStops || {};
+        const stopKeys = [];
+        for (let sk in stopMap) {
+            if (stopMap.hasOwnProperty(sk)) stopKeys.push(sk);
+        }
+        completedStopsRaw = stopKeys.join(",");
+    }
+} catch (e) {}
 
 // E1 (RULE-8C): preferences are read directly from the PREFS file —
 // Route_Defaults lives in TDS_Routine_Preferences.json, not OVR.
