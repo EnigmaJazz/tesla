@@ -234,9 +234,12 @@ section('base-leave-departure-not-double-observed', function () {
   assert.strictEqual(stateAfterPass2.trips['ev_leg_kx8f00'].departures.length, 1,
     'departures[] must stay at one record after the away pass');
 
-  const logs = parseLog(st2);
-  assert.strictEqual(logs.filter(function (l) { return l.code === 'OBSERVE_DEPARTURE_ACCEPTED'; }).length, 1,
-    'exactly one departure accepted across both passes');
+  const logs = parseLog(st1).concat(parseLog(st2));
+  const deliveries = logs.filter(function (l) { return l.code === 'REDUCER_BATCH_DELIVERED'; });
+  assert.strictEqual(deliveries.length, 2, 'both passes must report a batch delivery');
+  const appliedTotal = deliveries.reduce(function (acc, l) { return acc + (l.details.applied || 0); }, 0);
+  assert.strictEqual(appliedTotal, 6,
+    'applied sub-commands across both passes: 4 (pass 1) + 2 (pass 2) = 6, so OBSERVE_DEPARTURE applied exactly once');
 });
 
 // ---------------------------------------------------------------------
