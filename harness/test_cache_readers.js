@@ -345,6 +345,135 @@ try {
   fail('TTL reader contract section threw: ' + (e && e.message ? e.message : e));
 }
 
+// ---------- (f) Remediation (R1 RED): direct-reader rejection contract ----------
+// REQ-5CACHE-2 SCN-5CACHE-3 + REQ-5LOG-1 at the reader: the DIRECT JSON readers
+// must reject exactly what the manager's rcmFilterRouteEntries rejects —
+// nonpositive meanDurationSecs, missing/non-numeric expiresAt, key/bucket-
+// mismatch, WALK-with-numeric-bucket — and emit READER-ORIGIN CACHE_ENTRY_REJECTED
+// LOG-17 on every drop. MUST FAIL on master (run-2 probe GK-1..GK-6, SB-3).
+// Reader-origin isolation: every case below uses a FRESH sandbox and never calls
+// cacheManager(...), so a CACHE_ENTRY_REJECTED log with component "Gatekeeper" /
+// "Sandbox" can only have come from the reader itself.
+
+function rejLogs(store, component) {
+  return structuredLogs(store).filter(function (l) {
+    return l.code === 'CACHE_ENTRY_REJECTED' && l.component === component;
+  });
+}
+function rejLog17Shape(l) {
+  return typeof l.timestamp === 'number' && 'generationId' in l && typeof l.component === 'string'
+    && typeof l.severity === 'string' && l.code === 'CACHE_ENTRY_REJECTED' && 'tripId' in l
+    && l.details !== null && typeof l.details === 'object';
+}
+
+// Gatekeeper: targetSec = nowSec + 10800 -> tod 73, dayClass 0; poisoned
+// fixtures use bucket 73 so the legacy selection loop matches them (HIT on master).
+try {
+  const gkTargetSec = nowSec + 10800;
+  const gkRejectCases = [
+    { name: 'zero-duration', mode: 'DRIVE', key: rk(homeCoords, eventCoords, 'DRIVE', 73, 0), entry: routeEntry(homeCoords, eventCoords, 'DRIVE', 0, 73, 0) },
+    { name: 'negative-duration', mode: 'DRIVE', key: rk(homeCoords, eventCoords, 'DRIVE', 73, 0), entry: routeEntry(homeCoords, eventCoords, 'DRIVE', -50, 73, 0) },
+    { name: 'missing-expiresAt', mode: 'DRIVE', key: rk(homeCoords, eventCoords, 'DRIVE', 73, 0), entry: (function (e) { delete e.expiresAt; return e; })(routeEntry(homeCoords, eventCoords, 'DRIVE', 1800, 73, 0)) },
+    { name: 'key/bucket-mismatch', mode: 'DRIVE', key: rk(homeCoords, eventCoords, 'DRIVE', 100, 0), entry: routeEntry(homeCoords, eventCoords, 'DRIVE', 1800, 73, 0) },
+    { name: 'WALK-numeric-bucket', mode: 'WALK', key: rk(homeCoords, eventCoords, 'WALK', 73, 0), entry: routeEntry(homeCoords, eventCoords, 'WALK', 900, 73, 0) }
+  ];
+  for (let i = 0; i < gkRejectCases.length; i++) {
+    const c = gkRejectCases[i];
+    const fixtures = {};
+    fixtures[c.key] = c.entry;
+    const { sandbox, store } = createSandbox({
+      locals: { par1: '', par11: '', par12: '', par13: '', par14: '' },
+      files: { [ROUTE_JSON]: cacheJson(fixtures), [TEMP_JSON]: cacheJson({}) },
+      nowMs: nowSec * 1000
+    });
+    runGatekeeperRoute(sandbox, store, homeCoords, eventCoords, c.mode, gkTargetSec);
+    assert(store.runError === undefined, 'Gatekeeper must not crash on ' + c.name);
+    assert.strictEqual(sandbox.local('cache_hit'), 'false',
+      c.name + ' entry MUST be a miss (master returns cache_hit=true with a zero/negative/poisoned duration)');
+    const rl = rejLogs(store, 'Gatekeeper');
+    assert(rl.length >= 1, c.name + ' rejection MUST emit reader-origin CACHE_ENTRY_REJECTED (got 0)');
+    assert(rejLog17Shape(rl[0]), c.name + ' reject log MUST carry all seven LOG-17 fields');
+  }
+  // Positive control: a VALID route entry still hits — the filter must not over-reject.
+  const gkValid = {};
+  gkValid[rk(homeCoords, eventCoords, 'DRIVE', 73, 0)] = routeEntry(homeCoords, eventCoords, 'DRIVE', 1800, 73, 0);
+  const { sandbox: gkv, store: gks } = createSandbox({
+    locals: { par1: '', par11: '', par12: '', par13: '', par14: '' },
+    files: { [ROUTE_JSON]: cacheJson(gkValid), [TEMP_JSON]: cacheJson({}) },
+    nowMs: nowSec * 1000
+  });
+  runGatekeeperRoute(gkv, gks, homeCoords, eventCoords, 'DRIVE', gkTargetSec);
+  assert.strictEqual(gkv.local('cache_hit'), 'true', 'valid entry must still hit');
+  assert.strictEqual(JSON.parse(gkv.local('api_return_json')).durationSecs, 1800, 'valid hit must return 1800');
+  assert.strictEqual(rejLogs(gks, 'Gatekeeper').length, 0, 'valid entry must not be rejected');
+} catch (e) {
+  fail('reader-rejection Gatekeeper section threw: ' + (e && e.message ? e.message : e));
+}
+
+// Sandbox: head-leg target tod 1333/dayClass 0 with updatedAt nowSec-60, so
+// poisoned DRIVE entries leak on master via the recency (1800) or tod (0/-50) path.
+try {
+  const rejItinJson = JSON.stringify([
+    { tripId: "stale_away_leg", targetEventId: "event_1", mode: "DRIVE", pitstopState: "handled",
+      departUnix: nowSec - 3600, arriveUnix: nowSec - 1800 }
+  ]);
+  const rejMasterJson = JSON.stringify([
+    { id: "event_1_kx8f00", start: nowSec + 3600, end: nowSec + 7200, duration: 3600,
+      title: "Future Event", desc: "", loc: "Work", coords: eventCoords }
+  ]);
+  const rejBaseGeocodes = [nowSec, nowSec + 86400, homeCoords, "0", "Home", "", "home_base"].join("~");
+  const rejGlobals = {
+    User_At_Base: "true", Base_Arrival_Unix: String(nowSec), User_Loc: homeCoords, Home_Coords: homeCoords,
+    Current_Status: "", Arrival_Buffer_Mins: "5", Departure_Buffer_Mins: "5", Max_Walk_Meters: "8046",
+    Daily_Walk_Meters: "0", Live_Traffic_Threshold: "7200", Car_Connected: "false"
+  };
+  const rejLocals = { idx: "1", vcar_loc: homeCoords, virtual_time: String(nowSec), virtual_loc: homeCoords };
+  const rejBaseFiles = {
+    "Tasker/Tesla/Data/Itin_Master.json": rejItinJson,
+    "Tasker/Tesla/Data/TDS_Master.json": rejMasterJson,
+    "Tasker/Tesla/Data/TDS_Base_Geocodes.txt": rejBaseGeocodes,
+    "Tasker/Tesla/Data/TDS_Overrides.json": "{}"
+  };
+  function runRejectSandbox(files) {
+    const { sandbox, store } = createSandbox({
+      locals: Object.assign({}, rejLocals), globals: Object.assign({}, rejGlobals),
+      files: Object.assign({}, rejBaseFiles, files), nowMs: nowSec * 1000
+    });
+    runScript(SANDBOX, sandbox, store);
+    if (store.runError) throw new Error('Sandbox crashed: ' + JSON.stringify(store.runError));
+    const envelope = JSON.parse(sandbox.local('block_queue') || '{"rows":[]}');
+    return { rows: envelope.rows, store: store };
+  }
+  const sbRejectCases = [
+    { name: 'zero-duration', key: rk(homeCoords, eventCoords, 'DRIVE', 1333, 0), entry: routeEntry(homeCoords, eventCoords, 'DRIVE', 0, 1333, 0), poison: 0 },
+    { name: 'negative-duration', key: rk(homeCoords, eventCoords, 'DRIVE', 1333, 0), entry: routeEntry(homeCoords, eventCoords, 'DRIVE', -50, 1333, 0), poison: -50 },
+    { name: 'missing-expiresAt', key: rk(homeCoords, eventCoords, 'DRIVE', 1333, 0), entry: (function (e) { delete e.expiresAt; return e; })(routeEntry(homeCoords, eventCoords, 'DRIVE', 1800, 1333, 0)), poison: 1800 },
+    { name: 'key/bucket-mismatch', key: rk(homeCoords, eventCoords, 'DRIVE', 1400, 0), entry: routeEntry(homeCoords, eventCoords, 'DRIVE', 1800, 1333, 0), poison: 1800 },
+    { name: 'WALK-numeric-bucket', key: rk(homeCoords, eventCoords, 'WALK', 1333, 0), entry: routeEntry(homeCoords, eventCoords, 'WALK', 900, 1333, 0), poison: 900 }
+  ];
+  for (let i = 0; i < sbRejectCases.length; i++) {
+    const c = sbRejectCases[i];
+    const fixtures = {};
+    fixtures[c.key] = c.entry;
+    const res = runRejectSandbox({ [ROUTE_JSON]: cacheJson(fixtures), [TEMP_JSON]: cacheJson({}) });
+    const head = res.rows[0];
+    assert(head, 'Sandbox must emit a head row for ' + c.name);
+    assert(head.routeDurationSecs !== c.poison,
+      c.name + ' MUST NOT leak the poisoned cached duration (got ' + head.routeDurationSecs + ')');
+    const rl = rejLogs(res.store, 'Sandbox');
+    assert(rl.length >= 1, c.name + ' rejection MUST emit reader-origin CACHE_ENTRY_REJECTED (got 0)');
+    assert(rejLog17Shape(rl[0]), c.name + ' reject log MUST carry all seven LOG-17 fields');
+  }
+  // Positive control: a valid master entry still feeds the head leg.
+  const sbValid = {};
+  sbValid[rk(homeCoords, eventCoords, 'DRIVE', 1333, 0)] = routeEntry(homeCoords, eventCoords, 'DRIVE', 1800, 1333, 0, { updatedAt: nowSec });
+  const vres = runRejectSandbox({ [ROUTE_JSON]: cacheJson(sbValid), [TEMP_JSON]: cacheJson({}) });
+  assert.strictEqual(vres.rows[0].routeDurationSecs, 1800, 'valid master entry must still feed getCachedTime');
+  assert.strictEqual(rejLogs(vres.store, 'Sandbox').length, 0, 'valid entry must not be rejected');
+} catch (e) {
+  fail('reader-rejection Sandbox section threw: ' + (e && e.message ? e.message : e));
+}
+
 if (failures > 0) {
   console.log('FAIL: Cache Readers — ' + failures + ' assertion group(s) failed');
   process.exit(1);
