@@ -423,16 +423,22 @@ function getRemainingStops(evId, desc, completedRaw) {
     return { secs: remSecs, arr: pendingArr };
 }
 
-// Phase 6: stage a typed reducer command through the serial par1/par2 pair.
-// The synchronous reducer shim (harness) applies it immediately; in the serial
-// Tasker task the last staged command reaches the reducer next. Used for the
-// OBSERVE_LATENESS_HALT / OBSERVE_STATUS / OBSERVE_BASE_LEAVE / OBSERVE_DEPARTURE
-// observations so the reducer stays the sole writer of the state file and
-// project() the sole writer of the five status globals (REQ-6STATE-2/3).
+// FU1 (REQ-6FU-1): per-pass accumulation of every observation staged in one
+// Sandbox pass. The serial Tasker model delivers only the LAST staged par1/par2
+// to TDS_State_Command, so observations are appended to an ordered array here
+// and, at pass end, staged as ONE REDUCER_BATCH envelope — the reducer applies
+// each sub-command in order. The synchronous reducer shim (harness) still
+// applies each observation immediately (28/28 regression stays green); when the
+// reducer is NOT a function (serial Tasker / harness serialMode) the batch is
+// accumulated only, never double-applied. The reducer stays the sole writer of
+// the state file and project() the sole writer of the five status globals
+// (REQ-6STATE-2/3).
+let stagedReducerCommands = [];
 function stageReducerCommand(name, payload) {
-    setLocal('par1', name);
-    setLocal('par2', JSON.stringify(payload));
+    stagedReducerCommands.push({ command: name, payload: payload });
     if (typeof reducer === 'function') {
+        setLocal('par1', name);
+        setLocal('par2', JSON.stringify(payload));
         reducer(name, payload);
     }
 }
@@ -1780,6 +1786,21 @@ try {
             }
             }
         }
+
+        // FU1 (REQ-6FU-1): one REDUCER_BATCH envelope per pass. In the serial
+        // Tasker model only the final par1/par2 reaches TDS_State_Command, so
+        // every observation staged this pass (arrival/leave, COMPLETE_TRIP,
+        // OBSERVE_STATUS, lateness resets) is delivered as one ordered batch.
+        // The harness shim already applied them synchronously, so the envelope
+        // is staged WITHOUT a reducer call (never double-apply).
+        if (stagedReducerCommands.length > 0) {
+            setLocal('par1', 'REDUCER_BATCH');
+            setLocal('par2', JSON.stringify({
+                generationId: global('TDS_Active_Generation') || null,
+                commands: stagedReducerCommands
+            }));
+        }
+        stagedReducerCommands = [];
 
         // REQ-5QUEUE-1: the typed queue envelope — rows, EOF flag and the
         // skip/conflict/notification controls travel as one JSON document.
