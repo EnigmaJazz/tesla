@@ -325,13 +325,13 @@ section('sandbox-completion-observer', function () {
 // clear the lock and never write sessions.
 // ---------------------------------------------------------------------
 const staleLock = JSON.stringify({ type: 'MANUAL_ROUTING', timestamp: nowSec - 10000, eventId: 'today_ret' });
+// Phase 6 (REQ-6STATE-1/5): Finaliser reads dropins/arrivals from trip state
+// and no longer touches Engine_Output_Itinerary — the legacy memory-global
+// seeds and the vestigial merge input are gone.
 const finaliserGlobals = {
   User_Loc: homeCoords,
   User_At_Base: 'true',
   TDS_Previous_Loc: homeCoords,
-  TDS_Completed_Dropins: '',
-  TDS_Arrival_Memory: '',
-  Engine_Output_Itinerary: '[]',
   TDS_Active_Generation: GEN_ID
 };
 const ACTION_ID = 'action_' + nowSec.toString(36);
