@@ -33,7 +33,6 @@ var OVR_SCHEMA_VERSION = 2;
 var PREFS_SCHEMA_VERSION = 2;
 
 // Retention boundaries — named constants, never magic numbers.
-var DEPART_WINDOW_SECS = 4 * 3600;       // four-hour Depart window
 var ROUTINE_RETENTION_SECS = 24 * 3600;  // 24-hour retention
 var FUTURE_EXCLUSION_SECS = 12 * 3600;   // 12-hour future exclusion
 
@@ -69,13 +68,6 @@ var ARRAY_BY_MODE_FIELD = {
   "lift": "Forced_Lifts", "transit": "Forced_Transit", "walk": "Forced_Walks",
   "drive": "Forced_Drives", "lift_chain": "Forced_Lift_Chains", "drive_chain": "Forced_Drive_Chains"
 };
-
-// Global transient memories pruned by PRUNE (Alpha stages the command).
-var GLOBAL_MEMORIES = [
-  { name: "Depart_Memory", globalKey: "TDS_Depart_Memory" },
-  { name: "Completed_Dropins", globalKey: "TDS_Completed_Dropins" },
-  { name: "Arrival_Memory", globalKey: "TDS_Arrival_Memory" }
-];
 
 function nowSec() { return Math.floor(Date.now() / 1000); }
 
@@ -598,23 +590,9 @@ function occurrenceWithinRetention(occId, nowSec, whitelistMap, departWindow) {
   const parsed = parseOccurrenceId(occId, HANDLER_WRITER);
   if (!parsed.ok) return false;
   const start = parsed.instanceStartUnix;
-  // Bounded timing: 24-hour retention back; 12-hour future exclusion ahead,
-  // or the four-hour Depart window for depart memories.
+  // Bounded timing: 24-hour retention back; 12-hour future exclusion ahead.
   if (start > nowSec) return start <= nowSec + (departWindow || FUTURE_EXCLUSION_SECS);
   return start > nowSec - ROUTINE_RETENTION_SECS;
-}
-
-function pruneCsv(rawData, nowSec, whitelistMap, departWindow) {
-  const items = (rawData || "").split(",");
-  const kept = [];
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i].trim();
-    if (!item) continue;
-    const parts = item.split("~");
-    const baseKey = parts[0].trim();
-    if (occurrenceWithinRetention(baseKey, nowSec, whitelistMap, departWindow)) kept.push(item);
-  }
-  return kept.join(",");
 }
 
 function commandPrune(cmd) {
@@ -635,15 +613,10 @@ function commandPrune(cmd) {
   syncProjections(ovr);
   writeOvr(ovr);
 
-  // Prune global transient memories (Alpha stages this command after
-  // ingestion; globals are documented ephemeral CSV compatibility state).
-  for (let g = 0; g < GLOBAL_MEMORIES.length; g++) {
-    const cfg = GLOBAL_MEMORIES[g];
-    const rawData = global(cfg.globalKey) || "";
-    const departWindow = cfg.name === "Depart_Memory" ? DEPART_WINDOW_SECS : 0;
-    const pruned = pruneCsv(rawData, nowSec, whitelistMap, departWindow);
-    setGlobal(cfg.globalKey, pruned);
-  }
+  // Phase 6 (REQ-6STATE-1/2): the four memory globals are trip-state-only.
+  // Reducer state retention (30 days) owns departures/dropins/arrivals/stops
+  // — the legacy GLOBAL_MEMORIES prune loop is gone, including the missing
+  // TDS_Completed_Stops key that caused unbounded growth (SCN-6STATE-2).
   return { ok: true, action: "pruned" };
 }
 

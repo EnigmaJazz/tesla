@@ -521,27 +521,20 @@ function compileTypedRow(row) {
             OVR = JSON.parse(ovrRaw); 
         } catch(e) {}
 
-        // E1 (RULE-8C): Depart_Memory is documented transient global state,
-        // not an OVR top-level array. Compiler reads/writes TDS_Depart_Memory;
-        // OVR access above remains read-only for Ignored_Lateness.
-        let depMemRaw = global('TDS_Depart_Memory') || "";
-        
-        let newDepMem = [];
-
-        if (depMemRaw.length > 2) {
-            let parts = depMemRaw.split(",");
-
-            for (let k = 0; k < parts.length; k++) {
-                if (!parts[k]) continue;
-
-                let dp = parts[k].split("~");
-                let inPending = pendingChain.some(l => l.targetEventId === dp[0]);
-
-                if (!inPending) {
-                    newDepMem.push(parts[k]);
-                }
+        // Phase 6 (REQ-6STATE-1/4): Depart_Memory is trip-state-only. The
+        // reducer records observed departures (OBSERVE_DEPARTURE) in
+        // state.trips[tripId].departures[]; the Compiler reads that state for
+        // the cross-day departChanged/departDiffMins signal. The legacy
+        // TDS_Depart_Memory global is no longer read or written here — a
+        // fresh planning pass honours committed state (REQ-6STATE-4).
+        let stateTrips = null;
+        try {
+            const stRaw = readFile("Tasker/Tesla/Data/TDS_Trip_State.json") || "";
+            if (stRaw) {
+                const parsedState = JSON.parse(stRaw);
+                stateTrips = parsedState.trips || null;
             }
-        }
+        } catch (e) { stateTrips = null; }
 
         for (let i = 0; i < cLen; i++) {
             let leg = pendingChain[i];
@@ -567,17 +560,15 @@ function compileTypedRow(row) {
             if (i === cLen - 1) {
                 let oldD = null;
 
-                if (depMemRaw.length > 2) {
-                    let parts = depMemRaw.split(",");
-
-                    for (let k = 0; k < parts.length; k++) {
-                        let dp = parts[k].split("~");
-
-                        if (dp[0] === leg.targetEventId) {
-                            oldD = parseInt(dp[1], 10); 
-                            break;
-                        }
-                    }
+                // REQ-6STATE-4: the prior actual departure for this event
+                // comes from state.trips[].departures[] (OBSERVE_DEPARTURE
+                // records) — the most recent observation is the cross-day
+                // comparison baseline, never a same-day reconstruction.
+                const stTrip = stateTrips ? stateTrips[leg.targetEventId] : null;
+                const depArr = (stTrip && stTrip.departures) || [];
+                if (depArr.length > 0) {
+                    const lastDep = depArr[depArr.length - 1];
+                    oldD = (typeof lastDep.at === "number") ? lastDep.at : parseInt(lastDep.at, 10);
                 }
                 
                 let departChanged = "false"; 
@@ -639,9 +630,11 @@ function compileTypedRow(row) {
             continue;
         }
 
-        // Only legs that survive the zero-duration rejection enter the depart
-        // memory — a rejected leg must not leak published state.
-        newDepMem.push(leg.targetEventId + "~" + leg.actualDeparture);
+        // Phase 6 (REQ-6STATE-1): departure records are trip-state-only.
+        // OBSERVE_DEPARTURE (staged by the Sandbox base-leave caller) is the
+        // sole writer of state.trips[].departures[]; the Compiler no longer
+        // maintains a legacy depart-memory global. A rejected leg never
+        // reaches state, so nothing is leaked here.
 
         if (leg.apiType === "ACTIVE_TRAVEL" || leg.durationSecs <= 0) {
                 outTitles.push("SKIP_CALENDAR");
@@ -697,8 +690,6 @@ function compileTypedRow(row) {
             });
         }
         
-        setGlobal('TDS_Depart_Memory', newDepMem.join(","));
-
         publishCandidate({ events: masterArr, master: masterArr, itinerary: itinerary });
 
         setLocal('cal_title_out', outTitles.join("|"));
