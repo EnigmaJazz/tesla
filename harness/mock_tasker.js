@@ -49,6 +49,13 @@ const CACHE_FILES = [ROUTE_CACHE_PATH, ORDER_CACHE_PATH, TEMP_CACHE_PATH, REQUES
 
 function createSandbox(options) {
   options = options || {};
+  // FU1 (REQ-6FU-1): serialMode models the production Tasker serial chain —
+  // no reducer/handler/publish function shims are injected, so scripts that
+  // stage commands (Sandbox stageReducerCommand, adapters) accumulate staged
+  // par1/par2 instead of applying synchronously. The stateCommand shim then
+  // runs the staged owner script after the router, exactly like the serial
+  // task: ONE TDS_State_Command invocation delivers the whole REDUCER_BATCH.
+  const serialMode = options.serialMode === true;
   const initialLocals = options.locals || {};
   const initialGlobals = options.globals || {};
   const initialFiles = options.files || {};
@@ -118,12 +125,28 @@ function createSandbox(options) {
   // stateCommand(command, payload): runs the TDS_State_Command router through
   // its staged entry (par1 command / par2 JSON payload) with __currentScriptPath
   // set so its TDS_Reorder_Commands.json append passes the ownership guard.
-  // Mirrors reducer()/handler().
+  // Mirrors reducer()/handler(). In serialMode the owner shims are absent, so
+  // after the router declares an owner the staged owner script runs next — the
+  // serial Tasker task parity that lets ONE router invocation deliver a whole
+  // REDUCER_BATCH (REQ-6FU-1, SCN-6FU-2).
   function stateCommand(command, payload) {
     setLocal('par1', command);
     setLocal('par2', JSON.stringify(payload));
     sandbox.__currentScriptPath = STATE_COMMAND_PATH;
     runScript(STATE_COMMAND_PATH, sandbox, store);
+    if (serialMode) {
+      const owner = local('tds_state_owner');
+      if (owner === 'Trip_State_Reducer') {
+        sandbox.__currentScriptPath = REDUCER_PATH;
+        runScript(REDUCER_PATH, sandbox, store);
+      } else if (owner === 'Override_Handler') {
+        sandbox.__currentScriptPath = OVERRIDE_HANDLER_PATH;
+        runScript(OVERRIDE_HANDLER_PATH, sandbox, store);
+      } else if (owner === 'Generation_Publisher') {
+        sandbox.__currentScriptPath = PUBLISHER_PATH;
+        runScript(PUBLISHER_PATH, sandbox, store);
+      }
+    }
     sandbox.__currentScriptPath = '';
     return local('return_value');
   }
@@ -273,9 +296,9 @@ function createSandbox(options) {
     String: String,
     Boolean: Boolean,
     __currentScriptPath: '',
-    publish: publish,
-    reducer: reducer,
-    handler: handler,
+    publish: serialMode ? undefined : publish,
+    reducer: serialMode ? undefined : reducer,
+    handler: serialMode ? undefined : handler,
     stateCommand: stateCommand,
     cacheManager: cacheManager
   };
