@@ -635,6 +635,37 @@ try {
                             let modeDict = { "LIFT": "Lift", "WALK": "Walking", "TRANSIT": "Public Transport" };
                             resolvedStatus = (modeDict[legMode] || "Walking") + pitStr;
                         }
+                        // FU2 (REQ-6FU-5, SCN-6FU-10/11): non-base-origin
+                        // departure observation. A JIT head leg entering its
+                        // departure window while the vehicle is already away
+                        // (prevAtBase false — NOT a base-leave) has no other
+                        // observation site, so complete REQ-6STATE-4 here.
+                        // Once-per-leg guard: skip when the last departures[]
+                        // record for this trip already matches the current
+                        // planning day — prevents per-pass spam (the reducer
+                        // only dedupes identical `at`) and a cross-pass
+                        // double observation of a base-leave departure.
+                        if (targetId && !currentlyAtBase && !prevAtBase) {
+                            let departureRecordedToday = false;
+                            try {
+                                const stRaw = readFile("Tasker/Tesla/Data/TDS_Trip_State.json") || "";
+                                if (stRaw) {
+                                    const st = JSON.parse(stRaw);
+                                    const trip = (st.trips || {})[targetId];
+                                    const deps = (trip && trip.departures) || [];
+                                    const lastDep = deps[deps.length - 1];
+                                    departureRecordedToday = !!(lastDep && lastDep.planningDay === localPlanningDay(nowSec));
+                                }
+                            } catch (e) {}
+                            if (!departureRecordedToday) {
+                                stageReducerCommand('OBSERVE_DEPARTURE', {
+                                    generationId: global('TDS_Active_Generation') || "gen:0:0000",
+                                    tripId: targetId,
+                                    at: nowSec,
+                                    planningDay: localPlanningDay(nowSec)
+                                });
+                            }
+                        }
                     } else resolvedStatus = "Idle";
                 }
                 stageReducerCommand('OBSERVE_STATUS', {
