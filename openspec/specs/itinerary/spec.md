@@ -98,7 +98,7 @@ Each resource SHALL have one writer:
 Entry points MUST submit commands, not directly rewrite domain files. `TDS_Routine_Preferences.json` holds `Route_Defaults` and `Route_History`; Override Handler is its sole writer. `TDS_Overrides.json` MUST have Override Handler as its sole writer. `Depart_Memory`, `Completed_Stops`, `Completed_Dropins`, and `Arrival_Memory` are trip-state-only: trip state is their sole source of truth for departure-change history, stop completions, dropin purge, and arrival latch, and no live `getGlobal`/`setGlobal` of the four memory globals SHALL remain. The five globals `User_At_Base`, `Base_Arrival_Unix`, `TDS_Lateness_Halt`, `Current_Status`, and `TDS_Manual_Return_Completed` are state-backed read-only projections written by the reducer's `project()` after each successful commit; globals MAY project committed state but MUST NOT be authoritative. Each consumer's byte-identical `readActiveGeneration` local copy remains a documented Tasker-isolation copy; `TDS_Helper.readActiveGeneration` stays the canonical implementation every consumer resolves against. **Evidence:** §8. **Exception:** none.
 
 ## §9 Command handling — CMD-9
-One serialised `TDS State Command` accepts `%par1` command type and `%par2` JSON payload. Commands: `SET_OVERRIDE`, `REMOVE_OVERRIDE`, `DEPART_NOW`, `RETURN_TO_BASE`, `COMPLETE_STOP`, `START_UNPLANNED_STOP`, `END_UNPLANNED_STOP`, `CANCEL_ACTION`, `RESET_ACTIONS`, `OBSERVE_DEPARTURE`, `OBSERVE_ARRIVAL`, `COMPLETE_TRIP`, `EXPIRE_TRIP`. Tasker MUST execute serially to prevent overlapping read-modify-write. **Evidence:** §9. **Exception:** none.
+One serialised `TDS State Command` accepts `%par1` command type and `%par2` JSON payload. Commands: `SET_OVERRIDE`, `REMOVE_OVERRIDE`, `DEPART_NOW`, `RETURN_TO_BASE`, `COMPLETE_STOP`, `START_UNPLANNED_STOP`, `END_UNPLANNED_STOP`, `CANCEL_ACTION`, `RESET_ACTIONS`, `OBSERVE_DEPARTURE`, `OBSERVE_ARRIVAL`, `COMPLETE_TRIP`, `EXPIRE_TRIP`, `REDUCER_BATCH` (ordered sub-command array in `par2.commands`, delivered to the Reducer as one owner entry — see §26). Tasker MUST execute serially to prevent overlapping read-modify-write. **Evidence:** §9. **Exception:** none.
 
 ## §10 Overrides and preferences — OVR-10
 Overrides MUST be schema-v2 exact-key `eventOverrides` maps keyed by occurrence ID; learned `seriesPreferences` MUST be separate, keyed by series ID plus route signature. Direct user overrides use occurrence ID; learned defaults use series identity/signature. Every `indexOf(eventId)` membership check MUST be removed. **Evidence:** §10. **Exception:** none.
@@ -572,7 +572,9 @@ Requirements introduced by Phase 4 (tasker-tesla-upgrade-phase-4-central-state-c
 
 ### Requirement: REQ-4CMD-1
 
-`TDS_State_Command` MUST serially validate `par1`/`par2`, route only to Reducer, Override Handler, Manual Action Handler, or Publisher, and reject without mutation.
+`TDS_State_Command` MUST serially validate `par1`/`par2`, route only to Reducer, Override Handler, Manual Action Handler, or Publisher, and reject without mutation. A `REDUCER_BATCH` envelope is a supported command routed to the Reducer as one owner entry; its sub-commands SHALL be validated byte-exact against `REDUCER_REQUIRED_FIELDS` (REQ-6FU-3) and a rejected envelope or sub-command SHALL preserve no-mutation.
+
+(Previously: single-command envelopes only; no batch surface or nested-field parity.)
 
 #### Scenario: SCN-4CMD-1 [EVT: `STATE_COMMAND_ROUTED`]
 - GIVEN a supported envelope
@@ -583,6 +585,10 @@ Requirements introduced by Phase 4 (tasker-tesla-upgrade-phase-4-central-state-c
 - GIVEN malformed JSON or an unknown command
 - WHEN validated
 - THEN no owner or file MUST change
+
+#### Scenario: SCN-4CMD-3 [EVT: `REDUCER_BATCH_DELIVERED`] — batch routed (added)
+- GIVEN `par1 = REDUCER_BATCH` with valid `par2.commands`, WHEN routed
+- THEN exactly the Reducer MUST receive it as one owner entry and apply sub-commands in order
 
 ### Requirement: REQ-4ADAPTER-1
 
@@ -850,12 +856,19 @@ The reducer SHALL support the missing state transitions that activate the alread
 
 ### Requirement: REQ-6STATE-4
 
-A production component SHALL stage `OBSERVE_DEPARTURE` with the event identity, preserving cross-day departure-diff semantics: `departChanged`/`departDiffMins` SHALL compare against the previous day's actual departure for the same event, not a same-day reconstruction. The departures recorded in trip state SHALL be the sole authority for this comparison.
+A production component SHALL stage `OBSERVE_DEPARTURE` with the event identity, preserving cross-day departure-diff semantics: `departChanged`/`departDiffMins` SHALL compare against the previous day's actual departure for the same event, not a same-day reconstruction; departures in trip state SHALL be the sole authority. The caller scope SHALL cover both base-leave departures (`!currentlyAtBase && prevAtBase`) and non-base-origin head-leg departures (head leg entering its departure window while `!currentlyAtBase`, once per leg — REQ-6FU-5).
+
+(Previously: base-leave departures only; non-base-origin JIT departures were not observed.)
 
 #### Scenario: SCN-6STATE-7 [EVT: `OBSERVE_DEPARTURE_ACCEPTED`]
 - GIVEN a production departure observation for a planned event
-- WHEN `OBSERVE_DEPARTURE` is staged and committed
-- THEN the departure record MUST be stored and cross-day diff MUST be computed against the prior day's actual departure
+- WHEN staged and committed
+- THEN the record MUST be stored and cross-day diff MUST compare against the prior day's actual departure
+
+#### Scenario: SCN-6STATE-12 [EVT: `OBSERVE_DEPARTURE_ACCEPTED`] — non-base origin (added)
+- GIVEN a JIT head leg departing from a non-base origin
+- WHEN the Sandbox active-leg window stages `OBSERVE_DEPARTURE` (REQ-6FU-5) and the batch delivers it
+- THEN the record MUST be stored and the cross-day diff baseline MUST reflect the actual departure
 
 ### Requirement: REQ-6STATE-5
 
@@ -894,3 +907,75 @@ The full harness SHALL remain green (28/28) after every slice. Harness assertion
 - THEN 28/28 MUST pass and the inverted E2-1..E2-4 assertions MUST assert state reads
 
 **Evidence:** Phase 6 delta spec. **Exception:** none.
+
+## §26 Phase 6 Follow-ups — Batch Envelope Delivery & Non-Base-Origin Departure
+
+Requirements introduced by the Phase 6 follow-up change (tasker-tesla-upgrade-phase-6-followups) supplementing §9 CMD-9, §23 REQ-4CMD-1, §25 REQ-6STATE-4, §8 OWN-8/RULE-8B, and §17 LOG-17. Closes a production gap: serial Tasker delivers only the LAST staged `par1`/`par2` per pass, silently dropping all earlier observations on device; `REDUCER_BATCH` carries every observation staged in one Sandbox pass in one envelope. REQ-4CMD-1 (§23) gained the batch surface and nested-field parity; REQ-6STATE-4 (§25) gained the non-base-origin caller scope. Batch codes `REDUCER_BATCH_DELIVERED`, `BATCH_ENVELOPE_REJECTED`, and `BATCH_SUBCOMMAND_REJECTED` are required LOG-17 codes.
+
+### Requirement: REQ-6FU-1 — Batch envelope delivery
+
+The planning engine SHALL register a `REDUCER_BATCH` command in the §9 CMD-9 surface. `stageReducerCommand` SHALL accumulate every observation staged in one Sandbox pass into an ordered array and, at pass end, stage one `REDUCER_BATCH` envelope with `par2 = {commands:[{command,payload},...]}` preserving staging order. The router SHALL deliver it to the reducer as one owner entry; the reducer SHALL apply each subcommand in order. A serial-faithful harness (Sandbox run without the reducer shim, then `TDS_State_Command` invoked once) MUST prove all observations reach trip state; none SHALL be silently dropped to last-wins.
+
+#### Scenario: SCN-6FU-1A — production-loss RED baseline
+- GIVEN the serial Tasker model (reducer shim absent) where only the final `par1`/`par2` reaches `TDS_State_Command`
+- WHEN a pass stages `OBSERVE_LIVE_BASE`, `COMPLETE_TRIP`, `OBSERVE_LATENESS_HALT`
+- THEN last-wins SHALL land only the halt and `userAtBase`/`currentStatus`/base-arrival completion MUST NOT apply
+
+#### Scenario: SCN-6FU-2 [EVT: `REDUCER_BATCH_DELIVERED`] — batch delivery
+- GIVEN the same serial-faithful harness after the batch fix
+- WHEN one `REDUCER_BATCH` envelope reaches `TDS_State_Command`
+- THEN the reducer MUST apply every subcommand in order into trip state with no drop
+
+### Requirement: REQ-6FU-2 — Partial-failure semantics
+
+The reducer SHALL apply valid subcommands in order and log-and-skip invalid ones. An invalid subcommand MUST be logged (`BATCH_SUBCOMMAND_REJECTED`) and skip mutation; valid subcommands before and after MUST still apply. All-or-nothing batch rejection is forbidden — one bad payload MUST NOT drop independent valid observations. Per-subcommand validate/commit/project discipline SHALL be preserved.
+
+#### Scenario: SCN-6FU-4 [EVT: `BATCH_SUBCOMMAND_REJECTED`]
+- GIVEN a malformed `COMPLETE_TRIP` payload between valid `OBSERVE_LIVE_BASE` and `OBSERVE_STATUS`
+- WHEN applied
+- THEN it MUST skip-mutate-and-log and both valid subcommands MUST apply in order
+
+#### Scenario: SCN-6FU-5 — all-valid batch
+- GIVEN every subcommand valid, WHEN applied, THEN every subcommand MUST commit-and-project
+
+### Requirement: REQ-6FU-3 — Nested validation parity
+
+Each subcommand MUST be validated byte-exact against the same field contracts as a direct command (`REDUCER_REQUIRED_FIELDS` parity, §23). A malformed envelope (missing `commands`, non-array, non-object entry) MUST be rejected without mutating any owner. A named constant SHALL bound batch size; oversized batches SHALL be rejected with a structured code.
+
+#### Scenario: SCN-6FU-6 [EVT: `BATCH_ENVELOPE_REJECTED`]
+- GIVEN `par1 = REDUCER_BATCH` with `par2.commands` missing or non-array
+- WHEN `TDS_State_Command` validates
+- THEN no owner or file MUST change
+
+#### Scenario: SCN-6FU-7 [EVT: `BATCH_SUBCOMMAND_REJECTED`] — nested parity
+- GIVEN a payload failing its `REDUCER_REQUIRED_FIELDS` entry
+- WHEN validated in order
+- THEN identified subcommands MUST require a byte-exact rejection identical to a direct invalid command
+
+### Requirement: REQ-6FU-4 — Adapter observation migration
+
+`Depart_Now.js` and `Return_to_Base.js` observations the serial model would clobber SHALL route through the batch mechanism so no secondary observation is sacrificed. Where the primary command MUST be the delivered envelope, the existing `tds_release_par1/par2` mid-chain rule SHALL be retained so the primary command remains last. (The Finaliser dropin/arrival observation migration is deferred by user decision D5 — see W1 in the change's verify-report.)
+
+#### Scenario: SCN-6FU-8 [EVT: `REDUCER_BATCH_DELIVERED`]
+- GIVEN Depart_Now stages `OBSERVE_LATENESS_HALT` then `DEPART_NOW`
+- WHEN delivered serially, THEN both MUST reach the reducer with neither sacrificed
+
+#### Scenario: SCN-6FU-9 [EVT: `STATE_PROJECTION_SKIPPED`]
+- GIVEN the Finaliser publish/release chain, WHEN staged
+- THEN the release candidate MUST remain primary-last and the `tds_release_par1/par2` rule SHALL be preserved
+
+### Requirement: REQ-6FU-5 — Non-base-origin departure observation (tail)
+
+In the Sandbox active-leg window, when the head leg enters its departure window while `!currentlyAtBase`, the Sandbox SHALL stage `OBSERVE_DEPARTURE` with the head leg's event identity, completing REQ-6STATE-4 for non-base-origin departures. It SHALL fire at most once per leg per pass, guarded against the last `departures[]` record for that trip matching the current planning-day/window entry. It MUST NOT double-observe a base-leave; cross-day `departChanged`/`departDiffMins` baseline SHALL remain preserved. Gated on REQ-6FU-1.
+
+#### Scenario: SCN-6FU-10 [EVT: `OBSERVE_DEPARTURE_ACCEPTED`] — non-base origin
+- GIVEN a JIT head leg away (`currentlyAtBase=false`, `prevAtBase=false`) entering its departure window
+- WHEN the active-leg window runs
+- THEN `OBSERVE_DEPARTURE` MUST stage and the reducer MUST commit the record to trip state
+
+#### Scenario: SCN-6FU-11 [EVT: `BATCH_SUBCOMMAND_REJECTED`] — once-per-leg guard
+- GIVEN the leg was already observed for this planning-day/window entry
+- WHEN the window re-enters later
+- THEN no further `OBSERVE_DEPARTURE` SHALL stage and the diff baseline MUST NOT pollute
+
+**Evidence:** Phase 6 follow-up delta spec. **Exception:** none.
