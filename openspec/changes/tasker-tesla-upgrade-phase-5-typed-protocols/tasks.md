@@ -58,13 +58,13 @@ Run-2 verify (whole-change FAIL, re-opened by `dff4f08`) found the direct JSON r
 key/bucket mismatch, WALK-with-numeric-bucket; and neither reader emits `CACHE_ENTRY_REJECTED`
 LOG-17 on rejection. Scope: REQ-5CACHE-2 SCN-5CACHE-3 + REQ-5LOG-1 SCN-5LOG-1 at the reader.
 
-- [ ] **R1 RED — Adversarial reader regression.** Extend `harness/test_cache_readers.js` (or add
+- [x] **R1 RED — Adversarial reader regression.** Extend `harness/test_cache_readers.js` (or add
   `harness/test_reader_rejection.js`) with direct-reader fixtures for zero-duration,
   negative-duration, missing-`expiresAt`, key/bucket-mismatch, and WALK-numeric-bucket entries;
   assert reader-side miss (no `cache_hit`, no zero-duration leg) AND reader-side
   `CACHE_ENTRY_REJECTED` LOG-17 emission (prove it comes from the reader, not a prior manager
   `CACHE_READ` log); fail on current master.
-- [ ] **R2 GREEN — Reader validation + LOG-17.** Modify `Gatekeeper.js readCacheJson` and the
+- [x] **R2 GREEN — Reader validation + LOG-17.** Modify `Gatekeeper.js readCacheJson` and the
   `Sandbox_Engine.js` reader to replicate the manager's rejection filter inline (no
   require/import — Tasker standalone isolation; duplicated helper is the repo convention):
   `meanDurationSecs > 0`, `typeof expiresAt === "number"`, key/bucket integrity, WALK null-bucket,
