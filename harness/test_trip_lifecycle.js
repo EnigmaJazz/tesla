@@ -249,6 +249,148 @@ function testProjectionSkippedOnCommitFailure() {
   assert.strictEqual(store.globals['TDS_Manual_Return_Completed'], 'true', 'prior manual-return bytes must be preserved');
 }
 
+// ============================================================
+// Phase 6 slice 3 (PR 3): 30-day retention prune (REQ-6STATE-1,
+// SCN-6STATE-2, STATE_STOP_RETENTION_APPLIED). The Override Handler's
+// GLOBAL_MEMORIES prune is gone; the reducer is the sole owner of
+// stop/dropin/departure/arrival retention.
+// ============================================================
+
+const RETENTION_DAYS = 30;
+// Mirror of the reducer's local-day cutoff so the test can seed records
+// strictly inside/outside the bound. The test pins TZ=UTC, so both sides
+// compute the same boundaries.
+function retentionCutoffForTest(now) {
+  const d = new Date(now * 1000);
+  const localMidnight = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000;
+  return localMidnight - RETENTION_DAYS * 86400;
+}
+
+function testRetentionPrunesOldRecords() {
+  const cutoff = retentionCutoffForTest(nowSec);
+  const oldAt = cutoff - 1;         // older than the 30-day bound
+  const recentAt = cutoff + 3600;   // inside the bound
+  const oldStopId = 'old_stop_1';
+  const recentStopId = 'recent_stop_1';
+  const oldDropinId = 'old_dropin_1';
+  const recentDropinId = 'recent_dropin_1';
+  const stateJson = JSON.stringify({
+    schemaVersion: 1,
+    revision: 5,
+    generationId: GEN_ID,
+    currentOrigin: 'LIVE_BASE',
+    currentPlanningDay: '',
+    userAtBase: false,
+    baseArrivalUnix: null,
+    latenessHalt: false,
+    currentStatus: '',
+    manualReturnCompleted: false,
+    trips: {
+      retired_trip: {
+        tripId: 'retired_trip',
+        lifecycleState: 'COMPLETED',
+        departures: [{ at: oldAt, planningDay: '2026-06-01' }, { at: recentAt, planningDay: '2026-07-08' }],
+        observedArrivalUnix: oldAt,
+        observedArrivalAccuracyM: 40,
+        completedStops: [oldStopId, recentStopId],
+        completedDropins: [oldDropinId, recentDropinId],
+        lastActivityUnix: oldAt,
+        createdAt: oldAt
+      },
+      active_trip: {
+        tripId: 'active_trip',
+        lifecycleState: 'IN_PROGRESS',
+        departures: [{ at: oldAt, planningDay: '2026-06-01' }],
+        completedStops: [oldStopId],
+        lastActivityUnix: oldAt
+      },
+      [GEN_ID]: {
+        tripId: GEN_ID,
+        lifecycleState: 'COMPLETED',
+        departures: [{ at: oldAt, planningDay: '2026-06-01' }]
+      }
+    },
+    stops: {},
+    manualSessions: {},
+    completedStops: {
+      [oldStopId]: { stopId: oldStopId, tripId: 'retired_trip', completedUnix: oldAt, generationId: GEN_ID },
+      [recentStopId]: { stopId: recentStopId, tripId: 'retired_trip', completedUnix: recentAt, generationId: GEN_ID }
+    },
+    completedDropins: {
+      [oldDropinId]: { dropinId: oldDropinId, tripId: 'retired_trip', completedUnix: oldAt, generationId: GEN_ID },
+      [recentDropinId]: { dropinId: recentDropinId, tripId: 'retired_trip', completedUnix: recentAt, generationId: GEN_ID }
+    }
+  });
+  const { sandbox, store } = createSandbox({
+    nowMs: nowSec * 1000,
+    files: { [STATE]: stateJson }
+  });
+  const r = runCmd(sandbox, store, 'OBSERVE_STATUS', { generationId: GEN_ID, status: 'Idle', at: nowSec });
+  assert.strictEqual(r, 'OK', 'OBSERVE_STATUS must be accepted');
+  const state = JSON.parse(store.files[STATE]);
+  // retired trip: old history pruned, recent history kept
+  const retired = state.trips.retired_trip;
+  assert.deepStrictEqual(retired.departures.map(function (d) { return d.at; }), [recentAt], 'old departures must be pruned');
+  assert.strictEqual(retired.observedArrivalUnix, undefined, 'old observedArrivalUnix must be pruned');
+  assert.strictEqual(retired.observedArrivalAccuracyM, undefined, 'stale arrival accuracy must be pruned with the arrival');
+  assert.deepStrictEqual(retired.completedStops, [recentStopId], 'old completed stop ids must be pruned');
+  assert.deepStrictEqual(retired.completedDropins, [recentDropinId], 'old completed dropin ids must be pruned');
+  assert.strictEqual(state.completedStops[oldStopId], undefined, 'old completedStops map entry must be pruned');
+  assert.strictEqual(state.completedStops[recentStopId].stopId, recentStopId, 'recent completedStops entry must survive');
+  assert.strictEqual(state.completedDropins[oldDropinId], undefined, 'old completedDropins map entry must be pruned');
+  assert.strictEqual(state.completedDropins[recentDropinId].dropinId, recentDropinId, 'recent completedDropins entry must survive');
+  // exempt: active trips and the current generation's trip keep their history
+  assert.deepStrictEqual(state.trips.active_trip.departures.map(function (d) { return d.at; }), [oldAt], 'active trip history must be exempt');
+  assert.deepStrictEqual(state.trips[GEN_ID].departures.map(function (d) { return d.at; }), [oldAt], 'current-generation trip history must be exempt');
+  // revision: seed 5, command bumps to 6, prune bumps to 7
+  assert.strictEqual(state.revision, 7, 'prune must bump revision alongside the command');
+  const logs = parseLog(store);
+  const retention = logs.find(function (l) { return l.code === 'STATE_STOP_RETENTION_APPLIED'; });
+  assert(retention, 'prune must log STATE_STOP_RETENTION_APPLIED');
+  assert.strictEqual(retention.severity, 'info', 'STATE_STOP_RETENTION_APPLIED must be info severity');
+  assert.strictEqual(retention.details.retentionDays, RETENTION_DAYS, 'log must record the retention bound');
+  assert.strictEqual(retention.details.cutoffUnix, cutoff, 'log must record the cutoff');
+  assert.strictEqual(retention.details.pruned.departures, 1, 'log must count pruned departure records (exempt trips keep theirs)');
+  assert.strictEqual(retention.details.pruned.arrivals, 1, 'log must count pruned arrival records');
+}
+
+function testRetentionNoopWhenNothingOld() {
+  const recentAt = retentionCutoffForTest(nowSec) + 3600;
+  const stateJson = JSON.stringify({
+    schemaVersion: 1,
+    revision: 2,
+    generationId: GEN_ID,
+    currentOrigin: 'LIVE_BASE',
+    currentPlanningDay: '',
+    userAtBase: false,
+    baseArrivalUnix: null,
+    latenessHalt: false,
+    currentStatus: '',
+    manualReturnCompleted: false,
+    trips: {
+      fresh_trip: {
+        tripId: 'fresh_trip',
+        lifecycleState: 'COMPLETED',
+        departures: [{ at: recentAt, planningDay: '2026-07-08' }],
+        observedArrivalUnix: recentAt,
+        completedStops: ['fresh_stop_1'],
+        completedDropins: ['fresh_dropin_1']
+      }
+    },
+    stops: {},
+    manualSessions: {},
+    completedStops: { fresh_stop_1: { stopId: 'fresh_stop_1', tripId: 'fresh_trip', completedUnix: recentAt, generationId: GEN_ID } },
+    completedDropins: { fresh_dropin_1: { dropinId: 'fresh_dropin_1', tripId: 'fresh_trip', completedUnix: recentAt, generationId: GEN_ID } }
+  });
+  const { sandbox, store } = createSandbox({ nowMs: nowSec * 1000, files: { [STATE]: stateJson } });
+  const r = runCmd(sandbox, store, 'OBSERVE_STATUS', { generationId: GEN_ID, status: 'Idle', at: nowSec });
+  assert.strictEqual(r, 'OK', 'OBSERVE_STATUS must be accepted');
+  const state = JSON.parse(store.files[STATE]);
+  assert.strictEqual(state.revision, 3, 'nothing pruned: only the command bumps revision');
+  const logs = parseLog(store);
+  assert(!logs.some(function (l) { return l.code === 'STATE_STOP_RETENTION_APPLIED'; }), 'no STATE_STOP_RETENTION_APPLIED when nothing is pruned');
+}
+
 try {
   testObserveArrivalMintsTrip();
   testObserveArrivalIsIdempotent();
@@ -265,7 +407,9 @@ try {
   testProjectionWritesFiveGlobalsPostCommit();
   testProjectionSkippedOnCommitFailure();
   testSandboxCompletedStopsSnapshotFromState();
-  console.log('PASS: trip-lifecycle: arrival, live-base origin, idempotency, atomicity, status observations, projection');
+  testRetentionPrunesOldRecords();
+  testRetentionNoopWhenNothingOld();
+  console.log('PASS: trip-lifecycle: arrival, live-base origin, idempotency, atomicity, status observations, projection, retention');
 } catch (e) {
   fail(e.message);
 }
