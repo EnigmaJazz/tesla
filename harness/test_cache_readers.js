@@ -74,6 +74,10 @@ function tempEntry(o, d, m, dur, apiUnix, extra) {
     expiresAt: apiUnix + 24 * 3600
   }, extra || {});
 }
+// Exact-key temp identity (mirrors the manager's rcmTempKey: o~~d~~m~~apiUnix).
+function tk(o, d, m, apiUnix) {
+  return o + "~~" + d + "~~" + m + "~~" + apiUnix;
+}
 function orderEntry(clusterKey, result, extra) {
   return Object.assign({
     clusterKey: clusterKey, result: result, createdAt: nowSec, updatedAt: nowSec,
@@ -201,7 +205,7 @@ try {
   // Temp-cache route hit: future leg with no master match resolves from JSON temp.
   const { sandbox: r3, store: s3 } = createSandbox({
     locals: { par1: '', par11: homeCoords, par12: eventCoords, par13: 'DRIVE', par14: String(nowSec + 10800) },
-    files: { [ROUTE_JSON]: cacheJson({}), [TEMP_JSON]: cacheJson({ [rk(homeCoords, eventCoords, 'DRIVE', null, null)]: tempEntry(homeCoords, eventCoords, 'DRIVE', 2400, nowSec) }) },
+    files: { [ROUTE_JSON]: cacheJson({}), [TEMP_JSON]: cacheJson({ [tk(homeCoords, eventCoords, 'DRIVE', nowSec)]: tempEntry(homeCoords, eventCoords, 'DRIVE', 2400, nowSec) }) },
     nowMs: nowSec * 1000
   });
   runGatekeeperRoute(r3, s3, homeCoords, eventCoords, 'DRIVE', nowSec + 10800);
@@ -261,7 +265,7 @@ try {
   // Temp-cache path: a fresh session sample wins for the head leg.
   const tempRows = runSandbox({
     [ROUTE_JSON]: cacheJson({}),
-    [TEMP_JSON]: cacheJson({ [rk(homeCoords, eventCoords, 'DRIVE', null, null)]: tempEntry(homeCoords, eventCoords, 'DRIVE', 2400, nowSec) })
+    [TEMP_JSON]: cacheJson({ [tk(homeCoords, eventCoords, 'DRIVE', nowSec)]: tempEntry(homeCoords, eventCoords, 'DRIVE', 2400, nowSec) })
   });
   assert.strictEqual(tempRows[0].routeDurationSecs, 2400, 'temp cache must feed getCachedTime (got ' + tempRows[0].routeDurationSecs + ')');
 
@@ -286,13 +290,22 @@ try {
   //   DRIVE: mode + isClose + (bucket within 60 min of target tod) + dayClass;
   //   WALK:  mode + isClose only (unbucketed per CACHE-11, bucket null).
   const targetSec = nowSec + 10800;
+  // Manager-realistic exact keys (rcmRouteKey) — the reader filter now requires
+  // key integrity, so the parity fixtures must carry their rebuilt keys; the
+  // insertion order still encodes the backward-scan semantics below.
+  const eStale = routeEntry(homeCoords, eventCoords, 'DRIVE', 1700, 73, 0, { updatedAt: nowSec - 100000 });
+  const eWrongDay = routeEntry(homeCoords, eventCoords, 'DRIVE', 1600, 73, 1, { updatedAt: nowSec - 100000 });
+  const eBucketFar = routeEntry(homeCoords, eventCoords, 'DRIVE', 1500, 200, 0, { updatedAt: nowSec - 100000 });
+  const eBucketAdjacent = routeEntry(homeCoords, eventCoords, 'DRIVE', 1400, 133, 0, { updatedAt: nowSec - 100000 });
+  const eBucketOutside = routeEntry(homeCoords, eventCoords, 'DRIVE', 1350, 12, 0, { updatedAt: nowSec - 100000 });
+  const eWalkNull = routeEntry(homeCoords, eventCoords, 'WALK', 900, null, 0, { updatedAt: nowSec - 100000 });
   const entrySets = {
-    matchStale: routeEntry(homeCoords, eventCoords, 'DRIVE', 1700, 73, 0, { updatedAt: nowSec - 100000 }),
-    wrongDay: routeEntry(homeCoords, eventCoords, 'DRIVE', 1600, 73, 1, { updatedAt: nowSec - 100000 }),
-    bucketFar: routeEntry(homeCoords, eventCoords, 'DRIVE', 1500, 200, 0, { updatedAt: nowSec - 100000 }),
-    bucketAdjacent: routeEntry(homeCoords, eventCoords, 'DRIVE', 1400, 133, 0, { updatedAt: nowSec - 100000 }),
-    bucketOutside: routeEntry(homeCoords, eventCoords, 'DRIVE', 1350, 12, 0, { updatedAt: nowSec - 100000 }),
-    walkNull: routeEntry(homeCoords, eventCoords, 'WALK', 900, null, 0, { updatedAt: nowSec - 100000 })
+    [rk(homeCoords, eventCoords, 'DRIVE', 73, 0)]: eStale,
+    [rk(homeCoords, eventCoords, 'DRIVE', 73, 1)]: eWrongDay,
+    [rk(homeCoords, eventCoords, 'DRIVE', 200, 0)]: eBucketFar,
+    [rk(homeCoords, eventCoords, 'DRIVE', 133, 0)]: eBucketAdjacent,
+    [rk(homeCoords, eventCoords, 'DRIVE', 12, 0)]: eBucketOutside,
+    [rk(homeCoords, eventCoords, 'WALK', null, 0)]: eWalkNull
   };
 
   function runQuery(entries, mode) {
@@ -311,12 +324,12 @@ try {
   assert.strictEqual(runQuery(entrySets, 'DRIVE'), 1400, 'adjacent bucket (diff 60) must hit and win the backward scan');
   // Without the adjacent/far interference: wrongDay and bucketFar are misses;
   // the stale row resolves via the tod/dayClass path (legacy parity).
-  assert.strictEqual(runQuery({ m1: entrySets.matchStale, m2: entrySets.wrongDay, m3: entrySets.bucketFar }, 'DRIVE'), 1700,
+  assert.strictEqual(runQuery({ [rk(homeCoords, eventCoords, 'DRIVE', 73, 0)]: eStale, [rk(homeCoords, eventCoords, 'DRIVE', 73, 1)]: eWrongDay, [rk(homeCoords, eventCoords, 'DRIVE', 200, 0)]: eBucketFar }, 'DRIVE'), 1700,
     'wrong-day and far-bucket rows must be misses; stale tod-path row must hit');
   // A bucket 61+ minutes outside the target tod is a miss.
-  assert.strictEqual(runQuery({ m1: entrySets.bucketOutside }, 'DRIVE'), null, 'bucket outside the 60-min window must be a miss');
+  assert.strictEqual(runQuery({ [rk(homeCoords, eventCoords, 'DRIVE', 12, 0)]: eBucketOutside }, 'DRIVE'), null, 'bucket outside the 60-min window must be a miss');
   // WALK resolves unbucketed regardless of tod.
-  assert.strictEqual(runQuery({ m1: entrySets.walkNull }, 'WALK'), 900, 'WALK must resolve unbucketed');
+  assert.strictEqual(runQuery({ [rk(homeCoords, eventCoords, 'WALK', null, 0)]: eWalkNull }, 'WALK'), 900, 'WALK must resolve unbucketed');
 } catch (e) {
   fail('spatial/bucket parity section threw: ' + (e && e.message ? e.message : e));
 }

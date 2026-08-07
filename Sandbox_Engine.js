@@ -718,10 +718,30 @@ try {
         // Cache Manager is the SOLE writer of TDS_Route_Cache.json and
         // Temp_Route_Cache.json (RULE-8E); this engine never mutates them. The
         // legacy RouteCache.txt / Temp_Route_Cache.txt projections were retired
-        // in Slice D — JSON is the only format. Expired entries (expiresAt <=
-        // now) are misses (SCN-5CACHE-3), matching the manager's CACHE_READ
-        // filter, so getCachedTime sees the identical envelope.
-        function sbReadCacheJson(filePath) {
+        // in Slice D — JSON is the only format. Expired, nonpositive, malformed,
+        // wrong-bucket, and key-mismatched entries are misses (SCN-5CACHE-3),
+        // replicating the manager's CACHE_READ filter inline so getCachedTime
+        // sees the identical envelope; every dropped entry emits reader-origin
+        // CACHE_ENTRY_REJECTED LOG-17 (REQ-5LOG-1).
+        const CACHE_MODE_WALK = "WALK";
+        function sbRouteKey(o, d, m, bucket, dayClass) {
+            return o + "~~" + d + "~~" + m + "~~" + (bucket === null ? "null" : bucket) + "~~" + dayClass;
+        }
+        function sbTempKey(o, d, m, apiUnix) {
+            return o + "~~" + d + "~~" + m + "~~" + apiUnix;
+        }
+        function sbRejectCacheEntry(reason, key, extra) {
+            flash(JSON.stringify({
+                timestamp: Date.now(),
+                generationId: global('TDS_Active_Generation') || null,
+                component: "Sandbox",
+                severity: "warn",
+                code: "CACHE_ENTRY_REJECTED",
+                tripId: null,
+                details: Object.assign({ reason: reason, key: key }, extra || {})
+            }));
+        }
+        function sbReadCacheJson(filePath, kind) {
             let raw = "";
             try { raw = readFile(filePath) || ""; } catch (e) { return null; }
             if (!raw) return null;
@@ -732,8 +752,37 @@ try {
                 let keys = Object.keys(obj.entries);
                 for (let i = 0; i < keys.length; i++) {
                     let e = obj.entries[keys[i]];
-                    if (!e || typeof e !== "object") continue;
-                    if (typeof e.expiresAt === "number" && e.expiresAt <= nowSec) continue; // expired = miss
+                    if (kind === "temp") {
+                        if (!e || typeof e !== "object") { sbRejectCacheEntry("temp entry not an object", keys[i]); continue; }
+                        if (typeof e.originCell !== "string" || typeof e.destinationCell !== "string" || typeof e.mode !== "string"
+                            || typeof e.meanDurationSecs !== "number" || !isFinite(e.meanDurationSecs) || typeof e.sampleCount !== "number" || !isFinite(e.sampleCount)
+                            || typeof e.m2 !== "number" || !isFinite(e.m2) || typeof e.distanceMiles !== "number" || !isFinite(e.distanceMiles)
+                            || typeof e.apiUnix !== "number" || !isFinite(e.apiUnix) || typeof e.targetUnix !== "number" || !isFinite(e.targetUnix)
+                            || e.dayClass === undefined || e.bucket === undefined
+                            || (e.dayClass !== null && (typeof e.dayClass !== "number" || !isFinite(e.dayClass)))
+                            || (e.bucket !== null && (typeof e.bucket !== "number" || !isFinite(e.bucket)))
+                            || typeof e.createdAt !== "number" || typeof e.updatedAt !== "number") {
+                            sbRejectCacheEntry("temp entry malformed fields", keys[i]); continue;
+                        }
+                        if (typeof e.expiresAt !== "number" || e.expiresAt <= nowSec) { sbRejectCacheEntry("temp entry expired", keys[i], { expiresAt: e.expiresAt }); continue; }
+                        if (!(e.meanDurationSecs > 0)) { sbRejectCacheEntry("temp entry nonpositive duration", keys[i]); continue; }
+                        if (sbTempKey(e.originCell, e.destinationCell, e.mode, e.apiUnix) !== keys[i]) { sbRejectCacheEntry("temp key mismatch", keys[i]); continue; }
+                        out[keys[i]] = e;
+                        continue;
+                    }
+                    // route kind: replicate rcmFilterRouteEntries exactly
+                    if (!e || typeof e !== "object") { sbRejectCacheEntry("route entry not an object", keys[i]); continue; }
+                    if (typeof e.originCell !== "string" || typeof e.destinationCell !== "string" || typeof e.mode !== "string"
+                        || typeof e.meanDurationSecs !== "number" || !isFinite(e.meanDurationSecs) || typeof e.sampleCount !== "number" || !isFinite(e.sampleCount)
+                        || typeof e.m2 !== "number" || !isFinite(e.m2) || typeof e.distanceMiles !== "number" || !isFinite(e.distanceMiles)
+                        || typeof e.dayClass !== "number" || (e.bucket !== null && typeof e.bucket !== "number") || typeof e.createdAt !== "number" || typeof e.updatedAt !== "number") {
+                        sbRejectCacheEntry("route entry malformed fields", keys[i]); continue;
+                    }
+                    if (e.mode === CACHE_MODE_WALK && e.bucket !== null) { sbRejectCacheEntry("walk entry must have null bucket", keys[i]); continue; }
+                    if (e.mode !== CACHE_MODE_WALK && e.bucket === null) { sbRejectCacheEntry("non-walk entry must have numeric bucket", keys[i]); continue; }
+                    if (typeof e.expiresAt !== "number" || e.expiresAt <= nowSec) { sbRejectCacheEntry("route entry expired", keys[i], { expiresAt: e.expiresAt }); continue; }
+                    if (!(e.meanDurationSecs > 0)) { sbRejectCacheEntry("route entry nonpositive duration", keys[i]); continue; }
+                    if (sbRouteKey(e.originCell, e.destinationCell, e.mode, e.bucket, e.dayClass) !== keys[i]) { sbRejectCacheEntry("route key/bucket mismatch", keys[i]); continue; }
                     out[keys[i]] = e;
                 }
                 return out;
@@ -744,7 +793,7 @@ try {
         // threshold) win the first getCachedTime pass; the tod/dayClass master
         // pass and the no-recency fallback keep the legacy semantics.
         let ramTier = [];
-        let tempJson = sbReadCacheJson("Tasker/Tesla/Data/Temp_Route_Cache.json");
+        let tempJson = sbReadCacheJson("Tasker/Tesla/Data/Temp_Route_Cache.json", "temp");
         if (tempJson) {
             let tKeys = Object.keys(tempJson);
             for (let r = 0; r < tKeys.length; r++) {
@@ -758,7 +807,7 @@ try {
         // Master tier (Welford cache): mean/bucket/dayClass map 1:1 from the
         // JSON entry (bucket null -> legacy tod -999 sentinel for WALK).
         let ssdTier = [];
-        let routeJson = sbReadCacheJson("Tasker/Tesla/Data/TDS_Route_Cache.json");
+        let routeJson = sbReadCacheJson("Tasker/Tesla/Data/TDS_Route_Cache.json", "route");
         if (routeJson) {
             let rKeys = Object.keys(routeJson);
             for (let s = 0; s < rKeys.length; s++) {
