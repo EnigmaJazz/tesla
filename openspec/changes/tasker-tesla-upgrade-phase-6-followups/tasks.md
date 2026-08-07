@@ -50,4 +50,4 @@ Chain strategy: stacked-to-main
 
 ## Docs
 
-- [ ] 4.1 Archive canonical-sync note: §9 CMD-9, REQ-4CMD-1, REQ-6STATE-4
+- [x] 4.1 Archive canonical-sync note RECORDED: merge REDUCER_BATCH into canonical §9 CMD-9 command list, REQ-4CMD-1 nested-validation scenarios, REQ-6STATE-4 FU2 caller scope (executed at archive)
