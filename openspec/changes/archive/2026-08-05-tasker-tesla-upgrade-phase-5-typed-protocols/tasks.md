@@ -70,9 +70,14 @@ LOG-17 on rejection. Scope: REQ-5CACHE-2 SCN-5CACHE-3 + REQ-5LOG-1 SCN-5LOG-1 at
   `meanDurationSecs > 0`, `typeof expiresAt === "number"`, key/bucket integrity, WALK null-bucket,
   field-type checks, and emit `CACHE_ENTRY_REJECTED` LOG-17 on every dropped/rejected entry;
   done when R1 passes with reader-origin logs.
-- [ ] **R3 VERIFY —** Run full harness suite (`for t in harness/test_*.js; do node "$t" || exit 1; done`),
+- [x] **R3 VERIFY —** Run full harness suite (`for t in harness/test_*.js; do node "$t" || exit 1; done`,
   `node --check` on all `*.js`, and the adversarial probe pattern; require reader/manager parity on
   every invalid class and LOG-17 from the reader itself. 28/28 baseline must stay green.
+  **Verified (R3 run)**: full suite 28/28 (hash `sha256:ddd91e380fb0774286101762af46264615da9259c154ac88910bf57ad33bfcb6`,
+  zero regression), syntax 54/54 (`sha256:e3b0c442…`), single-writer audit 0 matches, focused harness PASS
+  (`sha256:47270f16…`), adversarial probe 11/11 (GK-1..GK-8, SB-1..SB-3) with reader-origin
+  `CACHE_ENTRY_REJECTED` LOG-17. Whole-change verdict PASS: 7/7 requirements, 12/12 scenarios. See
+  `verify-report.md` R3 section (evidence revision `sha256:bc8fcf41bca72793838be7ba13ae9b00a3c1c8c18b5a9f74785fdbdbac89069e`).
 
 ## Test Plan
 
