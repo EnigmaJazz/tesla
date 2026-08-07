@@ -38,7 +38,8 @@ const COMPONENT = "TDS_State_Command";
 // Exact command table — every command maps to exactly one declared owner.
 const REDUCER_COMMANDS = ["SET_OVERRIDE", "REMOVE_OVERRIDE", "DEPART_NOW", "RETURN_TO_BASE", "COMPLETE_STOP",
   "START_UNPLANNED_STOP", "END_UNPLANNED_STOP", "COMPLETE_DROPIN", "CANCEL_ACTION", "RESET_ACTIONS",
-  "OBSERVE_DEPARTURE", "OBSERVE_ARRIVAL", "RECONCILE_GENERATION", "COMPLETE_TRIP", "EXPIRE_TRIP", "OBSERVE_LIVE_BASE"];
+  "OBSERVE_DEPARTURE", "OBSERVE_ARRIVAL", "RECONCILE_GENERATION", "COMPLETE_TRIP", "EXPIRE_TRIP", "OBSERVE_LIVE_BASE",
+  "OBSERVE_BASE_LEAVE", "OBSERVE_LATENESS_HALT", "OBSERVE_STATUS"];
 const OVERRIDE_COMMANDS = ["APPLY_OVERRIDE", "APPEND_OVERRIDE", "SET_DEFAULT", "PRUNE"];
 const MANUAL_COMMANDS = ["SESSION_OPEN", "SESSION_CLOSE", "RELEASE", "ENQUEUE_REORDER"];
 const PUBLISHER_COMMANDS = ["PUBLISH_GENERATION"];
@@ -69,7 +70,13 @@ const REDUCER_REQUIRED_FIELDS = {
   RECONCILE_GENERATION: [{ name: "activeGeneration", type: "string", required: true }, { name: "manifestSchemaVersion", type: "number", required: false }],
   COMPLETE_TRIP: [{ name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }, { name: "planningDay", type: "string", required: false }],
   EXPIRE_TRIP: [{ name: "tripId", type: "string", required: true }, { name: "at", type: "number", required: true }],
-  OBSERVE_LIVE_BASE: [{ name: "at", type: "number", required: false }]
+  OBSERVE_LIVE_BASE: [{ name: "at", type: "number", required: false }],
+  // Phase 6 (REQ-6STATE-3): byte-exact parity with Trip_State_Reducer
+  // validateFields — at:number required, halt type "any" (SET_OVERRIDE
+  // pattern; only required-ness is enforced for "any"), status:string required.
+  OBSERVE_BASE_LEAVE: [{ name: "at", type: "number", required: true }],
+  OBSERVE_LATENESS_HALT: [{ name: "halt", type: "any", required: true }, { name: "at", type: "number", required: true }],
+  OBSERVE_STATUS: [{ name: "status", type: "string", required: true }, { name: "at", type: "number", required: true }]
 };
 
 // Trusted reorder producers (REQ-4REORDER-2): a legacy-null generationId is

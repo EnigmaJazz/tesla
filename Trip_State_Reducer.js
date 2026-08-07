@@ -309,7 +309,15 @@ var COMMANDS = [
   { name: "RECONCILE_GENERATION", validate: function(p) { return validateFields(p, [{name:"activeGeneration",type:"string",required:true},{name:"manifestSchemaVersion",type:"number",required:false}]); }, apply: applyReconcile },
   { name: "COMPLETE_TRIP", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true},{name:"planningDay",type:"string",required:false}]); }, apply: applyCompleteTrip },
   { name: "EXPIRE_TRIP", validate: function(p) { return validateFields(p, [{name:"tripId",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: stubApply },
-  { name: "OBSERVE_LIVE_BASE", validate: function(p) { return validateFields(p, [{name:"at",type:"number",required:false}]); }, apply: applyObserveLiveBase }
+  { name: "OBSERVE_LIVE_BASE", validate: function(p) { return validateFields(p, [{name:"at",type:"number",required:false}]); }, apply: applyObserveLiveBase },
+  // Phase 6 (REQ-6STATE-3): commands activating the already-present v1 fields.
+  // OBSERVE_BASE_LEAVE clears base state (userAtBase=false, baseArrivalUnix=null);
+  // OBSERVE_LATENESS_HALT coerces true|"true"→true (type:"any", SET_OVERRIDE
+  // pattern); OBSERVE_STATUS sets currentStatus. All three are idempotent and
+  // schemaVersion stays 1 — no fields are added, only dead fields activate.
+  { name: "OBSERVE_BASE_LEAVE", validate: function(p) { return validateFields(p, [{name:"at",type:"number",required:true}]); }, apply: applyObserveBaseLeave },
+  { name: "OBSERVE_LATENESS_HALT", validate: function(p) { return validateFields(p, [{name:"halt",type:"any",required:true},{name:"at",type:"number",required:true}]); }, apply: applyObserveLatenessHalt },
+  { name: "OBSERVE_STATUS", validate: function(p) { return validateFields(p, [{name:"status",type:"string",required:true},{name:"at",type:"number",required:true}]); }, apply: applyObserveStatus }
 ];
 function parseCommand(name, payload, context) {
   if (typeof name !== "string" || !name) return { valid: false, reason: "missing command name" };
@@ -337,10 +345,16 @@ function commit(oldRaw, newState) {
     return { ok: false, reason: e.message };
   }
 }
-// Phase 3 PR-B: projection of state-backed globals. PR-D will project
-// User_At_Base and Base_Arrival_Unix here. For now, this is a no-op.
-function project(sideEffects) {
-  // No-op until PR-D introduces state-backed global projection.
+// Phase 6 (REQ-6STATE-2): projection of the five R-TRIP-8 state-backed
+// globals. project() runs inside reduce() ONLY after a successful commit +
+// exact read-back; it is the SOLE writer of these globals. On commit or
+// read-back failure the projection is skipped and prior bytes are preserved.
+function project(state) {
+  setGlobal('User_At_Base', state.userAtBase);
+  setGlobal('Base_Arrival_Unix', state.baseArrivalUnix);
+  setGlobal('TDS_Lateness_Halt', state.latenessHalt);
+  setGlobal('Current_Status', state.currentStatus);
+  setGlobal('TDS_Manual_Return_Completed', state.manualReturnCompleted);
 }
 
 // Phase 3 PR-B: apply functions for OBSERVE_ARRIVAL and OBSERVE_LIVE_BASE.
@@ -441,6 +455,43 @@ function applyObserveLiveBase(state, payload) {
   next.revision = state.revision + 1;
   return next;
 }
+// Phase 6 (REQ-6STATE-3, SCN-6STATE-5): base-leave clear. Idempotent — a
+// repeat observation when the base is already cleared is a no-op (no revision
+// bump). project() then projects userAtBase/baseArrivalUnix to the globals.
+function applyObserveBaseLeave(state, payload) {
+  const next = JSON.parse(JSON.stringify(state));
+  if (next.userAtBase === false && next.baseArrivalUnix === null) {
+    return state;
+  }
+  next.userAtBase = false;
+  next.baseArrivalUnix = null;
+  next.revision = state.revision + 1;
+  return next;
+}
+// Phase 6 (REQ-6STATE-3, SCN-6STATE-6): lateness halt set/clear. The halt is
+// coerced exactly as true|"true"→true (anything else is false). Idempotent —
+// observing the current value is a no-op.
+function applyObserveLatenessHalt(state, payload) {
+  const next = JSON.parse(JSON.stringify(state));
+  const halt = (payload.halt === true || payload.halt === "true");
+  if (next.latenessHalt === halt) {
+    return state;
+  }
+  next.latenessHalt = halt;
+  next.revision = state.revision + 1;
+  return next;
+}
+// Phase 6 (REQ-6STATE-3): status set. Idempotent — observing the current
+// status is a no-op.
+function applyObserveStatus(state, payload) {
+  const next = JSON.parse(JSON.stringify(state));
+  if (next.currentStatus === payload.status) {
+    return state;
+  }
+  next.currentStatus = payload.status;
+  next.revision = state.revision + 1;
+  return next;
+}
 function reduce(command, payload, context) {
   const parsed = parseCommand(command, payload, context);
   const genId = payload && payload.generationId || null;
@@ -454,10 +505,14 @@ function reduce(command, payload, context) {
   const commitResult = commit(oldRaw, newState);
   if (!commitResult.ok) {
     logEvent("error", "GENERATION_VALIDATION_FAILED", null, { generationId: genId, reason: commitResult.reason, command: command });
+    // Phase 6 (REQ-6STATE-2, SCN-6STATE-3): the commit or read-back failed,
+    // so project() must not run; the previously projected global bytes are
+    // preserved and the skip is logged with STATE_PROJECTION_SKIPPED.
+    logEvent("warn", "STATE_PROJECTION_SKIPPED", payload && payload.tripId || null, { generationId: genId, command: command, reason: commitResult.reason });
     return "ERROR: " + commitResult.reason;
   }
   logEvent("info", "TRIP_STATE_COMMAND_ACCEPTED", payload && payload.tripId || null, { generationId: genId, command: command });
-  project(commitResult.sideEffects);
+  project(newState);
   // Slice B (REQ-4ADAPTER-4): RETURN_TO_BASE stages SESSION_OPEN so the
   // Manual Action Handler runs next and commits the session + manual trip
   // records. No candidate itinerary is ever serialized or prepended.
