@@ -80,38 +80,24 @@ try {
         let actionId = "action_" + b36;
         let tripId = "manual_return_" + b36;
 
-        // Phase 6 (REQ-6STATE-2/3): status + lateness-halt observations stage
-        // through the reducer so project() owns Current_Status and
-        // TDS_Lateness_Halt. The primary RETURN_TO_BASE envelope is staged last
-        // so the serial chain still delivers the manual-return command.
+        // FU1 (REQ-6FU-4): the status + lateness-halt observations and the
+        // primary RETURN_TO_BASE are staged as ONE REDUCER_BATCH envelope with
+        // RETURN_TO_BASE LAST inside the batch. The serial Tasker model
+        // delivers only the final par1/par2, so the batch carries all three to
+        // the router; the primary-last contract is preserved semantically (the
+        // primary is the last sub-command the reducer applies) and the two
+        // secondary observations are no longer sacrificed. project() owns
+        // Current_Status and TDS_Lateness_Halt (REQ-6STATE-2/3).
         let modeDict = { "LIFT": "Lift", "WALK": "Walking", "TRANSIT": "Public Transport", "DRIVE": "Driving" };
-        setLocal('par1', 'OBSERVE_STATUS');
+        let genId = global('TDS_Active_Generation') || (m && m.activeGeneration) || null;
+        setLocal('par1', 'REDUCER_BATCH');
         setLocal('par2', JSON.stringify({
-            generationId: global('TDS_Active_Generation') || (m && m.activeGeneration) || null,
-            status: (modeDict[rMode] || "Traveling") + " (Heading Home)",
-            at: nowSec
-        }));
-        setLocal('par1', 'OBSERVE_LATENESS_HALT');
-        setLocal('par2', JSON.stringify({
-            generationId: global('TDS_Active_Generation') || (m && m.activeGeneration) || null,
-            halt: false,
-            at: nowSec
-        }));
-
-        setLocal('par1', 'RETURN_TO_BASE');
-        setLocal('par2', JSON.stringify({
-            generationId: global('TDS_Active_Generation') || (m && m.activeGeneration) || null,
-            actionId: actionId,
-            tripId: tripId,
-            at: nowSec,
-            policy: "MANUAL",
-            originCoords: uLoc,
-            targetCoords: rCoords,
-            targetTitle: "Return to " + rName,
-            mode: rMode,
-            durationSecs: durSec,
-            distanceMiles: distMiles,
-            planningDay: localPlanningDay(nowSec)
+            generationId: genId,
+            commands: [
+                { command: 'OBSERVE_STATUS', payload: { generationId: genId, status: (modeDict[rMode] || "Traveling") + " (Heading Home)", at: nowSec } },
+                { command: 'OBSERVE_LATENESS_HALT', payload: { generationId: genId, halt: false, at: nowSec } },
+                { command: 'RETURN_TO_BASE', payload: { generationId: genId, actionId: actionId, tripId: tripId, at: nowSec, policy: "MANUAL", originCoords: uLoc, targetCoords: rCoords, targetTitle: "Return to " + rName, mode: rMode, durationSecs: durSec, distanceMiles: distMiles, planningDay: localPlanningDay(nowSec) } }
+            ]
         }));
 
         flash("Return to " + rName + " via " + modeDict[rMode] + " queued.");
