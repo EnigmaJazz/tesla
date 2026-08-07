@@ -49,6 +49,31 @@ Under `ask-on-risk`, stop above 400 lines and ask to split or accept `size:excep
 - [x] **D2 GREEN — Reader migration.** Modify `Gatekeeper.js`, `Sandbox_Engine.js`, `Route_Cache_Manager.js`, and fixtures for read-only JSON, adjacent-cell parity, pruning, and text retirement; done when D1 passes.
 - [x] **D3 VERIFY —** Run parity/TTL tests, all harnesses, and `node --check`; require identical choices and clean ownership audit.
 
+## Remediation (Run-2 FAIL — direct-reader rejection contract)
+
+Run-2 verify (whole-change FAIL, re-opened by `dff4f08`) found the direct JSON readers
+(`Gatekeeper.js:51-68 readCacheJson`, `Sandbox_Engine.js` reader) accept entries the manager's
+`rcmFilterRouteEntries` (Route_Cache_Manager.js:235-258) rejects: nonpositive
+`meanDurationSecs` (zero/negative → `cache_hit=true, durationSecs=0`), missing `expiresAt`,
+key/bucket mismatch, WALK-with-numeric-bucket; and neither reader emits `CACHE_ENTRY_REJECTED`
+LOG-17 on rejection. Scope: REQ-5CACHE-2 SCN-5CACHE-3 + REQ-5LOG-1 SCN-5LOG-1 at the reader.
+
+- [ ] **R1 RED — Adversarial reader regression.** Extend `harness/test_cache_readers.js` (or add
+  `harness/test_reader_rejection.js`) with direct-reader fixtures for zero-duration,
+  negative-duration, missing-`expiresAt`, key/bucket-mismatch, and WALK-numeric-bucket entries;
+  assert reader-side miss (no `cache_hit`, no zero-duration leg) AND reader-side
+  `CACHE_ENTRY_REJECTED` LOG-17 emission (prove it comes from the reader, not a prior manager
+  `CACHE_READ` log); fail on current master.
+- [ ] **R2 GREEN — Reader validation + LOG-17.** Modify `Gatekeeper.js readCacheJson` and the
+  `Sandbox_Engine.js` reader to replicate the manager's rejection filter inline (no
+  require/import — Tasker standalone isolation; duplicated helper is the repo convention):
+  `meanDurationSecs > 0`, `typeof expiresAt === "number"`, key/bucket integrity, WALK null-bucket,
+  field-type checks, and emit `CACHE_ENTRY_REJECTED` LOG-17 on every dropped/rejected entry;
+  done when R1 passes with reader-origin logs.
+- [ ] **R3 VERIFY —** Run full harness suite (`for t in harness/test_*.js; do node "$t" || exit 1; done`),
+  `node --check` on all `*.js`, and the adversarial probe pattern; require reader/manager parity on
+  every invalid class and LOG-17 from the reader itself. 28/28 baseline must stay green.
+
 ## Test Plan
 
 New: `harness/test_typed_queue.js`, `harness/test_route_cache_manager.js`, `harness/test_request_correlation.js`. Extended: `test_ac3_sandbox.js`, `test_dst_utc.js`, `test_sandbox_ac6.js`, `test_compiler_ac1.js`, `test_atomic_publication.js`, `test_id_parsing.js`, `test_ac5.js`, `test_sandbox_ovr10.js`, `harness/mock_tasker.js`. Threat matrix: N/A.
