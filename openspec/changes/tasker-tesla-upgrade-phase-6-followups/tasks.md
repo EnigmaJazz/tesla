@@ -35,11 +35,11 @@ Chain strategy: stacked-to-main
 
 ## PR 2 — FU1 Finaliser (D5 GATE)
 
-- [ ] 2.0 D5: (a) `tds_obs_batch` slot + extra router invocation, or (b) defer Finaliser (design Open Questions)
+- [x] 2.0 D5: user chose (b) defer Finaliser — record deferral (task 2.4); no Tasker wiring change
 - [ ] 2.1 (a) `Finaliser.js` (:143-172): move `COMPLETE_DROPIN`+`OBSERVE_ARRIVAL` onto `REDUCER_BATCH` in `tds_obs_batch`; publish stays `par1` (:224), `tds_release` rule (:268-293) primary last (REQ-6FU-4, SCN-6FU-9)
 - [ ] 2.2 (a) Tasker task-loop: third handoff draining `tds_obs_batch` → router (REQ-6FU-4, SCN-6FU-9)
 - [ ] 2.3 (a) Integration test: serial-mode Finaliser → publish primary-last, obs delivered (SCN-6FU-9)
-- [ ] 2.4 (b) Record deferral; Finaliser as follow-up change (D5)
+- [x] 2.4 (b) DEFERRED: Finaliser dropin/arrival obs becomes its own follow-up change (D5 user decision 2026-08-08)
 
 ## PR 3 — FU2 Tail (never before PR 1)
 
