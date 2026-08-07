@@ -7,9 +7,9 @@ Requirements introduced by Phase 6 (tasker-tesla-upgrade-phase-6-state-decomposi
 The four memory keys `Depart_Memory`, `Completed_Stops`, `Completed_Dropins`, and `Arrival_Memory` SHALL be trip-state-only. Trip state is the sole source of truth for departure-change history, stop completions, dropin purge, and arrival latch. The legacy globals MUST NOT be read or written as authoritative state by any component; no live `setGlobal`/`getGlobal` of the four memory globals SHALL remain. The unbounded-growth gap for `TDS_Completed_Stops` (absent from `Override_Handler.js` `GLOBAL_MEMORIES` prune list, line 74) MUST be closed: retention/prune responsibility SHALL move to the reducer/state retention, and the Override Handler `GLOBAL_MEMORIES` list SHALL no longer own these four keys.
 
 #### Scenario: SCN-6STATE-1 [EVT: `LEGACY_GLOBAL_READ_REJECTED`]
-- GIVEN a component attempts to read a four-memory global for planning, purge, or latch purposes
-- WHEN the read resolves
-- THEN the component MUST consume trip state instead and MUST log the rejection with `LEGACY_GLOBAL_READ_REJECTED`
+- GIVEN a component would read a four-memory global for planning, purge, or latch purposes
+- WHEN the migration removes that read path
+- THEN the component MUST consume trip state instead and the read path SHALL be structurally eliminated: no component attempts the read, and no live `getGlobal` of the four memory globals SHALL remain. Any reintroduced read is a regression blocked by review (the defensive `LEGACY_GLOBAL_READ_REJECTED` log applies to a future reintroduction, not a live path in this migration).
 
 #### Scenario: SCN-6STATE-2 [EVT: `STATE_STOP_RETENTION_APPLIED`]
 - GIVEN completed stops recorded in trip state
