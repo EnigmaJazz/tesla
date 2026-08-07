@@ -27,18 +27,18 @@ Delivery `auto-chain`; D1 (caller = Sandbox_Engine.js:571) & D3 (v1) confirmed; 
 
 ## Slice 1 — Reducer write-side (PR 1)
 
-- [ ] 1.1 `Trip_State_Reducer.js`:342 — `project(newState)` setGlobals 5 status globals from committed state [REQ-6STATE-2 SCN-6STATE-4]
-- [ ] 1.2 `Trip_State_Reducer.js`:455/:460 — skip projection on commit/read-back fail, preserve prior bytes, log `STATE_PROJECTION_SKIPPED` [REQ-6STATE-2 SCN-6STATE-3]
-- [ ] 1.3 `Trip_State_Reducer.js`:296 — add `OBSERVE_BASE_LEAVE` + idempotent `applyObserveBaseLeave` (`userAtBase=false`, `baseArrivalUnix=null`) [REQ-6STATE-3 SCN-6STATE-5]
-- [ ] 1.4 `Trip_State_Reducer.js`:296 — add `OBSERVE_LATENESS_HALT` + `applyObserveLatenessHalt` (coerce `true|"true"→true`) [REQ-6STATE-3 SCN-6STATE-6]
-- [ ] 1.5 `Trip_State_Reducer.js`:296 — add `OBSERVE_STATUS` + `applyObserveStatus` (`currentStatus=status`) [REQ-6STATE-3]
-- [ ] 1.6 `TDS_State_Command.js`:39/:56 — register 3 commands in `REDUCER_COMMANDS` + `REDUCER_REQUIRED_FIELDS`, byte-exact parity [REQ-6STATE-3]
-- [ ] 1.7 `Sandbox_Engine.js`:571 — reorder `oldItin` above :571; base-leave stages `OBSERVE_BASE_LEAVE` + `OBSERVE_DEPARTURE` (`tripId`=`oldItin[0].targetEventId`) [REQ-6STATE-4 SCN-6STATE-7]
-- [ ] 1.8 `Sandbox_Engine.js` — lateness `setGlobal` :427/:1249/:1343/:1419/:1640 → stage `OBSERVE_LATENESS_HALT`; remove :521 base setGlobals; :616 `Current_Status` → `OBSERVE_STATUS` [REQ-6STATE-1/2 SCN-6STATE-4/5/6]
-- [ ] 1.9 `Depart_Now.js`:35 — `setGlobal('TDS_Lateness_Halt','false')` → stage `OBSERVE_LATENESS_HALT {halt:false}` [REQ-6STATE-3 SCN-6STATE-6]
-- [ ] 1.10 `Return_to_Base.js`:100-101 — setGlobals → stage `OBSERVE_STATUS` + `OBSERVE_LATENESS_HALT` [REQ-6STATE-3 SCN-6STATE-5/6]
-- [ ] 1.11 `harness/test_trip_lifecycle.js` — tests: 3 commands idempotent; `project()` writes 5 globals; `STATE_PROJECTION_SKIPPED` on commit-fail shim [REQ-6STATE-2/3 SCN-6STATE-3/4/5/6]
-- [ ] 1.12 Regression: full harness loop green 28/28 [REQ-6STATE-8 SCN-6STATE-11]
+- [x] 1.1 `Trip_State_Reducer.js`:342 — `project(newState)` setGlobals 5 status globals from committed state [REQ-6STATE-2 SCN-6STATE-4]
+- [x] 1.2 `Trip_State_Reducer.js`:455/:460 — skip projection on commit/read-back fail, preserve prior bytes, log `STATE_PROJECTION_SKIPPED` [REQ-6STATE-2 SCN-6STATE-3]
+- [x] 1.3 `Trip_State_Reducer.js`:296 — add `OBSERVE_BASE_LEAVE` + idempotent `applyObserveBaseLeave` (`userAtBase=false`, `baseArrivalUnix=null`) [REQ-6STATE-3 SCN-6STATE-5]
+- [x] 1.4 `Trip_State_Reducer.js`:296 — add `OBSERVE_LATENESS_HALT` + `applyObserveLatenessHalt` (coerce `true|"true"→true`) [REQ-6STATE-3 SCN-6STATE-6]
+- [x] 1.5 `Trip_State_Reducer.js`:296 — add `OBSERVE_STATUS` + `applyObserveStatus` (`currentStatus=status`) [REQ-6STATE-3]
+- [x] 1.6 `TDS_State_Command.js`:39/:56 — register 3 commands in `REDUCER_COMMANDS` + `REDUCER_REQUIRED_FIELDS`, byte-exact parity [REQ-6STATE-3]
+- [x] 1.7 `Sandbox_Engine.js`:571 — reorder `oldItin` above :571; base-leave stages `OBSERVE_BASE_LEAVE` + `OBSERVE_DEPARTURE` (`tripId`=`oldItin[0].targetEventId`) [REQ-6STATE-4 SCN-6STATE-7]
+- [x] 1.8 `Sandbox_Engine.js` — lateness `setGlobal` :427/:1249/:1343/:1419/:1640 → stage `OBSERVE_LATENESS_HALT`; remove :521 base setGlobals; :616 `Current_Status` → `OBSERVE_STATUS` [REQ-6STATE-1/2 SCN-6STATE-4/5/6]
+- [x] 1.9 `Depart_Now.js`:35 — `setGlobal('TDS_Lateness_Halt','false')` → stage `OBSERVE_LATENESS_HALT {halt:false}` [REQ-6STATE-3 SCN-6STATE-6]
+- [x] 1.10 `Return_to_Base.js`:100-101 — setGlobals → stage `OBSERVE_STATUS` + `OBSERVE_LATENESS_HALT` [REQ-6STATE-3 SCN-6STATE-5/6]
+- [x] 1.11 `harness/test_trip_lifecycle.js` — tests: 3 commands idempotent; `project()` writes 5 globals; `STATE_PROJECTION_SKIPPED` on commit-fail shim [REQ-6STATE-2/3 SCN-6STATE-3/4/5/6]
+- [x] 1.12 Regression: full harness loop green 28/28 [REQ-6STATE-8 SCN-6STATE-11]
 
 ## Slice 2a — Compiler / Stop_Logger / Override_Handler (PR 2a)
 
