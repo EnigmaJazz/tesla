@@ -1,6 +1,6 @@
 # Itinerary Scheduler Specification
 
-> **Status:** First slice (tasker-tesla-upgrade) applied 2026-07-19; second slice (tasker-tesla-upgrade-slice-2) applied 2026-07-19; follow-up port (tasker-tesla-followup-id-override-port) applied 2026-08-02. AC-8, AC-9, AC-10 PASS via harness (slice 1); AC-1, AC-6 PASS via harness (slice 2). ID-2 strict occurrence-ID parsing, RULE-8C override single writer (seven former writers consolidated to staged commands/transient globals), and SCRIPT-15 adapter responsibility PASS via harness (follow-up port: harness/test_id_parsing.js, harness/test_single_writer.js, 17/17 suite green). Phase 0 follow-ups (tasker-tesla-phase0-followups) applied 2026-08-05: AC-3, AC-5, AC-7, sub-items 0B and 0E, synthetic-return suppression, INV-0.7 zero-duration fallback, and Sandbox OVR-10 cleanup PASS via harness (harness/test_ac3_sandbox.js, harness/test_ac5.js, harness/test_sandbox_ovr10.js, plus extended AC-6/DST/departure-day/compiler harnesses; 20/20 suite green; see §22). Phase 4 (tasker-tesla-upgrade-phase-4-central-state-commands) applied 2026-08-05: CMD-9 serial typed `TDS State Command` router with a 25-command exact owner table (Reducer 16, Override 4, Manual Action Handler 4, Publisher 1), RULE-8D Manual Action Handler sole ownership of sessions/manual trips, MANUAL-13 session-authoritative actions (lock migration-only), STOP-14, CLUSTER-12 reorder admission (pre-build committed generation + trusted legacy-null), SCRIPT-15 command-adapter responsibility, and LOG-17 PASS via harness (24/24 suite green; archive consolidated 14/14 reqs, 16/16 scenarios; see §23). Phases 1, 5, and 6 and the remaining roadmap are open.
+> **Status:** First slice (tasker-tesla-upgrade) applied 2026-07-19; second slice (tasker-tesla-upgrade-slice-2) applied 2026-07-19; follow-up port (tasker-tesla-followup-id-override-port) applied 2026-08-02. AC-8, AC-9, AC-10 PASS via harness (slice 1); AC-1, AC-6 PASS via harness (slice 2). ID-2 strict occurrence-ID parsing, RULE-8C override single writer (seven former writers consolidated to staged commands/transient globals), and SCRIPT-15 adapter responsibility PASS via harness (follow-up port: harness/test_id_parsing.js, harness/test_single_writer.js, 17/17 suite green). Phase 0 follow-ups (tasker-tesla-phase0-followups) applied 2026-08-05: AC-3, AC-5, AC-7, sub-items 0B and 0E, synthetic-return suppression, INV-0.7 zero-duration fallback, and Sandbox OVR-10 cleanup PASS via harness (harness/test_ac3_sandbox.js, harness/test_ac5.js, harness/test_sandbox_ovr10.js, plus extended AC-6/DST/departure-day/compiler harnesses; 20/20 suite green; see §22). Phase 4 (tasker-tesla-upgrade-phase-4-central-state-commands) applied 2026-08-05: CMD-9 serial typed `TDS State Command` router with a 25-command exact owner table (Reducer 16, Override 4, Manual Action Handler 4, Publisher 1), RULE-8D Manual Action Handler sole ownership of sessions/manual trips, MANUAL-13 session-authoritative actions (lock migration-only), STOP-14, CLUSTER-12 reorder admission (pre-build committed generation + trusted legacy-null), SCRIPT-15 command-adapter responsibility, and LOG-17 PASS via harness (24/24 suite green; archive consolidated 14/14 reqs, 16/16 scenarios; see §23). Phase 5 (tasker-tesla-upgrade-phase-5-typed-protocols) applied 2026-08-07: typed JSON `block_queue` envelope with block_step17–21 retirement, Route Cache Manager sole-writer JSON caches with TTL/Welford, request correlation with `STALE_API_RESPONSE_DISCARDED`, and direct-reader parity that rejects invalid cache entries (CACHE_ENTRY_REJECTED LOG-17) — PASS via harness post-remediation (28/28 suite green; archive consolidated 7/7 reqs, 12/12 scenarios; see §24). Phases 1 and 6 and the remaining roadmap are open.
 
 **Authority:** canonicalised from `_spec_source.md` (verbatim source). Requirements use RFC 2119 terms; source-section references are evidence pointers. Exceptions are only those stated below.
 
@@ -707,3 +707,97 @@ Every mutation/rejection MUST log `timestamp`, `generationId`, `component`, `sev
 - THEN all LOG-17 fields MUST exist
 
 **Evidence:** Phase 4 delta spec. **Exception:** none.
+
+## §24 Phase 5 — Typed Protocols
+
+Requirements introduced by Phase 5 (tasker-tesla-upgrade-phase-5-typed-protocols) supplementing INV-0.1, INV-0.7, OWN-8/RULE-8E, RULE-8A, CLUSTER-12, CACHE-11, SCRIPT-15, LOG-17, and VAL-18. Replaces delimiter/positional queue transport with one validated typed JSON envelope; correlates every route callback against active generation and latest request state; and puts all cache mutation behind a Tasker-style `%par1`/`%par2` Route Cache Manager.
+
+### Requirement: REQ-5QUEUE-1
+
+Sandbox MUST emit `block_queue` as `{schemaVersion,rows,eof,skipIdxUntil,stepConflict,notifications}` JSON. Compiler MUST `JSON.parse` it inside its JSlet; Tasker Variable Split MUST NOT process it. Rows MUST contain `rowType,title,coords,mode,displayTime,departTime,pitstopState,apiTimeType,apiTimeUnix,evId,evLoc,engineLateMins,currentLegStable,dropinStatusFlag,safeDesc,adHoc,routeDurationSecs,routeDistanceMiles,departurePolicy,planningDay,originSource`.
+
+#### Scenario: SCN-5QUEUE-1 [EVT: `TYPED_QUEUE_ACCEPTED`]
+- GIVEN a valid envelope
+- WHEN Compiler parses it
+- THEN rows and EOF/skip/conflict/notification controls MUST retain their values
+
+#### Scenario: SCN-5QUEUE-2 [EVT: `TYPED_QUEUE_REJECTED`]
+- GIVEN malformed JSON, unsupported schema, or an invalid row
+- WHEN Compiler validates it
+- THEN it MUST reject the queue without compiling partial rows
+
+### Requirement: REQ-5CUTOVER-1
+
+Sandbox MUST shadow dual-emit head `block_step17–21` until cutover. Typed metrics, policy, day, and origin MUST then be authoritative; all step 17–21 producers/consumers MUST retire with JSON conversion. INV-0.7 MUST resolve validated API metrics, positive typed Sandbox metrics, supported local active-travel estimate, then reject/log.
+
+#### Scenario: SCN-5CUTOVER-1 [EVT: `TYPED_QUEUE_SHADOW_DIVERGENCE`]
+- GIVEN shadow values differ from the typed row
+- WHEN equivalence is checked
+- THEN divergence MUST be logged and typed authority MUST NOT be enabled
+
+#### Scenario: SCN-5CUTOVER-2 [EVT: `TYPED_QUEUE_CUTOVER_COMPLETED`]
+- GIVEN shadow equivalence passes
+- WHEN cutover occurs
+- THEN steps 17–21 MUST have no producer or consumer
+
+#### Scenario: SCN-5CUTOVER-3 [EVT: `EVT-ZERO_DURATION_LEG_REJECTED`]
+- GIVEN API and typed Sandbox durations are unavailable or nonpositive
+- WHEN no supported estimate exists
+- THEN Compiler MUST reject the leg and MUST NOT publish zero-duration travel
+
+### Requirement: REQ-5REQID-1
+
+API JSON Build MUST stamp `{generationId,clusterId,requestId}`; callbacks MUST retain it. Route Cache Manager MUST solely write `TDS_Route_Request_State.json` as `{schemaVersion,updatedAt,latestByCluster}`, exact-keyed by cluster with those IDs and request timestamps.
+
+#### Scenario: SCN-5REQID-1 [EVT: `ROUTE_REQUEST_REGISTERED`]
+- GIVEN an active-generation route request
+- WHEN it is issued
+- THEN latest correlation MUST be manager-recorded and callback-retained
+
+### Requirement: REQ-5REQID-2
+
+API Parser MUST exactly correlate callbacks with `TDS_Active_Generation` and latest request state. Mismatch MUST log `STALE_API_RESPONSE_DISCARDED` and MUST NOT update caches or enqueue reorder work.
+
+#### Scenario: SCN-5REQID-2 [EVT: `STALE_API_RESPONSE_DISCARDED`]
+- GIVEN generation, cluster, or request ID mismatch
+- WHEN the callback is parsed
+- THEN no cache or reorder state MUST change
+
+#### Scenario: SCN-5REQID-3 [EVT: `ROUTE_RESPONSE_ACCEPTED`]
+- GIVEN all three IDs exactly match active state
+- WHEN a valid response is parsed
+- THEN typed mutations MAY recurse through their declared owners
+
+### Requirement: REQ-5CACHE-1
+
+Route Cache Manager MUST have sole-writer ownership of `TDS_Route_Cache.json`, `TDS_Order_Cache.json`, `Temp_Route_Cache.json`, and request state. Alpha/API Parser MUST submit typed mutations. Gatekeeper/Sandbox MUST use manager reads or documented read-only JSON and MUST NOT write them.
+
+#### Scenario: SCN-5CACHE-1 [EVT: `CACHE_WRITE_REJECTED`]
+- GIVEN any non-manager attempts a protected write
+- WHEN ownership is enforced
+- THEN the write MUST be rejected without file mutation
+
+### Requirement: REQ-5CACHE-2
+
+Caches MUST contain `schemaVersion`, `updatedAt`, and exact-key entries. Route/temp entries MUST contain origin/destination cells, mode, day class, exact bucket (`null` for WALK), `meanDurationSecs`, `sampleCount`, `m2`, `distanceMiles`, `createdAt`, and `expiresAt`; order entries MUST contain cluster key, result, and expiry. Expired/invalid entries MUST be misses and MUST NOT yield zero-duration legs. WALK uses `bucket:null`.
+
+#### Scenario: SCN-5CACHE-2 [EVT: `ROUTE_CACHE_MUTATED`]
+- GIVEN valid DRIVE and WALK samples
+- WHEN the manager records them
+- THEN Welford fields and TTL MUST update, with an exact DRIVE bucket and null WALK bucket
+
+#### Scenario: SCN-5CACHE-3 [EVT: `CACHE_ENTRY_REJECTED`]
+- GIVEN an expired, malformed, or wrong-bucket entry
+- WHEN a reader requests it
+- THEN it MUST be treated as a miss without mutation
+
+### Requirement: REQ-5LOG-1
+
+Every mutation or rejection MUST emit LOG-17 JSON with `timestamp,generationId,component,severity,code,tripId,details`; the covered Phase 5 codes MUST remain stable.
+
+#### Scenario: SCN-5LOG-1 [EVT: applicable Phase 5 code]
+- GIVEN a covered mutation or rejection
+- WHEN evidence is emitted
+- THEN all LOG-17 fields and the scenario EVT code MUST be present
+
+**Evidence:** Phase 5 delta spec. **Exception:** none.

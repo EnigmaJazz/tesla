@@ -1,11 +1,11 @@
 ```yaml
 schema: gentle-ai.verify-result/v1
-evidence_revision: sha256:f2d6a5babf4b9906a65a28b8fe8df7b8271333bc6ff893de7a7535c0fb5e295a
-verdict: fail
-blockers: 3
-critical_findings: 3
-requirements: 5/7
-scenarios: 10/12
+evidence_revision: sha256:bc8fcf41bca72793838be7ba13ae9b00a3c1c8c18b5a9f74785fdbdbac89069e
+verdict: pass
+blockers: 0
+critical_findings: 0
+requirements: 7/7
+scenarios: 12/12
 test_command: for t in harness/test_*.js; do node "$t" || exit 1; done
 test_exit_code: 0
 test_output_hash: sha256:ddd91e380fb0774286101762af46264615da9259c154ac88910bf57ad33bfcb6
@@ -14,7 +14,279 @@ build_exit_code: 0
 build_output_hash: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
 
-> **Run-2 status (whole-change re-verification).** This report supersedes the retracted inline "Slice D PASS" section (commit `fdf839d`). The leading verdict is the whole-change result: **FAIL** — 5/7 requirements and 10/12 scenarios verified; the two failures are scoped to the direct reader path of Slice D: REQ-5CACHE-2/SCN-5CACHE-3 (Gatekeeper/Sandbox JSON readers accept zero/negative-duration, missing-`expiresAt`, key/bucket-mismatch, and wrong-bucket entries, yielding `cache_hit=true` with `durationSecs=0`) and REQ-5LOG-1/SCN-5LOG-1 (readers emit no `CACHE_ENTRY_REJECTED` LOG-17 on rejection). Slices A/B/C evidence (retained below) remains valid for its own scope. The fabricated whole-change "7/7 requirements, 12/12 scenarios — PASS" consolidated block and the "Phase 5 complete / archived" summary that used to follow it have been removed; the change was archived prematurely (`d4b3f6a`) on top of a false PASS, re-opened by `dff4f08`, and is under remediation.
+> **R3 remediation verification (whole-change re-verify, run 3).** This report **supersedes the run-2 whole-change FAIL** recorded below (evidence revision `sha256:f2d6a5babf4b9906a65a28b8fe8df7b8271333bc6ff893de7a7535c0fb5e295a`, verdict `fail`, 5/7 requirements, 10/12 scenarios, 3 critical findings scoped to the direct reader path). The remediation (`dff4f08` re-opened the change) landed across three commits — `dad2243` (R1 RED adversarial reader regression), `573f573` (R2 GREEN reader validation + reader-origin `CACHE_ENTRY_REJECTED` LOG-17 in `Gatekeeper.js readCacheJson` and `Sandbox_Engine.js sbReadCacheJson`), `af33a6b` (docs) — and this R3 run is the independent requirements/runtime re-verification. The leading verdict is the whole-change result: **PASS — 7/7 requirements, 12/12 scenarios**. Slices A/B/C retained their prior PASS evidence (Slice C run-4 and the manager-side of the run-2 Slice D section are retained below as the evidence trail); R3 closes the two run-2 failures — REQ-5CACHE-2/SCN-5CACHE-3 and REQ-5LOG-1/SCN-5LOG-1 — at the **direct reader**. The retracted PASS/FAIL history is summarised at the end of this section (ordinal 18 `failed`, ordinal 19 false-pass retracted, premature archive `d4b3f6a`).
+
+## R3 Remediation Verification Report
+
+**Change**: tasker-tesla-upgrade-phase-5-typed-protocols — whole-change re-verify (R3 remediation)
+**Round**: remediation run 3 (R3 VERIFY)
+**Mode**: Standard (Strict TDD disabled)
+**Branch verified**: `tasker-tesla-upgrade-phase-5-typed-protocols` (working tree at remediation HEAD)
+**Bounded attempt**: token `sha256:801f1d37eae6d90206cc2212add63bb050ffcfa4da160e1e998dd4e8fdc3520f` (acquired)
+**Remediation commits**: `dad2243` (R1 RED test), `573f573` (R2 GREEN — `Gatekeeper.js` + `Sandbox_Engine.js`), `af33a6b` (docs)
+
+### Completeness
+
+| Metric | Value |
+|---|---:|
+| Full change tasks total | 12 (Slices A1..A3, B1..B3, C1..C3, D1..D3) |
+| Full change tasks complete | 12/12 |
+| Remediation tasks (R1, R2, R3) | 3/3 (R1 ✓, R2 ✓, R3 ✓ via this run) |
+| In-scope top-level requirements | 7 (REQ-5QUEUE-1, REQ-5CUTOVER-1, REQ-5REQID-1, REQ-5REQID-2, REQ-5CACHE-1, REQ-5CACHE-2, REQ-5LOG-1) |
+| In-scope scenarios | 12 (SCN-5QUEUE-1/2, SCN-5CUTOVER-1/2/3, SCN-5REQID-1/2/3, SCN-5CACHE-1/2/3, SCN-5LOG-1) |
+| R3 reader-contract scope | REQ-5CACHE-2/SCN-5CACHE-3 + REQ-5LOG-1/SCN-5LOG-1 at the direct reader (the two run-2 failures) |
+
+The delta defines NO top-level `REQ-5CACHE-3`; the run-2 prompt's `REQ-5CACHE-3` reference is scenario **SCN-5CACHE-3** under `REQ-5CACHE-2`. There is no top-level `REQ-5REQID-3`; the requested valid-response behaviour is scenario **SCN-5REQID-3** under `REQ-5REQID-2`.
+
+### Build & Tests Execution
+
+**Focused harness** (extended section f — direct-reader rejection contract): ✅ PASS
+
+```text
+Command: node harness/test_cache_readers.js
+Exit: 0
+Output hash: sha256:47270f1677b48e21d326a457b855e72bf9c70a9cfc5aeb3f43559992871d7569
+Output:
+PASS: Cache Readers — Gatekeeper/Sandbox JSON reads, spatial/bucket parity, miles conversion, TTL reader contract
+```
+
+The harness section (f) (`harness/test_cache_readers.js:361-488`) exercises all five invalid classes — zero-duration, negative-duration, missing-`expiresAt`, key/bucket-mismatch, WALK-numeric-bucket — at BOTH direct readers with reader-only sandbox invocation (no prior `cacheManager('CACHE_READ')`), asserting reader-side miss + reader-origin `CACHE_ENTRY_REJECTED` LOG-17 with all seven fields, plus positive controls. On the pre-remediation base (`7f7bced`) the same file exits 1 (RED proof recorded in the apply-progress ledger).
+
+**Full suite**: ✅ 28/28 scripts passed — zero regression
+
+```text
+Command: for t in harness/test_*.js; do node "$t" || exit 1; done
+Exit: 0
+Scripts: 28/28
+PASS lines: 37
+FAIL lines: 0
+Output hash: sha256:ddd91e380fb0774286101762af46264615da9259c154ac88910bf57ad33bfcb6
+```
+
+The full-suite output hash is **byte-identical** to the run-2 baseline `sha256:ddd91e380fb0774286101762af46264615da9259c154ac88910bf57ad33bfcb6` — the remediation introduced zero regression across the prior 28 scripts.
+
+**Build/syntax**: ✅ 54/54 production and harness JavaScript files passed `node --check`
+
+```text
+Command: for f in *.js harness/*.js; do node --check "$f" || exit 1; done
+Exit: 0
+Files: 54/54
+Output hash: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+```
+
+**Static single-writer audit**: ✅ readers remain read-only
+
+```text
+Command: grep -nE 'writeFile|deleteFile' Gatekeeper.js Sandbox_Engine.js
+Exit: 1 (0 matches — grep returns 1 when nothing matches)
+Matches: 0
+```
+
+`Gatekeeper.js` and `Sandbox_Engine.js` contain zero `writeFile`/`deleteFile` calls; `Route_Cache_Manager.js` remains the sole writer of `TDS_Route_Cache.json`, `TDS_Order_Cache.json`, `Temp_Route_Cache.json`, and request state. The remediation only ADDED validation/logging inside two read-only accessors — it did not introduce any write path.
+
+**Coverage**: ➖ Not available; this Tasker project has no coverage runner.
+
+### Adversarial Reader-Parity Probe (the R3 core)
+
+Independent probe replicating the run-2 pattern (GK-1..GK-8, SB-1..SB-3) against the remediated code. **Reader-origin LOG-17 isolation**: every reject case uses a FRESH sandbox with NO prior `cacheManager('CACHE_READ')` invocation, so a `CACHE_ENTRY_REJECTED` log with `component: "Gatekeeper"`/`"Sandbox"` can only have come from the reader itself. Manager parity is established independently via `cacheManager('CACHE_READ', { kind: 'route' })` and counting kept entries.
+
+```text
+Command: node /tmp/tasker-r3-adversarial-probe.js
+Exit: 0
+Checks: 11/11
+Script hash: sha256:878c966c4a41e76d19755b325e6d8303a20326db9d878e1a398b60402758053d
+Output hash: sha256:7dc49944e4c02ff435884d8db7bc19848c5948d04145c32ea70e5d5e022286fe
+```
+
+| Probe | Invalid class | Run-2 result | R3 result | Reader-origin LOG-17 | Manager parity |
+|---|---|---|---|---|---|
+| GK-1 | zero-duration `meanDurationSecs: 0` | ❌ FAIL `cache_hit=true, durationSecs=0` | ✅ PASS `reader.hit=false` | 1 (7 fields) | `manager.keeps=0` ✓ |
+| GK-2 | negative-duration `meanDurationSecs: -50` | ❌ FAIL `cache_hit=true, durationSecs=-50` | ✅ PASS `reader.hit=false` | 1 (7 fields) | `manager.keeps=0` ✓ |
+| GK-3 | missing `expiresAt` | ❌ FAIL `reader.hit=true manager.keeps=0` | ✅ PASS `reader.hit=false` | 1 (7 fields) | `manager.keeps=0` ✓ |
+| GK-4 | key/bucket mismatch | ❌ FAIL `reader.hit=true manager.keeps=0` | ✅ PASS `reader.hit=false` | 1 (7 fields) | `manager.keeps=0` ✓ |
+| GK-5 | WALK-with-numeric-bucket | ❌ FAIL `reader.hit=true manager.keeps=0` | ✅ PASS `reader.hit=false` | 1 (7 fields) | `manager.keeps=0` ✓ |
+| GK-6 | reader expiry drop → LOG-17 | ❌ FAIL `miss=true count=0` (reader silent) | ✅ PASS `miss=true count=1` | 1 (7 fields) | n/a (LOG-17 gap) |
+| GK-7 | Gatekeeper writes nothing | ✅ PASS | ✅ PASS `writes=0` | n/a | read-only contract intact |
+| GK-8 | `distanceMeters = round(miles × 1609.344)` round-trip | ✅ PASS | ✅ PASS `distanceMeters=12000` | n/a | miles projection intact |
+| SB-1 | Sandbox zero-duration rejected by tier-build | ✅ PASS | ✅ PASS `head=1005` matches no-cache fallback `1005` | n/a | Sandbox parity intact |
+| SB-2 | Sandbox zero-duration matches no-cache fallback | ✅ PASS | ✅ PASS `Sandbox=1005 noCache=1005` | n/a | Sandbox parity intact |
+| SB-3 | Sandbox missing-`expiresAt` vs manager parity | ❌ FAIL `Sandbox.head=1800 manager.keeps=0` | ✅ PASS `Sandbox.head=1005 manager.keeps=0` | 1 (7 fields) | `manager.keeps=0` ✓ |
+
+All seven run-2 FAIL cases now PASS; all four run-2 PASS cases remain PASS. Every rejected entry emits exactly one reader-origin `CACHE_ENTRY_REJECTED` log carrying all seven LOG-17 fields (`timestamp, generationId, component, severity, code, tripId, details`).
+
+### Spec Compliance Matrix
+
+| Requirement | Scenario | Runtime and source evidence | Result |
+|---|---|---|---|
+| REQ-5QUEUE-1 | SCN-5QUEUE-1 — typed envelope parsed once; rows + tail controls retain values | Focused `test_typed_queue.js` PASS; `Sandbox_Engine.js` emits `block_queue` JSON; typed row metrics positive. Retained from Slice A. | ✅ COMPLIANT |
+| REQ-5QUEUE-1 | SCN-5QUEUE-2 — malformed JSON / unsupported schema / invalid row rejected; no partial compile | Focused `test_typed_queue.js` PASS; `TYPED_QUEUE_REJECTED` emitted; nothing compiled. Retained from Slice A. | ✅ COMPLIANT |
+| REQ-5CUTOVER-1 | SCN-5CUTOVER-1 — shadow divergence logged; typed authority NOT enabled | Focused `test_typed_queue.js` PASS; `TYPED_QUEUE_SHADOW_DIVERGENCE` runtime-asserted. Retained from Slice A. | ✅ COMPLIANT |
+| REQ-5CUTOVER-1 | SCN-5CUTOVER-2 — on cutover, steps 17–21 have no producer/consumer | Focused `test_typed_queue.js` PASS; legacy `block_step17`–`21` retired. Retained from Slice A. | ✅ COMPLIANT |
+| REQ-5CUTOVER-1 | SCN-5CUTOVER-3 — API and typed Sandbox unavailable/nonpositive + no supported estimate → Compiler rejects, no zero-duration publish | Focused `test_typed_queue.js` PASS; zero-duration rejected; `EVT-ZERO_DURATION_LEG_REJECTED` / EOF empty-row runtime-asserted. Retained from Slice A; also exercised at the cache reader by GK-1/GK-2. | ✅ COMPLIANT |
+| REQ-5REQID-1 | SCN-5REQID-1 — manager-recorded, callback-retained correlation with wire purity | Focused `test_request_correlation.js` PASS; builder stamps all three IDs; wire petals excluded. Retained from Slice C. | ✅ COMPLIANT |
+| REQ-5REQID-2 | SCN-5REQID-2 — missing/malformed/raw/mismatched callbacks are stale; no cache/reorder mutation | Independent correlation probe 12/12 PASS; `STALE_API_RESPONSE_DISCARDED` emitted; state unchanged. Retained from Slice C. | ✅ COMPLIANT |
+| REQ-5REQID-2 | SCN-5REQID-3 — valid exact envelope may submit typed owner mutations | Accepted exact generation+cluster+latest request; owner command preserved; request consumed; replay stale. Retained from Slice C. | ✅ COMPLIANT |
+| REQ-5CACHE-1 | SCN-5CACHE-1 — non-manager write rejected; readers read-only | Static audit: `grep -nE 'writeFile|deleteFile' Gatekeeper.js Sandbox_Engine.js` → 0 matches; probe GK-7 PASS (`writes=0`); mock ownership guard enforces `CACHE_WRITE_REJECTED`. Manager sole writer. | ✅ COMPLIANT |
+| REQ-5CACHE-2 | SCN-5CACHE-2 — valid DRIVE/WALK samples recorded with Welford/TTL, exact DRIVE bucket, null WALK bucket | Focused `test_route_cache_manager.js` PASS; `rcmFilterRouteEntries` validates fields, WALK null bucket, DRIVE numeric bucket, expiresAt, `meanDurationSecs > 0`, key integrity. Retained from Slice B; covers the MUTATION contract. | ✅ COMPLIANT |
+| REQ-5CACHE-2 | SCN-5CACHE-3 — expired/malformed/wrong-bucket entry requested by a reader is a miss, no zero-duration leg | **R3 closes this.** Probe GK-1/GK-2/GK-3/GK-4/GK-5/SB-3 PASS: Gatekeeper + Sandbox direct readers reject nonpositive, missing-`expiresAt`, key/bucket-mismatch, and WALK-numeric-bucket entries AND match the manager's `CACHE_READ` filter (`manager.keeps=0`). `Gatekeeper.js:78-130 readCacheJson` (route/temp filters mirror `rcmFilterRouteEntries`/`rcmFilterTempEntries`) and `Sandbox_Engine.js:744-790 sbReadCacheJson` proved runtime-matching the manager. No zero-duration leg produced (`durationSecs=0`/`-50` no longer returned as a cache HIT). | ✅ COMPLIANT (was ❌ FAILING run-2) |
+| REQ-5LOG-1 | SCN-5LOG-1 — every covered mutation/rejection emits the seven LOG-17 fields + stable EVT | **R3 closes this.** Probe GK-1..GK-6 + SB-3 PASS: every rejected entry emits exactly one reader-origin `CACHE_ENTRY_REJECTED` log (`component: "Gatekeeper"` or `"Sandbox"`, reader-only invocation, no prior `CACHE_READ`) carrying all seven fields `timestamp, generationId, component, severity, code, tripId, details`. Manager-side LOG-17 retained from Slices B/C. | ✅ COMPLIANT (was ❌ FAILING run-2) |
+
+**Compliance summary**: 12/12 scenarios compliant; 7/7 top-level requirements compliant.
+
+### Per-Requirement Verdicts
+
+| Requirement | Verdict | Current runtime evidence |
+|---|---|---|
+| REQ-5QUEUE-1 | ✅ PASS | Typed queue/emitter and Compiler parse contract retained (`test_typed_queue.js`); SCN-5QUEUE-1/2 pass. |
+| REQ-5CUTOVER-1 | ✅ PASS | Shadow divergence, step 17–21 retirement, and zero-duration rejection retained (`test_typed_queue.js`); SCN-5CUTOVER-1/2/3 pass; reader-side zero-duration also enforced by GK-1/GK-2. |
+| REQ-5REQID-1 | ✅ PASS | Builder stamps/retains correlation; manager records latest-wins and prunes; wire petals pure (`test_request_correlation.js`). |
+| REQ-5REQID-2 | ✅ PASS | All stale classes mutation-free; exact valid envelope accepted, owner command preserved, replay rejected (`test_request_correlation.js` + 12/12 probe). |
+| REQ-5CACHE-1 | ✅ PASS | Readers write nothing (static audit 0 matches, GK-7 `writes=0`); manager sole writer; `CACHE_WRITE_REJECTED` enforced. |
+| REQ-5CACHE-2 | ✅ PASS | SCN-5CACHE-2 manager mutation contract passes (Slice B); **SCN-5CACHE-3 reader contract now passes** — `readCacheJson`/`sbReadCacheJson` reject every invalid class and match the manager's `CACHE_READ` filter (GK-1..GK-5, SB-3). |
+| REQ-5LOG-1 | ✅ PASS | Manager-side LOG-17 retained (Slices B/C); **reader-origin `CACHE_ENTRY_REJECTED` LOG-17 now emitted** by both readers with all seven fields (GK-1..GK-6, SB-3). |
+
+### Correctness (Static Evidence)
+
+| Concern | Status | Notes |
+|---|---|---|
+| Readers write nothing | ✅ Implemented | Static audit 0 matches; probe GK-7 `writes=0`. Remediation only added validation/logging inside read-only accessors. |
+| Reader route filter mirrors `rcmFilterRouteEntries` | ✅ Implemented | `Gatekeeper.js:113-127` and `Sandbox_Engine.js:773-786` replicate field-type checks, WALK-null/DRIVE-numeric bucket, numeric `expiresAt > nowSec`, `meanDurationSecs > 0`, and `gkRouteKey`/`sbRouteKey` integrity. |
+| Reader temp filter mirrors `rcmFilterTempEntries` | ✅ Implemented | `Gatekeeper.js:95-112` and `Sandbox_Engine.js:755-772` replicate temp field-type checks, `expiresAt`, `meanDurationSecs > 0`, and `gkTempKey`/`sbTempKey` integrity. |
+| Reader-origin `CACHE_ENTRY_REJECTED` LOG-17 | ✅ Implemented | `gkRejectCacheEntry` (`Gatekeeper.js:58-68`, `component: "Gatekeeper"`) and `sbRejectCacheEntry` (`Sandbox_Engine.js:733-743`, `component: "Sandbox"`) flash all seven fields. Runtime proven reader-origin (reader-only invocation, no prior `CACHE_READ`). |
+| No zero/negative-duration cache HIT | ✅ Fixed | `manager.keeps=0` and `reader.hit=false` for all nonpositive classes (GK-1/GK-2/SB-1). |
+| No magic numbers; `let`/`const` only; no Node-only constructs | ✅ Maintained | Remediation uses named `CACHE_MODE_WALK`; no `setTimeout`/`setInterval`/`Promise` introduced. |
+| Syntax and diagnostics | ✅ Passed | `node --check` 54/54; AFT reports 0 errors / 0 warnings on the remediated files. |
+
+### Coherence (Design — remediation scope)
+
+| Decision / deviation | Followed? | Notes |
+|---|---|---|
+| Gatekeeper/Sandbox use documented read-only JSON, never write | ✅ Yes | Static + GK-7 confirm. |
+| Reader/manager parity for entries the manager's filter rejects (SCN-5CACHE-3) | ✅ Yes | Kind-aware filter: route mirrors `rcmFilterRouteEntries`, temp mirrors `rcmFilterTempEntries`. Order-cache reads keep their original `clusterKey`/`result` validation (out of R3 scope). |
+| `expiresAt`/`meanDurationSecs > 0` and key integrity at the reader | ✅ Yes | All five invalid classes rejected by both readers; `manager.keeps === 0` for every poison case. |
+| LOG-17 on every reader rejection | ✅ Yes | GK-1..GK-6, SB-3 emit reader-origin logs with the complete seven-field shape. |
+| Duplicated inline filter (no `require`/`import` — Tasker standalone isolation) | ✅ Yes | Per repo convention; the filter is duplicated inside each reader. |
+| Three fixture corrections in `harness/test_cache_readers.js` | ✅ Yes | Two temp-cache fixtures and the parity matrix now carry manager-realistic `rcmRouteKey`/`rcmTempKey` shapes (insertion order preserved). |
+
+### Issues Found
+
+**CRITICAL**: None.
+
+**WARNING**:
+
+1. Production execution of `tds_consume_par1`/`tds_consume_par2` remains outside repository evidence (retained from Slice C). Replay consumption is runtime-proven through `harness/mock_tasker.js`; this does not affect the reader contract R3 verified.
+2. Slice D + remediation diff exceeds the 400-line review budget; the maintainer-accepted size exception remains required (governance, not a requirement failure).
+3. Syntax output is empty (`node --check` produces no per-file output on success); its hash equals the SHA-256 of the empty string `e3b0c442…` only when piped without an `echo`-added trailing newline — both conventions agree the build emitted zero bytes and exited 0.
+
+**SUGGESTION**:
+
+1. (Retained) Centralise the invalid-entry filter (`rcmFilterRouteEntries`/`rcmFilterTempEntries`) so the readers reuse a shared module instead of duplicating it inline — but Tasker standalone isolation currently forbids `require`; the duplication is the accepted convention.
+2. (Retained) Strengthen committed string/array-response regression assertions to byte-equality; the independent correlation probe covers this today.
+
+### Retracted PASS/FAIL history
+
+| Run | Verdict | Outcome | Status |
+|---|---|---|---|
+| ordinal 18 (independent Slice D) | `failed` | Direct readers accept invalid entries; no reader LOG-17. | Confirmed by run-2; **closed by R3**. |
+| ordinal 19 (post-crash inline) | `passed` (`fdf839d`) | Inferred from the manager's `CACHE_READ` filter, not the reader contract. | **Retracted** — false PASS; the ledger contradiction with ordinal 18 is resolved by R3. |
+| archive `d4b3f6a` (premature) | archival on a false PASS | Concurrent automation merged PR #34 (`06491c6`) and archived on top of the retracted `fdf839d` PASS. | **Out of date** — the change was re-opened by `dff4f08` and R3 now records a true PASS. |
+| run-2 (whole-change FAIL) | `fail` (5/7 reqs, 10/12 scenarios, 3 critical) | `verify-report.md` evidence revision `sha256:f2d6a5babf4b9906a65a28b8fe8df7b8271333bc6ff893de7a7535c0fb5e295a`. | **Superseded by R3** — retained below as the evidence trail. |
+| R3 (this run) | `pass` (7/7 reqs, 12/12 scenarios, 0 critical) | Evidence revision `sha256:bc8fcf41bca72793838be7ba13ae9b00a3c1c8c18b5a9f74785fdbdbac89069e`. | **Current / authoritative.** |
+
+### Canonical Verification Evidence Preimage
+
+The following exact bytes hash to `sha256:bc8fcf41bca72793838be7ba13ae9b00a3c1c8c18b5a9f74785fdbdbac89069e`:
+
+```text
+schema=gentle-ai.verification-evidence/v1
+change=tasker-tesla-upgrade-phase-5-typed-protocols
+round=R3 remediation verification (whole-change re-verify after run-2 FAIL)
+mode=standard
+scope=REQ-5CACHE-1/2 + REQ-5LOG-1 (reader contract); whole-change verdict aggregates prior Slice A/B/C PASS
+bounded_attempt_token=sha256:801f1d37eae6d90206cc2212add63bb050ffcfa4da160e1e998dd4e8fdc3520f
+focused_command=node harness/test_cache_readers.js
+focused_exit_code=0
+focused_output_hash=sha256:47270f1677b48e21d326a457b855e72bf9c70a9cfc5aeb3f43559992871d7569
+full_command=for t in harness/test_*.js; do node "$t" || exit 1; done
+full_exit_code=0
+full_scripts=28/28
+full_pass_lines=37
+full_fail_lines=0
+full_output_hash=sha256:ddd91e380fb0774286101762af46264615da9259c154ac88910bf57ad33bfcb6
+build_command=for f in *.js harness/*.js; do node --check "$f" || exit 1; done
+build_exit_code=0
+build_files=54/54
+build_output_hash=sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+single_writer_command=grep -nE writeFile|deleteFile Gatekeeper.js Sandbox_Engine.js
+single_writer_matches=0
+adversarial_command=node /tmp/tasker-r3-adversarial-probe.js
+adversarial_exit_code=0
+adversarial_checks=11/11
+adversarial_script_hash=sha256:878c966c4a41e76d19755b325e6d8303a20326db9d878e1a398b60402758053d
+adversarial_output_hash=sha256:7dc49944e4c02ff435884d8db7bc19848c5948d04145c32ea70e5d5e022286fe
+adversarial_gk_1_zero_duration=PASS reader.hit=false manager.keeps=0 reader_origin_log17=1 (was FAIL cache_hit=true durationSecs=0)
+adversarial_gk_2_negative_duration=PASS reader.hit=false manager.keeps=0 reader_origin_log17=1 (was FAIL cache_hit=true durationSecs=-50)
+adversarial_gk_3_missing_expiresat=PASS reader.hit=false manager.keeps=0 reader_origin_log17=1 (was FAIL reader.hit=true manager.keeps=0)
+adversarial_gk_4_key_bucket_mismatch=PASS reader.hit=false manager.keeps=0 reader_origin_log17=1 (was FAIL reader.hit=true manager.keeps=0)
+adversarial_gk_5_walk_numeric_bucket=PASS reader.hit=false manager.keeps=0 reader_origin_log17=1 (was FAIL reader.hit=true manager.keeps=0)
+adversarial_gk_6_expiry_log17=PASS miss=true reader_origin_log17=1 seven_fields=true (was FAIL miss=true count=0 reader silent)
+adversarial_gk_7_no_writer=PASS writes=0 (read-only contract intact)
+adversarial_gk_8_distance_round_trip=PASS distanceMeters=12000
+adversarial_sb_1_zero_duration_tier_build=PASS head=1005 matches no-cache fallback=1005
+adversarial_sb_2_zero_duration_match=PASS Sandbox=1005 noCache=1005
+adversarial_sb_3_missing_expiresat_parity=PASS Sandbox.head=1005 manager.keeps=0 reader_origin_log17=1 (was FAIL Sandbox.head=1800 manager.keeps=0)
+retraction_history=ordinal_18_failed; ordinal_19_false_pass_retracted; archive_d4b3f6a_premature; reopened_dff4f08
+remediation_commits=dad2243_RED_test,573f573_GREEN_reader_fix,af33a6b_docs
+req_5queue_1=pass
+scn_5queue_1=pass
+scn_5queue_2=pass
+req_5cutover_1=pass
+scn_5cutover_1=pass
+scn_5cutover_2=pass
+scn_5cutover_3=pass
+req_5reqid_1=pass
+scn_5reqid_1=pass
+req_5reqid_2=pass
+scn_5reqid_2=pass
+scn_5reqid_3=pass
+req_5cache_1=pass
+scn_5cache_1=pass
+req_5cache_2=pass
+scn_5cache_2=pass
+scn_5cache_3=pass
+req_5log_1=pass
+scn_5log_1=pass
+requirements=7/7
+scenarios=12/12
+verdict=pass
+```
+
+### Files Reviewed
+
+- `openspec/changes/tasker-tesla-upgrade-phase-5-typed-protocols/proposal.md`
+- `openspec/changes/tasker-tesla-upgrade-phase-5-typed-protocols/specs/itinerary/spec.md`
+- `openspec/changes/tasker-tesla-upgrade-phase-5-typed-protocols/design.md`
+- `openspec/changes/tasker-tesla-upgrade-phase-5-typed-protocols/tasks.md`
+- `openspec/changes/tasker-tesla-upgrade-phase-5-typed-protocols/apply-progress.md`
+- `openspec/changes/tasker-tesla-upgrade-phase-5-typed-protocols/verify-report.md` (run-2 baseline; superseded by this section)
+- `Gatekeeper.js` (`readCacheJson`, `gkRejectCacheEntry`, `gkRouteKey`, `gkTempKey`)
+- `Sandbox_Engine.js` (`sbReadCacheJson`, `sbRejectCacheEntry`, `sbRouteKey`, `sbTempKey`, `CACHE_MODE_WALK`)
+- `Route_Cache_Manager.js` (`rcmFilterRouteEntries`, `rcmFilterTempEntries`, `rcmFilterOrderEntries` — parity reference)
+- `harness/test_cache_readers.js` (extended section f — direct-reader rejection contract)
+- `harness/mock_tasker.js`, `harness/runner.js`
+- All 28 `harness/test_*.js` scripts at runtime
+- `/tmp/tasker-r3-adversarial-probe.js` (independent adversarial probe; script hash `sha256:878c966c4a41e76d19755b325e6d8303a20326db9d878e1a398b60402758053d`)
+- Remediation commits `dad2243`, `573f573`, `af33a6b`
+
+### Verdict
+
+**PASS** — 7/7 requirements and 12/12 scenarios verified. R3 closes the two run-2 failures: the direct Gatekeeper + Sandbox JSON readers now reject every invalid entry the manager's `rcmFilterRouteEntries`/`rcmFilterTempEntries` rejects (zero/negative `meanDurationSecs`, missing/non-numeric `expiresAt`, key/bucket mismatch, WALK-with-numeric-bucket) and emit reader-origin `CACHE_ENTRY_REJECTED` LOG-17 on every drop (proven from reader-only invocations with no prior `CACHE_READ`). The full suite (28/28, hash `ddd91e38…` byte-identical to the run-2 baseline), syntax (54/54), single-writer audit (0 matches), focused harness, and the 11/11 adversarial probe all pass with zero regression. The retracted PASS/FAIL history is resolved: ordinal 18's `failed` is closed, ordinal 19's false PASS is retracted, the premature archive `d4b3f6a` is superseded by the `dff4f08` re-open + R3 true PASS. The change is verified complete and ready for archive.
+
+---
+
+# Retained prior-run evidence (read-only trail)
+
+> The sections below are the retained Slice C run-4 and Slice D run-2 records. They are kept as the evidence trail that R3 built on; the leading R3 section is the current authoritative verdict. The Slice D run-2 FAIL findings (GK-1..GK-6, SB-3) are exactly the failures R3 closed above.
 
 ## Verification Report
 
