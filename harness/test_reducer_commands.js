@@ -73,7 +73,14 @@ function testAtomicity() {
   const { sandbox, store } = make();
   runReducer(sandbox, store, 'SET_OVERRIDE', { generationId: GEN_ID, key: 'k', value: 'v' });
   assert(store.files[STATE], 'state file must be written before projection');
-  assert.strictEqual(Object.keys(store.globals).length, 0, 'PR-A must not project any global');
+  // Phase 6 (REQ-6STATE-2): project() runs after every successful commit and
+  // writes the five R-TRIP-8 status globals from the committed state. On a
+  // fresh state, SET_OVERRIDE projects the initial values.
+  assert.strictEqual(store.globals['User_At_Base'], 'false', 'projection must write User_At_Base from committed state');
+  assert.strictEqual(store.globals['Base_Arrival_Unix'], '', 'projection must write Base_Arrival_Unix (null -> empty)');
+  assert.strictEqual(store.globals['TDS_Lateness_Halt'], 'false', 'projection must write TDS_Lateness_Halt from committed state');
+  assert.strictEqual(store.globals['Current_Status'], '', 'projection must write Current_Status from committed state');
+  assert.strictEqual(store.globals['TDS_Manual_Return_Completed'], 'false', 'projection must write TDS_Manual_Return_Completed from committed state');
 }
 
 function testObservability() {
