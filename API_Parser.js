@@ -1,3 +1,9 @@
+// TESLA_CONFIG.json (gitignored) overrides device setup; see TESLA_CONFIG.example.json.
+// The anchor path Tasker/Tesla/ is the Tasker install root.
+var TESLA_CFG = {};
+try { TESLA_CFG = JSON.parse(readFile("Tasker/Tesla/TESLA_CONFIG.json") || "{}"); } catch (e) { TESLA_CFG = {}; }
+var DATA_ROOT = (TESLA_CFG && typeof TESLA_CFG.dataRoot === "string" && TESLA_CFG.dataRoot) || "Tasker/Tesla/Data/";
+
 // ==========================================
 // API RESULT PARSER (TCS-7 V12.7)
 // Extracts optimizedWaypoint routing for Cluster arrays.
@@ -20,7 +26,7 @@
     // Request state is manager-owned (documented read-only schema); the parser
     // only reads it for exact correlation and never writes it.
     function readLatestByCluster() {
-        let rawState = readFile("Tasker/Tesla/Data/TDS_Route_Request_State.json");
+        let rawState = readFile(DATA_ROOT + "TDS_Route_Request_State.json");
         if (!rawState) return null;
         try {
             let st = JSON.parse(rawState);
@@ -51,7 +57,7 @@
     }
 
     try {
-        let rawPayload = readFile("Tasker/Tesla/Data/temp_payload.json");
+        let rawPayload = readFile(DATA_ROOT + "temp_payload.json");
         if (!rawPayload || rawPayload.indexOf("{") === -1) throw new Error("Missing or empty disk staging payload.");
 
         let staged = JSON.parse(rawPayload);
@@ -78,7 +84,7 @@
             logEvt("STALE_API_RESPONSE_DISCARDED", "warn", { reason: "correlation mismatch", correlation: correlation || null });
             setLocal('par1', '');
             setLocal('par2', '');
-            writeFile("Tasker/Tesla/Data/temp_payload.json", "{}", false);
+            writeFile(DATA_ROOT + "temp_payload.json", "{}", false);
             return; // REQ-5REQID-2: no cache/reorder mutation on mismatch.
         }
         if (correlation) logEvt("ROUTE_RESPONSE_ACCEPTED", "info", { clusterId: correlation.clusterId, requestId: correlation.requestId });
@@ -130,7 +136,7 @@
                 source: 'API_Parser',
                 emittedAt: Math.floor(Date.now() / 1000)
             }));
-            writeFile("Tasker/Tesla/Data/temp_payload.json", "{}", false);
+            writeFile(DATA_ROOT + "temp_payload.json", "{}", false);
             return;
         }
 
@@ -167,7 +173,7 @@
             flash("⚠️ API Parser Fault: Invalid metrics.");
             let mockFallback = JSON.stringify({ durationSecs: 0, distanceMeters: 0, distanceMiles: "0", transitSteps: "" });
             setLocal('api_return_json', mockFallback);
-            writeFile("Tasker/Tesla/Data/temp_payload.json", "{}", false);
+            writeFile(DATA_ROOT + "temp_payload.json", "{}", false);
             return; 
         }
 
@@ -189,13 +195,13 @@
             }));
         }
 
-        writeFile("Tasker/Tesla/Data/temp_payload.json", "{}", false);
+        writeFile(DATA_ROOT + "temp_payload.json", "{}", false);
 
     } catch(e) {
         flash("API Result Parser Exception. \n" + e.message);
         let mockFallback = JSON.stringify({ durationSecs: 0, distanceMeters: 0, distanceMiles: "0", transitSteps: "" });
         setLocal('api_return_json', mockFallback);
-        try { writeFile("Tasker/Tesla/Data/temp_payload.json", "{}", false); } catch(err){}
+        try { writeFile(DATA_ROOT + "temp_payload.json", "{}", false); } catch(err){}
         return; 
     }
 })();

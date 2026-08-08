@@ -1,3 +1,9 @@
+// TESLA_CONFIG.json (gitignored) overrides device setup; see TESLA_CONFIG.example.json.
+// The anchor path Tasker/Tesla/ is the Tasker install root.
+var TESLA_CFG = {};
+try { TESLA_CFG = JSON.parse(readFile("Tasker/Tesla/TESLA_CONFIG.json") || "{}"); } catch (e) { TESLA_CFG = {}; }
+var DATA_ROOT = (TESLA_CFG && typeof TESLA_CFG.dataRoot === "string" && TESLA_CFG.dataRoot) || "Tasker/Tesla/Data/";
+
 // ==========================================
 // TDS OVERRIDE INJECTOR (v1.1 -> D1)
 // Reads an Event ID from the committed itinerary and stages an
@@ -56,8 +62,8 @@ try {
     // 1. Extract Target ID and Coordinates from the committed itinerary.
     // Canonical Phase 2 resolver (inlined local copy; algorithm source of
     // truth: TDS_Helper.js readActiveGeneration) with legacy fallback.
-    const PHASE2_MANIFEST_PATH = "Tasker/Tesla/Data/TDS_Run_Manifest.json";
-    const PHASE2_DATA_DIR = "Tasker/Tesla/Data/";
+    const PHASE2_MANIFEST_PATH = DATA_ROOT + "TDS_Run_Manifest.json";
+    const PHASE2_DATA_DIR = DATA_ROOT;
     function encodeGen(g) { return String(g).replace(/:/g, "_"); }
     function pathFor(g, kind) {
       return PHASE2_DATA_DIR + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + encodeGen(g) + ".json";

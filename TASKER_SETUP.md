@@ -17,9 +17,10 @@ Copy the repo's production scripts to the device. Two trees:
 | Path (device) | Content |
 |---|---|
 | `Tasker/Tesla/*.js` | All production scripts (Alpha, Compiler, Sandbox_Engine, Finaliser, Generation_Publisher, TDS_State_Command, Trip_State_Reducer, Override_Handler, Route_Cache_Manager, Gatekeeper, API_JSON_Build, API_Parser, Dispatcher, Dashboard, Appender, Override_Injector, Return_to_Base, Depart_Now, Unlock, Stop_Logger, TDS_Helper) |
+| `Tasker/Tesla/TESLA_CONFIG.json` | Per-device setup constants (`dataRoot`). **Gitignored** — copy from the committed `TESLA_CONFIG.example.json`; scripts fall back to `Tasker/Tesla/Data/` when absent |
 | `Tasker/Tesla/Data/` | JSON data files (see §5 bootstrap) |
 
-Every script is registered as a Tasker **JavaScriptlet** action whose *File*
+Every script loads `TESLA_CONFIG.json` at entry (anchor `Tasker/Tesla/` is the install root) and resolves all data paths from `dataRoot`. Every script is registered as a Tasker **JavaScriptlet** action whose *File*
 points to the matching `Tasker/Tesla/<script>.js`. Do NOT paste code into the
 action — always reference the file so the checked-in code is what runs.
 

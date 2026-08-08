@@ -1,3 +1,9 @@
+// TESLA_CONFIG.json (gitignored) overrides device setup; see TESLA_CONFIG.example.json.
+// The anchor path Tasker/Tesla/ is the Tasker install root.
+var TESLA_CFG = {};
+try { TESLA_CFG = JSON.parse(readFile("Tasker/Tesla/TESLA_CONFIG.json") || "{}"); } catch (e) { TESLA_CFG = {}; }
+var DATA_ROOT = (TESLA_CFG && typeof TESLA_CFG.dataRoot === "string" && TESLA_CFG.dataRoot) || "Tasker/Tesla/Data/";
+
 // TDS_State_Command.js — Phase 4 Slice A serial command router.
 //
 // Input is %par1 (exact command name) plus %par2 (JSON object payload).
@@ -17,10 +23,10 @@
 // rollback. RELEASE closes the exact actionId/tripId pair and may clear the
 // matching migration-only TDS_Action_Lock.json (LOCK_COMPATIBILITY_CLEARED).
 
-const REORDER_QUEUE_PATH = "Tasker/Tesla/Data/TDS_Reorder_Commands.json";
-const MANUAL_SESSIONS_PATH = "Tasker/Tesla/Data/TDS_Action_Sessions.json";
-const MANUAL_TRIPS_PATH = "Tasker/Tesla/Data/TDS_Manual_Trips.json";
-const MANUAL_LOCK_PATH = "Tasker/Tesla/Data/TDS_Action_Lock.json";
+const REORDER_QUEUE_PATH = DATA_ROOT + "TDS_Reorder_Commands.json";
+const MANUAL_SESSIONS_PATH = DATA_ROOT + "TDS_Action_Sessions.json";
+const MANUAL_TRIPS_PATH = DATA_ROOT + "TDS_Manual_Trips.json";
+const MANUAL_LOCK_PATH = DATA_ROOT + "TDS_Action_Lock.json";
 // Names are unique at the top level (const/let re-declaration is a SyntaxError
 // in the shared harness vm context; entry identifiers use var like the owners).
 var STATE_CMD_REORDER_TYPE = "APPLY_CLUSTER_REORDER";

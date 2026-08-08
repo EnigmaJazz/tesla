@@ -1,0 +1,4 @@
+{
+  "_comment": "Copy this file to TESLA_CONFIG.json (gitignored) and adjust for your device. The Tasker/Tesla/ anchor is the Tasker install root; dataRoot is where the JSON data files live. Omit keys to keep the built-in defaults.",
+  "dataRoot": "Tasker/Tesla/Data/"
+}

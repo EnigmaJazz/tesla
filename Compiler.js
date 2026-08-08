@@ -1,3 +1,9 @@
+// TESLA_CONFIG.json (gitignored) overrides device setup; see TESLA_CONFIG.example.json.
+// The anchor path Tasker/Tesla/ is the Tasker install root.
+var TESLA_CFG = {};
+try { TESLA_CFG = JSON.parse(readFile("Tasker/Tesla/TESLA_CONFIG.json") || "{}"); } catch (e) { TESLA_CFG = {}; }
+var DATA_ROOT = (TESLA_CFG && typeof TESLA_CFG.dataRoot === "string" && TESLA_CFG.dataRoot) || "Tasker/Tesla/Data/";
+
 // ==========================================
 // SCRIPT 4: UNIFIED COMPILER (v24.18)
 // Translates multiple #stop:XX delays into physical Calendar travel blocks.
@@ -159,13 +165,13 @@ function readJson(path) {
     try { return JSON.parse(raw); } catch(e) { return null; }
 }
 function pathFor(g, kind) {
-    return "Tasker/Tesla/Data/" + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
+    return DATA_ROOT + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
 }
 // Phase 3 PR-E: Local copy of readActiveGeneration. The canonical
 // implementation lives in TDS_Helper.js. Kept local because Tasker
 // scripts are standalone and cannot call functions from other scripts.
 function readActiveGeneration(kind) {
-    const m = readJson("Tasker/Tesla/Data/TDS_Run_Manifest.json");
+    const m = readJson(DATA_ROOT + "TDS_Run_Manifest.json");
     const key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
     if (m && m.state === "committed" && m.activeGeneration) {
         const data = readJson(m[key] || pathFor(m.activeGeneration, kind));
@@ -176,11 +182,11 @@ function readActiveGeneration(kind) {
         if (prev !== null) return prev;
     }
     if (kind === "events" || kind === "master") {
-        const legacy = readJson("Tasker/Tesla/Data/TDS_Master.json");
+        const legacy = readJson(DATA_ROOT + "TDS_Master.json");
         if (legacy !== null) return legacy;
     }
     if (kind === "itinerary") {
-        const legacyItin = readJson("Tasker/Tesla/Data/Itin_Master.json");
+        const legacyItin = readJson(DATA_ROOT + "Itin_Master.json");
         if (legacyItin !== null) return legacyItin;
     }
     return [];
@@ -191,7 +197,7 @@ function readActiveGeneration(kind) {
 // unexpired legacy lock; a readable empty session map means unlocked.
 function actionLockActive() {
     const now = Math.floor(Date.now() / 1000);
-    const sessionsRaw = readFile("Tasker/Tesla/Data/TDS_Action_Sessions.json") || "";
+    const sessionsRaw = readFile(DATA_ROOT + "TDS_Action_Sessions.json") || "";
     if (sessionsRaw && sessionsRaw.indexOf("%") !== 0) {
         try {
             const sessions = JSON.parse(sessionsRaw);
@@ -206,7 +212,7 @@ function actionLockActive() {
         } catch (e) { /* unreadable sessions fall through to the legacy lock */ }
     }
     try {
-        const lockRaw = readFile("Tasker/Tesla/Data/TDS_Action_Lock.json") || "";
+        const lockRaw = readFile(DATA_ROOT + "TDS_Action_Lock.json") || "";
         if (lockRaw && lockRaw.indexOf("%") !== 0 && lockRaw !== "{}") {
             const lock = JSON.parse(lockRaw);
             if (now - parseInt(lock.timestamp || 0, 10) < LOCK_FRESH_SECS) return true;
@@ -388,7 +394,7 @@ function compileTypedRow(row) {
         originSource: row.originSource || null
     };
 
-    let pendingCompilerRaw = readFile("Tasker/Tesla/Data/Pending_Compiler.json") || "[]";
+    let pendingCompilerRaw = readFile(DATA_ROOT + "Pending_Compiler.json") || "[]";
     if (pendingCompilerRaw.indexOf("%") === 0) pendingCompilerRaw = "[]";
 
     let pendingChain = []; 
@@ -405,7 +411,7 @@ function compileTypedRow(row) {
 
     if (actionType === "EVENT" && isAttachedDropin) {
         pendingChain.push(currentLeg);
-        writeFile("Tasker/Tesla/Data/Pending_Compiler.json", JSON.stringify(pendingChain), false);
+        writeFile(DATA_ROOT + "Pending_Compiler.json", JSON.stringify(pendingChain), false);
 
         setLocal('cal_title_out', "HOLD");
 
@@ -416,7 +422,7 @@ function compileTypedRow(row) {
     } 
     else {
         pendingChain.push(currentLeg);
-        writeFile("Tasker/Tesla/Data/Pending_Compiler.json", "[]", false); 
+        writeFile(DATA_ROOT + "Pending_Compiler.json", "[]", false); 
 
     let itinerary = readActiveGeneration("itinerary");
 
@@ -515,7 +521,7 @@ function compileTypedRow(row) {
         let outStarts = []; 
         let outEnds = [];
 
-        let ovrRaw = readFile("Tasker/Tesla/Data/TDS_Overrides.json") || "{}";
+        let ovrRaw = readFile(DATA_ROOT + "TDS_Overrides.json") || "{}";
         let OVR = {}; 
         try { 
             OVR = JSON.parse(ovrRaw); 
@@ -529,7 +535,7 @@ function compileTypedRow(row) {
         // fresh planning pass honours committed state (REQ-6STATE-4).
         let stateTrips = null;
         try {
-            const stRaw = readFile("Tasker/Tesla/Data/TDS_Trip_State.json") || "";
+            const stRaw = readFile(DATA_ROOT + "TDS_Trip_State.json") || "";
             if (stRaw) {
                 const parsedState = JSON.parse(stRaw);
                 stateTrips = parsedState.trips || null;

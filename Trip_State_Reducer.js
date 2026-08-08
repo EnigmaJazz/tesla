@@ -1,3 +1,9 @@
+// TESLA_CONFIG.json (gitignored) overrides device setup; see TESLA_CONFIG.example.json.
+// The anchor path Tasker/Tesla/ is the Tasker install root.
+var TESLA_CFG = {};
+try { TESLA_CFG = JSON.parse(readFile("Tasker/Tesla/TESLA_CONFIG.json") || "{}"); } catch (e) { TESLA_CFG = {}; }
+var DATA_ROOT = (TESLA_CFG && typeof TESLA_CFG.dataRoot === "string" && TESLA_CFG.dataRoot) || "Tasker/Tesla/Data/";
+
 // Trip_State_Reducer.js — Phase 3 PR-A shell and command contract.
 //
 // Design contract
@@ -25,7 +31,7 @@
 // Schema versioning: mutations increment `revision` once. Future schema versions
 // require explicit migrators; unsupported versions are rejected.
 
-var PHASE3_STATE_PATH = "Tasker/Tesla/Data/TDS_Trip_State.json";
+var PHASE3_STATE_PATH = DATA_ROOT + "TDS_Trip_State.json";
 var PHASE3_SCHEMA_VERSION = 1;
 var PHASE3_REVISION = 0;
 var REDUCER_WRITER = "Trip State Reducer";

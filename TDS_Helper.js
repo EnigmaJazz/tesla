@@ -1,11 +1,17 @@
+// TESLA_CONFIG.json (gitignored) overrides device setup; see TESLA_CONFIG.example.json.
+// The anchor path Tasker/Tesla/ is the Tasker install root.
+var TESLA_CFG = {};
+try { TESLA_CFG = JSON.parse(readFile("Tasker/Tesla/TESLA_CONFIG.json") || "{}"); } catch (e) { TESLA_CFG = {}; }
+var DATA_ROOT = (TESLA_CFG && typeof TESLA_CFG.dataRoot === "string" && TESLA_CFG.dataRoot) || "Tasker/Tesla/Data/";
+
 // TDS_Helper — read-only manifest resolver (REQ-4HELPER-1).
 // par1 = readOrigin | readActiveGeneration[:events|master|itinerary] returns
 // the active committed resource (prior/legacy fallback). Generic getters
 // (legacy Filename:Index:Key form), setters, and unknown operations are
 // rejected with HELPER_REQUEST_REJECTED; this script never writes.
 
-const PHASE2_MANIFEST_PATH = "Tasker/Tesla/Data/TDS_Run_Manifest.json";
-const PHASE2_DATA_DIR = "Tasker/Tesla/Data/";
+const PHASE2_MANIFEST_PATH = DATA_ROOT + "TDS_Run_Manifest.json";
+const PHASE2_DATA_DIR = DATA_ROOT;
 
 function encodeGen(g) { return String(g).replace(/:/g, "_"); }
 function pathFor(g, kind) {

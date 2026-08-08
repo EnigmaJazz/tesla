@@ -1,3 +1,9 @@
+// TESLA_CONFIG.json (gitignored) overrides device setup; see TESLA_CONFIG.example.json.
+// The anchor path Tasker/Tesla/ is the Tasker install root.
+var TESLA_CFG = {};
+try { TESLA_CFG = JSON.parse(readFile("Tasker/Tesla/TESLA_CONFIG.json") || "{}"); } catch (e) { TESLA_CFG = {}; }
+var DATA_ROOT = (TESLA_CFG && typeof TESLA_CFG.dataRoot === "string" && TESLA_CFG.dataRoot) || "Tasker/Tesla/Data/";
+
 // ==========================================
 // SMART CACHE GATEKEEPER (V7.1)
 // Intercepts JSON Clusters on %par1. 
@@ -147,7 +153,7 @@
     }
     function sortMasterJson(orderedIdsStr) {
         let orderedIds = orderedIdsStr.split(",");
-        let masterRaw = readFile("Tasker/Tesla/Data/TDS_Master.json") || "[]";
+        let masterRaw = readFile(DATA_ROOT + "TDS_Master.json") || "[]";
         let masterArr = JSON.parse(masterRaw);
 
         let targetIndices = [];
@@ -206,7 +212,7 @@
             // JSON (read-only; the manager is the sole writer). The legacy row
             // shape origin|destination.id|wpIdStr|result is preserved by the
             // JSON clusterKey (first three fields) + result array.
-            let orderCache = readCacheJson("Tasker/Tesla/Data/TDS_Order_Cache.json", Math.floor(Date.now() / 1000), "order");
+            let orderCache = readCacheJson(DATA_ROOT + "TDS_Order_Cache.json", Math.floor(Date.now() / 1000), "order");
             if (orderCache) {
                 let oKeys = Object.keys(orderCache.entries);
                 for (let c = 0; c < oKeys.length; c++) {
@@ -241,7 +247,7 @@
                 // manager's JSON (read-only; the manager is the sole writer).
                 // distanceMiles in the JSON holds actual miles. Expired rows are
                 // already dropped by readCacheJson (expired = miss).
-                let routeCache = readCacheJson("Tasker/Tesla/Data/TDS_Route_Cache.json", nowSec, "route");
+                let routeCache = readCacheJson(DATA_ROOT + "TDS_Route_Cache.json", nowSec, "route");
                 if (routeCache) {
                     let rKeys = Object.keys(routeCache.entries);
                     for (let i = rKeys.length - 1; i >= 0; i--) {
@@ -266,7 +272,7 @@
 
                 if (cachedDurSecs === -1) {
                     // Slice D: session-cache reads come from the manager's JSON.
-                    let tempCache = readCacheJson("Tasker/Tesla/Data/Temp_Route_Cache.json", nowSec, "temp");
+                    let tempCache = readCacheJson(DATA_ROOT + "Temp_Route_Cache.json", nowSec, "temp");
                     if (tempCache) {
                         let tKeys = Object.keys(tempCache.entries);
                         for (let t = tKeys.length - 1; t >= 0; t--) {

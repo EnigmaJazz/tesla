@@ -1,3 +1,9 @@
+// TESLA_CONFIG.json (gitignored) overrides device setup; see TESLA_CONFIG.example.json.
+// The anchor path Tasker/Tesla/ is the Tasker install root.
+var TESLA_CFG = {};
+try { TESLA_CFG = JSON.parse(readFile("Tasker/Tesla/TESLA_CONFIG.json") || "{}"); } catch (e) { TESLA_CFG = {}; }
+var DATA_ROOT = (TESLA_CFG && typeof TESLA_CFG.dataRoot === "string" && TESLA_CFG.dataRoot) || "Tasker/Tesla/Data/";
+
 // ==========================================
 // SCRIPT 3: ENGINE FINALISER (v25.1)
 // 12-Hour Geofence Limit: Only monitors locations starting within 12 hours.
@@ -81,7 +87,7 @@ try {
     if (tempRaw.indexOf("%") === 0) tempRaw = "[]";
     let validEvents = JSON.parse(tempRaw);
 
-    let diskRaw = readFile("Tasker/Tesla/Data/Geocode_Cache.json");
+    let diskRaw = readFile(DATA_ROOT + "Geocode_Cache.json");
     let diskLower = {};
     if (diskRaw && diskRaw.indexOf("%") === -1) {
         try {
@@ -115,7 +121,7 @@ try {
     let arrivalMemRaw = "";
     let stateTrips = null;
     try {
-        const stRaw = readFile("Tasker/Tesla/Data/TDS_Trip_State.json") || "";
+        const stRaw = readFile(DATA_ROOT + "TDS_Trip_State.json") || "";
         if (stRaw) {
             const parsedState = JSON.parse(stRaw);
             const dropinMap = parsedState.completedDropins || {};
@@ -254,13 +260,13 @@ try {
     let adHoc = global('AdHoc_Base') || "";
     if (adHoc.indexOf("%") !== 0 && adHoc.length > 5) finalBaseStr += (finalBaseStr.length > 0 ? "|" : "") + adHoc;
 
-    let currentItinRaw = readFile("Tasker/Tesla/Data/Itin_Master.json") || "[]";
+    let currentItinRaw = readFile(DATA_ROOT + "Itin_Master.json") || "[]";
     let currentItin = [];
     try { currentItin = JSON.parse(currentItinRaw); } catch(e) {}
 
     publishCandidate({ events: validEvents, master: validEvents, itinerary: currentItin });
 
-    let baseFilePath = "Tasker/Tesla/Data/TDS_Base_Geocodes.txt";
+    let baseFilePath = DATA_ROOT + "TDS_Base_Geocodes.txt";
     let oldBaseStr = "";
     try { oldBaseStr = readFile(baseFilePath) || ""; } catch(e) {}
 
@@ -285,7 +291,7 @@ try {
     // deliver directly.
     let activeSession = null;
     try {
-        let sRaw = readFile("Tasker/Tesla/Data/TDS_Action_Sessions.json") || "";
+        let sRaw = readFile(DATA_ROOT + "TDS_Action_Sessions.json") || "";
         if (sRaw) {
             let sObj = JSON.parse(sRaw);
             if (sObj && sObj.sessions) {
@@ -298,7 +304,7 @@ try {
     if (activeSession) {
         let completionSeen = false;
         try {
-            let stRaw = readFile("Tasker/Tesla/Data/TDS_Trip_State.json") || "";
+            let stRaw = readFile(DATA_ROOT + "TDS_Trip_State.json") || "";
             if (stRaw) completionSeen = (JSON.parse(stRaw).manualReturnCompleted === true);
         } catch(e) {}
         if (completionSeen) {

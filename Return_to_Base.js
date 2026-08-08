@@ -1,3 +1,9 @@
+// TESLA_CONFIG.json (gitignored) overrides device setup; see TESLA_CONFIG.example.json.
+// The anchor path Tasker/Tesla/ is the Tasker install root.
+var TESLA_CFG = {};
+try { TESLA_CFG = JSON.parse(readFile("Tasker/Tesla/TESLA_CONFIG.json") || "{}"); } catch (e) { TESLA_CFG = {}; }
+var DATA_ROOT = (TESLA_CFG && typeof TESLA_CFG.dataRoot === "string" && TESLA_CFG.dataRoot) || "Tasker/Tesla/Data/";
+
 // ==========================================
 // TDS RETURN TO BASE (Manual Injector v3.0)
 // Command adapter — stages a typed RETURN_TO_BASE envelope for
@@ -26,7 +32,7 @@ function localPlanningDay(targetUnixSecs) {
 }
 
 try {
-    let PHASE2_MANIFEST_PATH = "Tasker/Tesla/Data/TDS_Run_Manifest.json";
+    let PHASE2_MANIFEST_PATH = DATA_ROOT + "TDS_Run_Manifest.json";
     let rCoords = global('TDS_Return_Coords');
     let rawMode = global('TDS_Return_Mode') || "DRIVE";
     let rName = global('TDS_Return_Name') || "Base";

@@ -1,3 +1,9 @@
+// TESLA_CONFIG.json (gitignored) overrides device setup; see TESLA_CONFIG.example.json.
+// The anchor path Tasker/Tesla/ is the Tasker install root.
+var TESLA_CFG = {};
+try { TESLA_CFG = JSON.parse(readFile("Tasker/Tesla/TESLA_CONFIG.json") || "{}"); } catch (e) { TESLA_CFG = {}; }
+var DATA_ROOT = (TESLA_CFG && typeof TESLA_CFG.dataRoot === "string" && TESLA_CFG.dataRoot) || "Tasker/Tesla/Data/";
+
 // ==========================================
 // UNIFIED PRE-FLIGHT DISPATCHER V15.1
 // Breaks multi-waypoint payloads at overnight bounds to prevent day-bleeding.
@@ -59,13 +65,13 @@ function readJson(path) {
     try { return JSON.parse(raw); } catch(e) { return null; }
 }
 function pathFor(g, kind) {
-    return "Tasker/Tesla/Data/" + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
+    return DATA_ROOT + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
 }
 // Phase 3 PR-E: Local copy of readActiveGeneration. The canonical
 // implementation lives in TDS_Helper.js. Kept local because Tasker
 // scripts are standalone and cannot call functions from other scripts.
 function readActiveGeneration(kind) {
-    var m = readJson("Tasker/Tesla/Data/TDS_Run_Manifest.json");
+    var m = readJson(DATA_ROOT + "TDS_Run_Manifest.json");
     var key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
     if (m && m.state === "committed" && m.activeGeneration) {
         var data = readJson(m[key] || pathFor(m.activeGeneration, kind));
@@ -76,11 +82,11 @@ function readActiveGeneration(kind) {
         if (prev !== null) return prev;
     }
     if (kind === "events" || kind === "master") {
-        var legacy = readJson("Tasker/Tesla/Data/TDS_Master.json");
+        var legacy = readJson(DATA_ROOT + "TDS_Master.json");
         if (legacy !== null) return legacy;
     }
     if (kind === "itinerary") {
-        var legacyItin = readJson("Tasker/Tesla/Data/Itin_Master.json");
+        var legacyItin = readJson(DATA_ROOT + "Itin_Master.json");
         if (legacyItin !== null) return legacyItin;
     }
     return [];
@@ -347,7 +353,7 @@ try {
     // unlocked.
     var sessionStoreReadable = false;
     try {
-        var sessionsRaw = readFile("Tasker/Tesla/Data/TDS_Action_Sessions.json");
+        var sessionsRaw = readFile(DATA_ROOT + "TDS_Action_Sessions.json");
         if (sessionsRaw && sessionsRaw.indexOf("%") === -1) {
             var sessionsData = JSON.parse(sessionsRaw);
             if (sessionsData && sessionsData.sessions && typeof sessionsData.sessions === "object") {
@@ -366,7 +372,7 @@ try {
 
     if (!sessionStoreReadable) {
         try {
-            var lockRaw = readFile("Tasker/Tesla/Data/TDS_Action_Lock.json");
+            var lockRaw = readFile(DATA_ROOT + "TDS_Action_Lock.json");
             if (lockRaw && lockRaw.indexOf("%") === -1 && lockRaw !== "{}") {
                 var lockData = JSON.parse(lockRaw);
                 if (nowSec - parseInt(lockData.timestamp || 0) < LOCK_FRESH_SECS) {

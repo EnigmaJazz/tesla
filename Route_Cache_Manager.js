@@ -1,3 +1,9 @@
+// TESLA_CONFIG.json (gitignored) overrides device setup; see TESLA_CONFIG.example.json.
+// The anchor path Tasker/Tesla/ is the Tasker install root.
+var TESLA_CFG = {};
+try { TESLA_CFG = JSON.parse(readFile("Tasker/Tesla/TESLA_CONFIG.json") || "{}"); } catch (e) { TESLA_CFG = {}; }
+var DATA_ROOT = (TESLA_CFG && typeof TESLA_CFG.dataRoot === "string" && TESLA_CFG.dataRoot) || "Tasker/Tesla/Data/";
+
 // Route_Cache_Manager.js — Phase 5 Slice B (REQ-5CACHE-1/2, RULE-8E).
 //
 // Sole writer of the four cache resources AND their legacy text projections:
@@ -66,13 +72,13 @@ var RCM_OUTLIER_Z = 2.0;                  // z-score outlier threshold
 var RCM_OUTLIER_MIN_DIFF_SECS = 300;      // min |delta| for z-score outliers
 var RCM_LEGACY_TOD_UNKNOWN = -999;        // legacy "no bucket" sentinel
 var RCM_COMPONENT = "Route_Cache_Manager";
-var RCM_ROUTE_JSON = "Tasker/Tesla/Data/TDS_Route_Cache.json";
-var RCM_ROUTE_TEXT = "Tasker/Tesla/Data/RouteCache.txt";
-var RCM_TEMP_JSON = "Tasker/Tesla/Data/Temp_Route_Cache.json";
-var RCM_TEMP_TEXT = "Tasker/Tesla/Data/Temp_Route_Cache.txt";
-var RCM_ORDER_JSON = "Tasker/Tesla/Data/TDS_Order_Cache.json";
-var RCM_ORDER_TEXT = "Tasker/Tesla/Data/TDS_Order_Cache.txt";
-var RCM_REQUEST_JSON = "Tasker/Tesla/Data/TDS_Route_Request_State.json";
+var RCM_ROUTE_JSON = DATA_ROOT + "TDS_Route_Cache.json";
+var RCM_ROUTE_TEXT = DATA_ROOT + "RouteCache.txt";
+var RCM_TEMP_JSON = DATA_ROOT + "Temp_Route_Cache.json";
+var RCM_TEMP_TEXT = DATA_ROOT + "Temp_Route_Cache.txt";
+var RCM_ORDER_JSON = DATA_ROOT + "TDS_Order_Cache.json";
+var RCM_ORDER_TEXT = DATA_ROOT + "TDS_Order_Cache.txt";
+var RCM_REQUEST_JSON = DATA_ROOT + "TDS_Route_Request_State.json";
 
 function rcmNowSec() { return Math.floor(Date.now() / 1000); }
 function rcmLog(severity, code, details) {

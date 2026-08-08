@@ -1,3 +1,9 @@
+// TESLA_CONFIG.json (gitignored) overrides device setup; see TESLA_CONFIG.example.json.
+// The anchor path Tasker/Tesla/ is the Tasker install root.
+var TESLA_CFG = {};
+try { TESLA_CFG = JSON.parse(readFile("Tasker/Tesla/TESLA_CONFIG.json") || "{}"); } catch (e) { TESLA_CFG = {}; }
+var DATA_ROOT = (TESLA_CFG && typeof TESLA_CFG.dataRoot === "string" && TESLA_CFG.dataRoot) || "Tasker/Tesla/Data/";
+
 // ==========================================
 // SCRIPT 1: MONOLITHIC ALPHA ENGINE V18.2
 // [V18.2] Repaired Holiday/Leave regex to prevent `#leave` tag conflicts.
@@ -47,7 +53,7 @@ try {
     let cutoffMs     = fetchStartMs + 691200000;  
 
     let mem = {};
-    try { mem = JSON.parse(readFile("Tasker/Tesla/Data/TDS_Overrides.json") || "{}"); } catch(e) {}
+    try { mem = JSON.parse(readFile(DATA_ROOT + "TDS_Overrides.json") || "{}"); } catch(e) {}
     let trimmedEventsRaw = mem['Trimmed_Events'] || "";
 
     // Phase 5 Slice B (REQ-5CACHE-1): Alpha no longer reads or writes the route
@@ -67,7 +73,7 @@ try {
         setGlobal('Daily_Walk_Meters', "0");
     }
 
-    let diskRaw   = readFile("Tasker/Tesla/Data/Geocode_Cache.json");
+    let diskRaw   = readFile(DATA_ROOT + "Geocode_Cache.json");
     let diskLower = {};
     if (diskRaw && diskRaw.indexOf("%") === -1) {
         try {

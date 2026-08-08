@@ -1,3 +1,9 @@
+// TESLA_CONFIG.json (gitignored) overrides device setup; see TESLA_CONFIG.example.json.
+// The anchor path Tasker/Tesla/ is the Tasker install root.
+var TESLA_CFG = {};
+try { TESLA_CFG = JSON.parse(readFile("Tasker/Tesla/TESLA_CONFIG.json") || "{}"); } catch (e) { TESLA_CFG = {}; }
+var DATA_ROOT = (TESLA_CFG && typeof TESLA_CFG.dataRoot === "string" && TESLA_CFG.dataRoot) || "Tasker/Tesla/Data/";
+
 // ==========================================
 // TDS ACTION: DEPART NOW (v3.0)
 // Command adapter — stages a typed DEPART_NOW envelope for
@@ -8,7 +14,7 @@
 // ==========================================
 
 try {
-    let PHASE2_MANIFEST_PATH = "Tasker/Tesla/Data/TDS_Run_Manifest.json";
+    let PHASE2_MANIFEST_PATH = DATA_ROOT + "TDS_Run_Manifest.json";
     let nowSec = Math.floor(Date.now() / 1000);
 
     function readJson(path) {

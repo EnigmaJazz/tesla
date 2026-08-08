@@ -1,7 +1,13 @@
+// TESLA_CONFIG.json (gitignored) overrides device setup; see TESLA_CONFIG.example.json.
+// The anchor path Tasker/Tesla/ is the Tasker install root.
+var TESLA_CFG = {};
+try { TESLA_CFG = JSON.parse(readFile("Tasker/Tesla/TESLA_CONFIG.json") || "{}"); } catch (e) { TESLA_CFG = {}; }
+var DATA_ROOT = (TESLA_CFG && typeof TESLA_CFG.dataRoot === "string" && TESLA_CFG.dataRoot) || "Tasker/Tesla/Data/";
+
 // Generation_Publisher.js — Phase 2 atomic commit boundary.
 
-const PHASE2_MANIFEST_PATH = "Tasker/Tesla/Data/TDS_Run_Manifest.json";
-const PHASE2_DATA_DIR = "Tasker/Tesla/Data/";
+const PHASE2_MANIFEST_PATH = DATA_ROOT + "TDS_Run_Manifest.json";
+const PHASE2_DATA_DIR = DATA_ROOT;
 const PHASE2_REORDER_QUEUE_PATH = PHASE2_DATA_DIR + "TDS_Reorder_Commands.json";
 const PHASE2_RETENTION = 5;
 const ID_COLLISION_RETRY_MAX = 16;

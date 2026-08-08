@@ -1,3 +1,9 @@
+// TESLA_CONFIG.json (gitignored) overrides device setup; see TESLA_CONFIG.example.json.
+// The anchor path Tasker/Tesla/ is the Tasker install root.
+var TESLA_CFG = {};
+try { TESLA_CFG = JSON.parse(readFile("Tasker/Tesla/TESLA_CONFIG.json") || "{}"); } catch (e) { TESLA_CFG = {}; }
+var DATA_ROOT = (TESLA_CFG && typeof TESLA_CFG.dataRoot === "string" && TESLA_CFG.dataRoot) || "Tasker/Tesla/Data/";
+
 // ==========================================
 // V36 ENGINE SANDBOX (v16.5)
 // - Drop-in Gravity: Evaluates Drop-ins against logical A-to-B trip windows on the fly.
@@ -9,7 +15,7 @@
 let GLOBAL_MASTER_ARR = [];
 
 let ovrRaw = "";
-try { ovrRaw = readFile("Tasker/Tesla/Data/TDS_Overrides.json") || "{}"; } catch(e) {}
+try { ovrRaw = readFile(DATA_ROOT + "TDS_Overrides.json") || "{}"; } catch(e) {}
 let OVR = {};
 try { OVR = JSON.parse(ovrRaw); } catch(e) {}
 function getOvr(key) { return OVR[key] || ""; }
@@ -19,7 +25,7 @@ function getOvr(key) { return OVR[key] || ""; }
 // state.completedStops; the legacy global is no longer read or written.
 let completedStopsRaw = "";
 try {
-    const stRaw = readFile("Tasker/Tesla/Data/TDS_Trip_State.json") || "";
+    const stRaw = readFile(DATA_ROOT + "TDS_Trip_State.json") || "";
     if (stRaw) {
         const parsedState = JSON.parse(stRaw);
         const stopMap = parsedState.completedStops || {};
@@ -34,7 +40,7 @@ try {
 // E1 (RULE-8C): preferences are read directly from the PREFS file —
 // Route_Defaults lives in TDS_Routine_Preferences.json, not OVR.
 let prefsRaw = "";
-try { prefsRaw = readFile("Tasker/Tesla/Data/TDS_Routine_Preferences.json") || "{}"; } catch(e) {}
+try { prefsRaw = readFile(DATA_ROOT + "TDS_Routine_Preferences.json") || "{}"; } catch(e) {}
 let PREFS = {};
 try { PREFS = JSON.parse(prefsRaw); } catch(e) {}
 function getPrefs(key) { return PREFS[key] || ""; }
@@ -164,14 +170,14 @@ function readJson(path) {
     try { return JSON.parse(raw); } catch(e) { return null; }
 }
 function pathFor(g, kind) {
-    return "Tasker/Tesla/Data/" + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
+    return DATA_ROOT + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
 }
 
 // Phase 3 PR-E: Local copy of readActiveGeneration. The canonical
 // implementation lives in TDS_Helper.js. Kept local because Tasker
 // scripts are standalone and cannot call functions from other scripts.
 function readActiveGeneration(kind) {
-    let m = readJson("Tasker/Tesla/Data/TDS_Run_Manifest.json");
+    let m = readJson(DATA_ROOT + "TDS_Run_Manifest.json");
     let key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
     if (m && m.state === "committed" && m.activeGeneration) {
         let data = readJson(m[key] || pathFor(m.activeGeneration, kind));
@@ -182,11 +188,11 @@ function readActiveGeneration(kind) {
         if (prev !== null) return prev;
     }
     if (kind === "events" || kind === "master") {
-        let legacy = readJson("Tasker/Tesla/Data/TDS_Master.json");
+        let legacy = readJson(DATA_ROOT + "TDS_Master.json");
         if (legacy !== null) return legacy;
     }
     if (kind === "itinerary") {
-        let legacyItin = readJson("Tasker/Tesla/Data/Itin_Master.json");
+        let legacyItin = readJson(DATA_ROOT + "Itin_Master.json");
         if (legacyItin !== null) return legacyItin;
     }
     return [];
@@ -259,7 +265,7 @@ function utcDayBoundaryUnix(unixSec) {
 function getBase(targetTimeSecs) {
     let baseCoords = global('Home_Coords') || "0,0"; 
     let baseName = "Home"; 
-    let baseData = readFile("Tasker/Tesla/Data/TDS_Base_Geocodes.txt") || "none";
+    let baseData = readFile(DATA_ROOT + "TDS_Base_Geocodes.txt") || "none";
     
     if (baseData !== "none" && baseData.length > 3) {
         let bases = baseData.split("|");
@@ -332,7 +338,7 @@ function snapCoords(rawCoords, masterArray, targetCoordsToIgnore) {
         if (getDist(rLat, rLon, hLat, hLon) <= 75) return { coords: homeRaw.trim(), snapped: true };
     }
 
-    let baseGeos = readFile("Tasker/Tesla/Data/TDS_Base_Geocodes.txt") || "";
+    let baseGeos = readFile(DATA_ROOT + "TDS_Base_Geocodes.txt") || "";
     if (baseGeos.indexOf("%") === -1 && baseGeos.length > 5) {
         let bRows = baseGeos.split("|");
         for (let b = 0; b < bRows.length; b++) {
@@ -487,7 +493,7 @@ try {
                     }
                 }
 
-                let baseData = readFile("Tasker/Tesla/Data/TDS_Base_Geocodes.txt") || "";
+                let baseData = readFile(DATA_ROOT + "TDS_Base_Geocodes.txt") || "";
                 if (!isAtHome && !isAtAdHocBase && baseData.indexOf("%") !== 0 && baseData.length > 3) {
                     let bases = baseData.split("|");
                     for (let b = 0; b < bases.length; b++) {
@@ -555,7 +561,7 @@ try {
                     // manualReturnCompleted records the success signal.
                     let activeManualTrips = [];
                     try {
-                        const stRaw = readFile("Tasker/Tesla/Data/TDS_Trip_State.json") || "";
+                        const stRaw = readFile(DATA_ROOT + "TDS_Trip_State.json") || "";
                         if (stRaw) {
                             const st = JSON.parse(stRaw);
                             const trips = st.trips || {};
@@ -648,7 +654,7 @@ try {
                         if (targetId && !currentlyAtBase && !prevAtBase) {
                             let departureRecordedToday = false;
                             try {
-                                const stRaw = readFile("Tasker/Tesla/Data/TDS_Trip_State.json") || "";
+                                const stRaw = readFile(DATA_ROOT + "TDS_Trip_State.json") || "";
                                 if (stRaw) {
                                     const st = JSON.parse(stRaw);
                                     const trip = (st.trips || {})[targetId];
@@ -852,7 +858,7 @@ try {
         // threshold) win the first getCachedTime pass; the tod/dayClass master
         // pass and the no-recency fallback keep the legacy semantics.
         let ramTier = [];
-        let tempJson = sbReadCacheJson("Tasker/Tesla/Data/Temp_Route_Cache.json", "temp");
+        let tempJson = sbReadCacheJson(DATA_ROOT + "Temp_Route_Cache.json", "temp");
         if (tempJson) {
             let tKeys = Object.keys(tempJson);
             for (let r = 0; r < tKeys.length; r++) {
@@ -866,7 +872,7 @@ try {
         // Master tier (Welford cache): mean/bucket/dayClass map 1:1 from the
         // JSON entry (bucket null -> legacy tod -999 sentinel for WALK).
         let ssdTier = [];
-        let routeJson = sbReadCacheJson("Tasker/Tesla/Data/TDS_Route_Cache.json", "route");
+        let routeJson = sbReadCacheJson(DATA_ROOT + "TDS_Route_Cache.json", "route");
         if (routeJson) {
             let rKeys = Object.keys(routeJson);
             for (let s = 0; s < rKeys.length; s++) {

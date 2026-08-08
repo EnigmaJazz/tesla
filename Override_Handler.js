@@ -1,3 +1,9 @@
+// TESLA_CONFIG.json (gitignored) overrides device setup; see TESLA_CONFIG.example.json.
+// The anchor path Tasker/Tesla/ is the Tasker install root.
+var TESLA_CFG = {};
+try { TESLA_CFG = JSON.parse(readFile("Tasker/Tesla/TESLA_CONFIG.json") || "{}"); } catch (e) { TESLA_CFG = {}; }
+var DATA_ROOT = (TESLA_CFG && typeof TESLA_CFG.dataRoot === "string" && TESLA_CFG.dataRoot) || "Tasker/Tesla/Data/";
+
 // ==========================================
 // TDS OVERRIDE HANDLER — Slice B shell.
 // Sole writer for TDS_Overrides.json and
@@ -26,8 +32,8 @@
 // in harness/test_single_writer.js.
 // ==========================================
 
-var OVR_FILE = "Tasker/Tesla/Data/TDS_Overrides.json";
-var PREFS_FILE = "Tasker/Tesla/Data/TDS_Routine_Preferences.json";
+var OVR_FILE = DATA_ROOT + "TDS_Overrides.json";
+var PREFS_FILE = DATA_ROOT + "TDS_Routine_Preferences.json";
 var HANDLER_WRITER = "Override Handler";
 var OVR_SCHEMA_VERSION = 2;
 var PREFS_SCHEMA_VERSION = 2;

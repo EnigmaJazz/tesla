@@ -8,3 +8,6 @@ codegraph.codegraph.db-wal
 # Working files for the SDD propose phase; the canonical spec lives in
 # openspec/specs/ and the delta lives in openspec/changes/<change>/specs/.
 _spec_source.md
+
+# Per-device setup constants (committed template: TESLA_CONFIG.example.json)
+Tasker/Tesla/TESLA_CONFIG.json
