@@ -36,8 +36,10 @@ function utcDayBoundaryUnix(unixSec) {
 // (mirrors the FU1 Sandbox stageReducerCommand / end-of-pass flush).
 let observedReducerCommands = [];
 // Byte-exact copy of TDS_State_Command.js STATE_CMD_GEN_REGEX: the fallback
-// "gen:0:0000" must never reach the envelope pre-check (REQ-6F2-2).
-const STATE_CMD_GEN_REGEX = /^gen:\d{10}:[0-9a-f]{4}$/;
+// "gen:0:0000" must never reach the envelope pre-check (REQ-6F2-2). Copied
+// constants use var (not const/let) because the shared harness vm context
+// rejects const/let re-declaration (TDS_State_Command.js:24-25 precedent).
+var STATE_CMD_GEN_REGEX = /^gen:\d{10}:[0-9a-f]{4}$/;
 
 // Phase 2 hand-off: the Finaliser no longer writes the live TDS_Master.json.
 // It stages a complete generation candidate and delegates the commit to the
