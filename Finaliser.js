@@ -30,6 +30,15 @@ function utcDayBoundaryUnix(unixSec) {
     return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000;
 }
 
+// REQ-6F2-1/2: the serial Tasker model delivers only the LAST staged
+// par1/par2 per pass, so reducer observations accumulate here and the
+// Generation_Publisher merges them into the post-publish REDUCER_BATCH
+// (mirrors the FU1 Sandbox stageReducerCommand / end-of-pass flush).
+let observedReducerCommands = [];
+// Byte-exact copy of TDS_State_Command.js STATE_CMD_GEN_REGEX: the fallback
+// "gen:0:0000" must never reach the envelope pre-check (REQ-6F2-2).
+const STATE_CMD_GEN_REGEX = /^gen:\d{10}:[0-9a-f]{4}$/;
+
 // Phase 2 hand-off: the Finaliser no longer writes the live TDS_Master.json.
 // It stages a complete generation candidate and delegates the commit to the
 // Generation_Publisher. In Tasker the next action reads local('par1') and
@@ -43,14 +52,21 @@ function publishCandidate(candidate) {
     return null;
 }
 
-// Phase 3 PR-B: stage an OBSERVE_ARRIVAL reducer command. The Trip State
-// Reducer is the sole writer of TDS_Trip_State.json; arrival observations
-// now flow through it. In Tasker the next action reads local('par1') and
-// runs the reducer; in the test harness a sandbox.reducer callback is
-// available, so use it when present.
+// Phase 3 PR-B / REQ-6F2-1: stage an OBSERVE_ARRIVAL reducer command. The Trip
+// State Reducer is the sole writer of TDS_Trip_State.json; arrival
+// observations now flow through it. Serial model: the pass accumulates into
+// observedReducerCommands (published as one REDUCER_BATCH by the Generation
+// Publisher); a reducer shim (test harness) is shim-delivered synchronously.
+// An observation whose generationId fails the envelope pre-check is
+// flush-skipped and logged, never staged (REQ-6F2-2, SCN-6F2-3).
 function observeArrival(payload) {
-    setLocal('par1', 'OBSERVE_ARRIVAL');
-    setLocal('par2', JSON.stringify(payload));
+    if (!STATE_CMD_GEN_REGEX.test(payload.generationId)) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: payload.generationId || null,
+            component: "Finaliser", severity: "warn", code: "OBS_BATCH_FLUSH_SKIPPED", tripId: payload.tripId || null,
+            details: { command: "OBSERVE_ARRIVAL", reason: "invalid generationId" } }));
+        return null;
+    }
+    observedReducerCommands.push({ command: "OBSERVE_ARRIVAL", payload: payload });
     if (typeof reducer === 'function') {
         return reducer('OBSERVE_ARRIVAL', payload);
     }
@@ -136,23 +152,31 @@ try {
                 if (ev.isDropin || nowSec > ev.end) {
                     if (completed.indexOf(ev.id) === -1) {
                         completed.push(ev.id);
-                        // Phase 3 PR-C: stage COMPLETE_DROPIN for the Trip State Reducer.
-                        // The legacy Completed_Dropins OVR write below remains as a
-                        // read-side shim for components that have not yet been migrated
-                        // to state.completedDropins.
-                        setLocal("par1", "COMPLETE_DROPIN");
-                        setLocal("par2", JSON.stringify({
+                        // Phase 3 PR-C / REQ-6F2-1: stage COMPLETE_DROPIN for the Trip
+                        // State Reducer through the observation accumulator — the serial
+                        // last-wins par1/par2 would clobber the first observation. The
+                        // completion record lands in reducer state
+                        // (state.completedDropins); an invalid generationId is
+                        // flush-skipped and logged, never staged (REQ-6F2-2, SCN-6F2-3).
+                        const dropinPayload = {
                             generationId: global("TDS_Active_Generation") || "gen:0:0000",
                             dropinId: ev.id,
                             tripId: ev.id,
                             at: nowSec
-                        }));
-                        if (typeof reducer === "function") {
-                            let r = reducer("COMPLETE_DROPIN", JSON.parse(local("par2")));
-                            if (typeof r === "string" && r.indexOf("OK") !== 0) {
-                                flash(JSON.stringify({ timestamp: nowSec, generationId: global('TDS_Active_Generation') || null,
-                                    component: "Finaliser", severity: "ERROR", code: "COMPLETE_DROPIN_REJECTED", tripId: ev.id, details: { reason: r } }));
+                        };
+                        if (STATE_CMD_GEN_REGEX.test(dropinPayload.generationId)) {
+                            observedReducerCommands.push({ command: "COMPLETE_DROPIN", payload: dropinPayload });
+                            if (typeof reducer === "function") {
+                                let r = reducer("COMPLETE_DROPIN", dropinPayload);
+                                if (typeof r === "string" && r.indexOf("OK") !== 0) {
+                                    flash(JSON.stringify({ timestamp: nowSec, generationId: dropinPayload.generationId,
+                                        component: "Finaliser", severity: "ERROR", code: "COMPLETE_DROPIN_REJECTED", tripId: ev.id, details: { reason: r } }));
+                                }
                             }
+                        } else {
+                            flash(JSON.stringify({ timestamp: nowSec, generationId: dropinPayload.generationId,
+                                component: "Finaliser", severity: "warn", code: "OBS_BATCH_FLUSH_SKIPPED", tripId: ev.id,
+                                details: { command: "COMPLETE_DROPIN", reason: "invalid generationId" } }));
                         }
                     }
                 }
@@ -178,6 +202,16 @@ try {
     }
     
     validEvents = survivingEvents;
+
+    // REQ-6F2-1/2: stage the pass's valid observations into the dedicated
+    // accumulator local (mirrors the tds_release_par1/par2 release-staging
+    // precedent) for the Generation Publisher serial branch to merge into the
+    // post-publish REDUCER_BATCH. publishCandidate below never touches these
+    // locals, so par1 stays the publish candidate (primary-last).
+    if (observedReducerCommands.length > 0) {
+        setLocal('tds_obs_batch_par1', 'OBSERVATION_BATCH');
+        setLocal('tds_obs_batch_par2', JSON.stringify(observedReducerCommands));
+    }
 
     let nextGeoCoords = "NONE";
     let nextGeoTitle  = "NONE";
