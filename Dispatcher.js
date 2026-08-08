@@ -3,6 +3,9 @@
 var TESLA_CFG = {};
 try { TESLA_CFG = JSON.parse(readFile("Tasker/Tesla/TESLA_CONFIG.json") || "{}"); } catch (e) { TESLA_CFG = {}; }
 var DATA_ROOT = (TESLA_CFG && typeof TESLA_CFG.dataRoot === "string" && TESLA_CFG.dataRoot) || "Tasker/Tesla/Data/";
+// Normalize: a dataRoot without a trailing slash would silently concatenate into
+// invalid paths (R4-WARNING on the extraction refactor).
+if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
 
 // ==========================================
 // UNIFIED PRE-FLIGHT DISPATCHER V15.1
