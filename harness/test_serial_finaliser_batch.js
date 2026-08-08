@@ -275,8 +275,10 @@ section('invalid-generation-flush-skips-observation', function () {
 
   // Nothing staged: no accumulator locals, and the publisher falls back to
   // the plain reconcile — no envelope reaches TDS_State_Command for the obs.
-  assert.strictEqual(store.locals['tds_obs_batch_par1'], '',
+  assert(!store.locals['tds_obs_batch_par1'],
     'flush-skipped pass must not stage the observation batch');
+  assert(!store.locals['tds_obs_batch_par2'],
+    'flush-skipped pass must not stage observation payloads');
   runPublisher(sandbox, store);
   const genId = activeGeneration(store);
   assert.strictEqual(store.locals.par1, 'RECONCILE_GENERATION',
@@ -322,7 +324,8 @@ section('burst-over-cap-keeps-first-31-and-logs-truncation', function () {
   // The capped envelope must still be accepted and fully applied.
   const rv = sandbox.stateCommand('REDUCER_BATCH', envelope);
   assert.strictEqual(rv, 'OK', 'capped REDUCER_BATCH must be accepted: ' + rv);
-  const delivered = logs.find(function (l) { return l.code === 'REDUCER_BATCH_DELIVERED'; });
+  const postLogs = parseLog(store);
+  const delivered = postLogs.find(function (l) { return l.code === 'REDUCER_BATCH_DELIVERED'; });
   assert(delivered, 'reducer must log REDUCER_BATCH_DELIVERED for the capped batch');
   assert.strictEqual(delivered.details.count, 32, 'delivery count must match the envelope');
   assert.strictEqual(delivered.details.applied, 32, 'every capped sub-command must apply');
