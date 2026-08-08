@@ -8,6 +8,13 @@ const ID_COLLISION_RETRY_MAX = 16;
 const MANIFEST_SCHEMA_VERSION = 1;
 const MANIFEST_WRITER = "Generation Publisher";
 const GENERATION_ID_REGEX = /^gen:\d{10}:[0-9a-f]{4}$/;
+// REQ-6F2-3: effective observation cap for the merged serial REDUCER_BATCH —
+// one of the router's MAX_REDUCER_BATCH_SIZE=32 total slots is reserved for
+// the leading RECONCILE_GENERATION entry, so at most 31 observations merge
+// (excess is dropped with a structured log, never all-or-nothing). Copied
+// constants use var (not const/let) because the shared harness vm context
+// rejects const/let re-declaration against the reducer/router copies.
+var MAX_REDUCER_BATCH_SIZE = 31;
 const REORDER_COMMAND_TYPE = "APPLY_CLUSTER_REORDER";
 // Trusted reorder producers (REQ-4REORDER-2): legacy-null generationId is
 // permitted only from a known producer; unknown/empty sources are rejected.
@@ -216,10 +223,48 @@ function publish(candidate) {
       } catch (reconcileErr) {
         logEvent("warn", "RECONCILE_GENERATION", null, { reason: reconcileErr.message, generation: genId });
       }
+      // Shim mode already shim-delivered the Finaliser's observations during
+      // the pass; consume the staged accumulator so it never merges later
+      // (merging now would double-apply the shim-delivered observations).
+      setLocal("tds_obs_batch_par1", "");
+      setLocal("tds_obs_batch_par2", "");
     } else {
       // Real Tasker: stage the command for the next action to run the reducer.
-      setLocal("par1", "RECONCILE_GENERATION");
-      setLocal("par2", JSON.stringify({ generationId: genId, activeGeneration: genId, manifestSchemaVersion: 2 }));
+      // REQ-6F2-3: merge the Finaliser's staged observations into one
+      // REDUCER_BATCH — [RECONCILE_GENERATION, ...obs] — re-stamping each
+      // observation's generationId to the freshly minted genId, capped so the
+      // total never exceeds the router's MAX_REDUCER_BATCH_SIZE=32.
+      let obsList = [];
+      const obsRaw = local("tds_obs_batch_par2");
+      if (obsRaw) {
+        try { obsList = JSON.parse(obsRaw); } catch (e) { obsList = []; }
+      }
+      if (!Array.isArray(obsList)) obsList = [];
+      if (obsList.length > 0) {
+        for (let i = 0; i < obsList.length; i++) {
+          const entry = obsList[i];
+          if (entry && entry.payload && typeof entry.payload === "object") {
+            entry.payload.generationId = genId;
+          }
+        }
+        if (obsList.length > MAX_REDUCER_BATCH_SIZE) {
+          const dropped = obsList.length - MAX_REDUCER_BATCH_SIZE;
+          obsList = obsList.slice(0, MAX_REDUCER_BATCH_SIZE);
+          logEvent("warn", "OBS_BATCH_TRUNCATED", genId, { dropped: dropped });
+        }
+        const commands = [{ command: "RECONCILE_GENERATION", payload: { generationId: genId, activeGeneration: genId, manifestSchemaVersion: 2 } }].concat(obsList);
+        setLocal("par1", "REDUCER_BATCH");
+        setLocal("par2", JSON.stringify({ generationId: genId, commands: commands }));
+        logEvent("info", "OBS_BATCH_MERGED", genId, { count: obsList.length });
+      } else {
+        // No-observation parity: plain RECONCILE_GENERATION byte-identical to
+        // the pre-change serial staging (SCN-6F2-5).
+        setLocal("par1", "RECONCILE_GENERATION");
+        setLocal("par2", JSON.stringify({ generationId: genId, activeGeneration: genId, manifestSchemaVersion: 2 }));
+      }
+      // Consume the accumulator locals in both serial paths.
+      setLocal("tds_obs_batch_par1", "");
+      setLocal("tds_obs_batch_par2", "");
     }
     prune();
     return genId;
