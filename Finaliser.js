@@ -34,7 +34,8 @@ function utcDayBoundaryUnix(unixSec) {
 // par1/par2 per pass, so reducer observations accumulate here and the
 // Generation_Publisher merges them into the post-publish REDUCER_BATCH
 // (mirrors the FU1 Sandbox stageReducerCommand / end-of-pass flush).
-let observedReducerCommands = [];
+// var (not let) per the shared harness vm context convention below.
+var observedReducerCommands = [];
 // Byte-exact copy of TDS_State_Command.js STATE_CMD_GEN_REGEX: the fallback
 // "gen:0:0000" must never reach the envelope pre-check (REQ-6F2-2). Copied
 // constants use var (not const/let) because the shared harness vm context
