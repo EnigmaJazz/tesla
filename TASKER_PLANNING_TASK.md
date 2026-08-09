@@ -106,6 +106,12 @@ then `%cluster_idx += 1` and run Cluster_Builder.js again.
       ordered ids (Route_Cache_Manager.js:478).
    7. **JSlet: TDS_State_Command.js** — appends `ENQUEUE_REORDER` to
       `TDS_Reorder_Commands.json` (`REORDER_COMMAND_ENQUEUED`).
+   8. **Consume the request** **[device]**: Variable Set `%par1 =
+      %tds_consume_par1`, `%par2 = %tds_consume_par2` (both staged by the
+      parser as `REQUEST_STATE_CONSUME`), then **JSlet: Route_Cache_Manager.js**
+      — the request state entry is removed so a replayed callback is stale.
+      (Route_Cache_Manager handles ONE command per invocation; the consume
+      rides dedicated locals and needs its own action.)
    **Else** (`%cluster_bypass = true`): the Gatekeeper already staged
    `ENQUEUE_REORDER` — run **JSlet: TDS_State_Command.js** to enqueue it.
    **End If**
@@ -135,8 +141,9 @@ simulated.
 5. **JSlet: TDS_State_Command.js** → **JSlet: Trip_State_Reducer.js** — deliver
    the post-publish batch (reconcile + observations).
 
-> Note: the Finaliser's publish candidate carries the itinerary from the legacy
-> `Itin_Master.json` (Finaliser.js:266) — a known gap, see §6.
+> Note: the Finaliser's publish candidate carries the ACTIVE generation's
+> itinerary (manifest-discovered via `readActiveGeneration("itinerary")`,
+> legacy fallback only while migration is in flight — see §6.1).
 
 ### Step D — Block loop (Sandbox simulation)
 
@@ -191,15 +198,20 @@ For `%r = 1` to `%tds_row_count` **[device]**: extract row `%r` from
        body `%api_request_body`; response → `%http_response`.
     4. **Write File**: `Tasker/Tesla/Data/temp_payload.json`, content
        `{"correlation":%api_correlation,"response":%http_response}`. **[device]**
-    5. **JSlet: API_Parser.js** — validates correlation exactly (stale →
-       `STALE_API_RESPONSE_DISCARDED`, zero mutation); extracts
-       duration/distance/transit steps; stages `%api_return_json`;
-       `%par1` = `SESSION_CACHE_UPSERT` (or `ORDER_CACHE_UPSERT` for clusters),
-       `%par2` = payload; stages `%tds_consume_par1/2` = `REQUEST_STATE_CONSUME`.
-    6. **JSlet: Route_Cache_Manager.js** — applies the upsert (Welford rollup
-       into the master cache) then the consume.
-    **Else** (cache hit): skip the HTTP chain.
-    **End If**
+     5. **JSlet: API_Parser.js** — validates correlation exactly (stale →
+        `STALE_API_RESPONSE_DISCARDED`, zero mutation); extracts
+        duration/distance/transit steps; stages `%api_return_json`;
+        `%par1` = `SESSION_CACHE_UPSERT` (or `ORDER_CACHE_UPSERT` for clusters),
+        `%par2` = payload; stages `%tds_consume_par1/2` = `REQUEST_STATE_CONSUME`.
+     6. **JSlet: Route_Cache_Manager.js** — applies the upsert (session sample;
+        the master Welford rollup runs via `ROLLUP_DUE_TEMP`, step 15b).
+     7. **Consume the request** **[device]**: Variable Set `%par1 =
+        %tds_consume_par1`, `%par2 = %tds_consume_par2`, then **JSlet:
+        Route_Cache_Manager.js** — removes the request-state entry so a
+        replayed callback is stale. (One RCM command per invocation; the
+        consume rides the dedicated locals and needs its own action.)
+     **Else** (cache hit): skip the HTTP chain.
+     **End If**
 11. **Parse `%api_return_json`** — micro-JSlet **[device]**:
     ```js
     var j = JSON.parse(local('api_return_json'));
@@ -225,10 +237,16 @@ For `%r = 1` to `%tds_row_count` **[device]**: extract row `%r` from
     - `%cal_title_out` / `%cal_start_out` / `%cal_end_out` (this leg's
       emoji+destination title, leave ms, arrival ms);
     - `%depart_changed`, `%depart_diff_mins`, `%api_conflict`, `%live_late_mins`.
-14. **JSlet: Generation_Publisher.js** — publishes `%par1` (mints genId, writes
+
+    **HOLD branch**: an attached-dropin row stages `%cal_title_out = HOLD` and
+    `%par1 = HOLD`-path locals with NO candidate — the leg is appended to
+    `Pending_Compiler.json` and compiles when the chain head arrives. On HOLD,
+    SKIP steps 14–15 (no publisher, no router); continue to step 16.
+14. **JSlet: Generation_Publisher.js** — ONLY when `%par1` is the candidate
+    JSON (starts with `{`): publishes `%par1` (mints genId, writes
     per-generation files + manifest, sets `%TDS_Active_Generation`, stages the
-    reconcile batch). This per-leg publication is what accumulates the full-day
-    itinerary.
+    reconcile batch). This per-chain publication is what accumulates the
+    full-day itinerary.
 15. **JSlet: TDS_State_Command.js** → **JSlet: Trip_State_Reducer.js** —
     deliver the post-publish batch.
 15b. **Rollup (recommended per block)**: `%par1 = ROLLUP_DUE_TEMP`,
