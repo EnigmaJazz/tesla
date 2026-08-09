@@ -81,15 +81,17 @@ try {
   // Group consecutive dropins
   // ------------------------------------------------------------------
 
-  let groups = []; // each group = { waypoints: [...], skippedIds: [...], nextNonDropin: event|null }
+  let groups = []; // each group = { waypoints, skippedIds, prevNonDropin, nextNonDropin }
 
-  let currentGroup = null; // { waypoints: [], skippedIds: [] }
+  let currentGroup = null; // { waypoints: [], skippedIds: [], prevNonDropin: null }
+  let lastAnchor = null;   // preceding non-dropin event (the group's origin anchor)
 
   function flushGroup() {
     if (currentGroup) {
       groups.push({
         waypoints: currentGroup.waypoints,
         skippedIds: currentGroup.skippedIds,
+        prevNonDropin: currentGroup.prevNonDropin,
         nextNonDropin: currentGroup.nextNonDropin
       });
     }
@@ -100,7 +102,7 @@ try {
     let ev = events[i];
     if (isDropin(ev)) {
       if (!currentGroup) {
-        currentGroup = { waypoints: [], skippedIds: [], nextNonDropin: null };
+        currentGroup = { waypoints: [], skippedIds: [], prevNonDropin: lastAnchor, nextNonDropin: null };
       }
       // Only include waypoints with usable coords
       if (ev.coords && ev.coords !== UNUSABLE_COORDS) {
@@ -115,6 +117,7 @@ try {
         currentGroup.skippedIds.push(ev.id);
       }
     } else {
+      lastAnchor = ev;
       if (currentGroup) {
         currentGroup.nextNonDropin = ev;
         flushGroup();
@@ -162,6 +165,18 @@ try {
       continue;
     }
 
+    // Explicit origin (judgment-day A1): the preceding non-dropin anchor, or
+    // the base for the head group — never the live location. The cluster API
+    // optimizes the waypoint order from this origin.
+    const originCoords = group.prevNonDropin ? group.prevNonDropin.coords : baseCoords;
+    if (!originCoords || originCoords === UNUSABLE_COORDS) {
+      flashLog("WARN", "CLUSTER_SKIPPED", {
+        index: clusterLogIndex,
+        reason: "no_origin_coords"
+      });
+      continue;
+    }
+
     // Per-event waypoint skips (dropins with unusable coords)
     if (group.skippedIds.length > 0) {
       for (let s = 0; s < group.skippedIds.length; s++) {
@@ -183,6 +198,7 @@ try {
     }
 
     clusters.push({
+      origin: originCoords,
       destination: { id: destId, coords: destCoords },
       waypoints: group.waypoints
     });

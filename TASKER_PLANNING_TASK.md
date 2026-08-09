@@ -76,6 +76,13 @@ For each group of consecutive dropin events (events flagged dropin via
    index is exhausted). Dropins with `"0,0"` coords are skipped and logged
    (`CLUSTER_SKIPPED`).
 
+   Cluster shape: `{origin, destination: {id, coords}, waypoints: [{id, coords,
+   dropinOrder?}]}` — `origin` is the PRECEDING non-dropin anchor's coords
+   (or the base coords for a head group with no preceding event), so the
+   optimizer orders the waypoints from where the traveller actually is.
+   Gatekeeper/API_JSON_Build/API_Parser all resolve `cluster.origin` and fall
+   back to `%User_Loc` only for legacy clusters that carry no origin.
+
 Loop: Variable Set `%cluster_idx = 1` → run Cluster_Builder.js → while
 `%cluster_eof = false`: run the chain below with `%par1` = the staged cluster,
 then `%cluster_idx += 1` and run Cluster_Builder.js again.
@@ -119,12 +126,9 @@ then `%cluster_idx += 1` and run Cluster_Builder.js again.
 > The order cache means repeat dropin patterns skip the HTTP call entirely:
 > the Gatekeeper order-cache hit re-stages the learned order (`cluster_bypass`).
 > A `#dropin` day with a known pattern costs zero API calls for ordering.
->
-> Known limitation (judgment-day suspect A1): the cluster contract has no
-> explicit origin — Gatekeeper and API_JSON_Build resolve it from the live
-> `%User_Loc`. For a mid-day dropin group the true origin is the preceding
-> anchor; live-location origin is accepted for now and tracked for a future
-> contract extension (origin in the cluster + order-cache key).
+> The order-cache key is `origin|destination.id|wpIdStr` — origin is the
+> cluster's explicit origin (preceding anchor / base), so the learned order
+> matches the actual departure point, not the live location.
 
 ### Step C — Publish events into the committed master (bootstrap)
 

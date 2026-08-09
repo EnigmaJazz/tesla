@@ -199,8 +199,12 @@ try {
         
         let timeEligible = false;
         if (ev.isDropin) {
+            // Bounded both sides (AGENTS.md: no unbounded time conditions):
+            // a dropin starting today is eligible; otherwise only within
+            // [start - lead, end + grace] — a future dropin stays ineligible
+            // until its window opens.
             if (isSameUTCDay(ev.start, nowSec)) timeEligible = true;
-            else if (nowSec <= (ev.end + ELIGIBILITY_GRACE_SECS)) timeEligible = true;
+            else if (nowSec >= (ev.start - DEPARTURE_LEAD_SECS) && nowSec <= (ev.end + ELIGIBILITY_GRACE_SECS)) timeEligible = true;
         } else {
             timeEligible = (nowSec >= (ev.start - DEPARTURE_LEAD_SECS) && nowSec <= (ev.end + ELIGIBILITY_GRACE_SECS));
         }

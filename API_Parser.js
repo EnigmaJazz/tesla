@@ -26,6 +26,11 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
             component: "API_Parser", severity: severity, code: code, tripId: null, details: details || {} }));
     }
 
+    // Named constants (AGENTS.md: no magic numbers). METERS_PER_MILE matches
+    // Gatekeeper.js — 1609.344, not 1609.34.
+    const METERS_PER_MILE = 1609.344;
+    const MAX_DISTANCE_METERS = 5000000;
+
     // Request state is manager-owned (documented read-only schema); the parser
     // only reads it for exact correlation and never writes it.
     function readLatestByCluster() {
@@ -34,7 +39,11 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
         try {
             let st = JSON.parse(rawState);
             if (st && st.schemaVersion === 1 && st.latestByCluster) return st.latestByCluster;
-        } catch (e) {}
+        } catch (e) {
+            flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                component: "API_Parser", severity: "warn", code: "REQUEST_STATE_READ_FAILED", tripId: null,
+                details: { reason: String(e && e.message || e) } }));
+        }
         return null;
     }
 
@@ -114,7 +123,7 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
         if (local('api_route_mode') === "CLUSTER") {
             let clusterRaw = local('api_cluster_json') || local('par1');
             let cluster = JSON.parse(clusterRaw);
-            let uLoc = global('User_Loc') || "0,0";
+            let uLoc = (cluster.origin) || global('User_Loc') || "0,0";
             let wpIdStr = cluster.waypoints.map(function(w){ return w.id; }).join(",");
 
             let orderedIds = [];
@@ -149,7 +158,7 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
             let route = res.routes[0];
             let leg = (route.legs && route.legs.length > 0) ? route.legs[0] : {};
 
-            let rawDurStr = String(route.duration || leg.staticDuration || "0s");
+            let rawDurStr = String(route.duration || leg.staticDuration || "");
             dur = parseInt(rawDurStr.replace('s', ''), 10); 
             distM = parseInt(route.distanceMeters || leg.distanceMeters || 0, 10);
             
@@ -172,15 +181,24 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
             }
         }
         
-        if (isNaN(dur) || dur < 0 || isNaN(distM) || distM < 0 || distM > 5000000) {
-            flash("⚠️ API Parser Fault: Invalid metrics.");
-            let mockFallback = JSON.stringify({ durationSecs: 0, distanceMeters: 0, distanceMiles: "0", transitSteps: "" });
-            setLocal('api_return_json', mockFallback);
+        if (isNaN(dur) || dur <= 0 || isNaN(distM) || distM <= 0 || distM > MAX_DISTANCE_METERS) {
+            // Hard rule: a duration that cannot be established is NEVER
+            // fabricated as a plausible zero. Reject the metrics, stage an
+            // empty api_return_json (Tasker's parse then yields no
+            // api_duration_secs and the Compiler falls back to sandbox
+            // metrics with DEPARTURE_POLICY_FALLBACK_USED), and stage no
+            // cache command.
+            flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                component: "API_Parser", severity: "warn", code: "API_METRICS_INVALID", tripId: null,
+                details: { durationSecs: dur, distanceMeters: distM, reason: "nonpositive_or_out_of_range" } }));
+            setLocal('api_return_json', '{}');
+            setLocal('par1', '');
+            setLocal('par2', '');
             writeFile(DATA_ROOT + "temp_payload.json", "{}", false);
-            return; 
+            return;
         }
 
-        let resultObj = { durationSecs: dur, distanceMeters: distM, distanceMiles: (distM / 1609.34).toFixed(1), transitSteps: stepsStr.length > 0 ? ("\n" + stepsStr) : "" };
+        let resultObj = { durationSecs: dur, distanceMeters: distM, distanceMiles: (distM / METERS_PER_MILE).toFixed(1), transitSteps: stepsStr.length > 0 ? ("\n" + stepsStr) : "" };
         setLocal('api_return_json', JSON.stringify(resultObj));
         
         let nowSec = Math.floor(Date.now() / 1000);
@@ -201,9 +219,16 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
         writeFile(DATA_ROOT + "temp_payload.json", "{}", false);
 
     } catch(e) {
-        flash("API Result Parser Exception. \n" + e.message);
-        let mockFallback = JSON.stringify({ durationSecs: 0, distanceMeters: 0, distanceMiles: "0", transitSteps: "" });
-        setLocal('api_return_json', mockFallback);
+        // Structured rejection — never a fabricated zero-duration result
+        // (hard rule: ZERO_DURATION is never an acceptable fallback). An
+        // empty api_return_json makes the Compiler fall back to sandbox
+        // metrics; no cache command is staged.
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "API_Parser", severity: "error", code: "API_PARSER_FAULT", tripId: null,
+            details: { message: String(e && e.message || e) } }));
+        setLocal('api_return_json', '{}');
+        setLocal('par1', '');
+        setLocal('par2', '');
         try { writeFile(DATA_ROOT + "temp_payload.json", "{}", false); } catch(err){}
         return; 
     }

@@ -251,6 +251,7 @@ step('cluster-chain-identifies-dropin-order', function () {
     assert(clusterRaw && clusterRaw.indexOf('{') === 0, 'builder must stage a cluster');
     const cluster = JSON.parse(clusterRaw);
     assert(cluster.waypoints.length === 2, 'cluster must carry both dropins');
+    assert(cluster.origin === homeCoords, 'head-group cluster origin must be the base coords (dropins precede any main event)');
 
     S = action(S, GATEKEEPER, 'Gatekeeper-cluster');
     if (S.sandbox.local('cluster_bypass') === 'true') {

@@ -62,6 +62,7 @@ try {
   assert.strictEqual(store.locals['cluster_eof'], 'false', 'idx 1 of 1 must not be eof');
   const c = parsedCluster(store);
   assert(c, 'par1 must be a cluster');
+  assert.strictEqual(c.origin, aCoords, 'origin must be the preceding anchor (main A)');
   assert.strictEqual(c.destination.id, 'main_b_lx8g01', 'destination must be the next main event');
   assert.strictEqual(c.destination.coords, bCoords, 'destination coords must come from the next main event');
   assert.strictEqual(c.waypoints.length, 2, 'both dropins must be waypoints');
@@ -86,6 +87,7 @@ try {
 try {
   const store = make([mainA, dropin1, dropin2]);
   const c = parsedCluster(store);
+  assert.strictEqual(c.origin, aCoords, 'tail-group origin must be the preceding anchor (main A)');
   assert.strictEqual(c.destination.id, 'BASE', 'tail destination id must be BASE');
   assert.strictEqual(c.destination.coords, homeCoords, 'tail destination coords from raw_base_data field 2');
   assert.strictEqual(c.waypoints.length, 2, 'tail dropins are waypoints');
@@ -104,10 +106,12 @@ try {
   const store = make([dropin1, mainA, dropin2, mainB]);
   assert.strictEqual(store.locals['cluster_count'], '2', 'two groups must count 2');
   const c1 = parsedCluster(store);
+  assert.strictEqual(c1.origin, homeCoords, 'head-group origin must be the base coords (no preceding anchor)');
   assert.strictEqual(c1.destination.id, 'main_a_kx8f00', 'first cluster destination is main A');
 
   const store2 = make([dropin1, mainA, dropin2, mainB], { cluster_idx: '2' });
   const c2 = parsedCluster(store2);
+  assert.strictEqual(c2.origin, aCoords, 'second-group origin must be the preceding anchor (main A)');
   assert.strictEqual(c2.destination.id, 'main_b_lx8g01', 'second cluster destination is main B');
   assert.strictEqual(store2.locals['cluster_eof'], 'false', 'idx 2 of 2 must not be eof');
 

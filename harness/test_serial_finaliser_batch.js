@@ -370,6 +370,39 @@ section('candidate-carries-active-generation-itinerary-not-legacy', function () 
     'active-generation legs must lead (legacy content would leak stale_leg_0)');
 });
 
+// B2 regression (judgment-day WARNING): a dropin whose window lies far in
+// the future must NOT be observed — the eligibility bound now closes the
+// lower side ([start - lead, end + grace]); pre-fix the unbounded upper
+// condition kept a months-away dropin eligible forever.
+section('far-future-dropin-not-observed', function () {
+  const farFuture = Object.assign({}, dropinEvent(), {
+    id: 'abc123_farfuture', start: nowSec + 30 * 86400, end: nowSec + 30 * 86400 + 2 * 3600
+  });
+  const files = Object.assign({}, commonFiles(), {
+    [STATE]: seededState({})
+  });
+  const { sandbox, store } = make(files, finaliserGlobals(), { tds_temp_json: JSON.stringify([farFuture]) });
+  runScript(FINALISER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+
+  assert(!store.locals['tds_obs_batch_par1'],
+    'far-future dropin must not stage the observation batch');
+  assert(!store.locals['tds_obs_batch_par2'],
+    'far-future dropin must not stage observation payloads');
+  const logs = parseLog(store);
+  assert(!logs.some(function (l) { return l.code === 'CLUSTER_SKIPPED'; }), 'no cluster skip expected (Finaliser pass)');
+
+  runPublisher(sandbox, store);
+  const genId = activeGeneration(store);
+  assert.strictEqual(store.locals.par1, 'RECONCILE_GENERATION',
+    'far-future dropin pass must fall back to plain RECONCILE_GENERATION');
+  assert.strictEqual(store.locals.par2, JSON.stringify({ generationId: genId, activeGeneration: genId, manifestSchemaVersion: 2 }),
+    'far-future dropin pass must not carry any observation envelope');
+  const postLogs = parseLog(store);
+  assert(!postLogs.some(function (l) { return l.code === 'OBS_BATCH_MERGED'; }),
+    'far-future dropin pass must not log OBS_BATCH_MERGED');
+});
+
 // ---------------------------------------------------------------------
 try {
   console.log('Serial Finaliser batch regression suite:');

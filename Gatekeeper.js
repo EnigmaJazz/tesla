@@ -208,7 +208,7 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
                 return; 
             }
             
-            let uLoc = global('User_Loc') || "0,0";
+            let uLoc = (cluster.origin) || global('User_Loc') || "0,0";
             let wpIdStr = wp.map(function(w) { return w.id; }).join(",");
 
             // Slice D (REQ-5CACHE-1): order-cache reads come from the manager's

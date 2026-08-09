@@ -32,7 +32,7 @@ try {
     if (rawPar1.indexOf("{") === 0) {
         var cluster = JSON.parse(rawPar1);
         
-        var uLoc = global('User_Loc') || "0,0";
+        var uLoc = (cluster.origin) || global('User_Loc') || "0,0";
         var body = {
             "origin": { "location": { "latLng": { "latitude": parseFloat(uLoc.split(",")[0]), "longitude": parseFloat(uLoc.split(",")[1]) } } },
             "destination": { "location": { "latLng": { "latitude": parseFloat(cluster.destination.coords.split(",")[0]), "longitude": parseFloat(cluster.destination.coords.split(",")[1]) } } },
