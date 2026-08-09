@@ -22,7 +22,13 @@ function getDist(lat1, lon1, lat2, lon2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-const SECONDS_PER_DAY = 86400;
+// Named windows/radii (AGENTS.md: route radii, grace periods, and lookahead
+// windows must be named, never bare literals).
+const GEOFENCE_RADIUS_M = 200;          // arrival/departure geofence radius
+const ARRIVAL_ACCURACY_M = 150;         // observed-arrival accuracy
+const DEPARTURE_LEAD_SECS = 7200;       // eligibility pre-start window (2h)
+const ELIGIBILITY_GRACE_SECS = 14400;   // post-end grace window (4h)
+const GEOFENCE_LOOKAHEAD_SECS = 43200;  // 12h geofence generation limit
 
 // INV-0.2: DST-safe day-boundary comparison. Both unixSec values are in UTC.
 function isSameUTCDay(unixSecA, unixSecB) {
@@ -37,6 +43,45 @@ function isSameUTCDay(unixSecA, unixSecB) {
 function utcDayBoundaryUnix(unixSec) {
     const d = new Date(unixSec * 1000);
     return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000;
+}
+
+// Phase 2 reader cutover: discover the committed generation through the
+// manifest. Canonical resolver (algorithm source of truth: TDS_Helper.js
+// readActiveGeneration), inlined per repo convention; the legacy
+// TDS_Master.json / Itin_Master.json files remain a fallback only while the
+// migration is in flight. Finaliser publishes events + master + the carried
+// itinerary, so the itinerary MUST come from the active generation — the
+// legacy Itin_Master.json is no longer written since Phase 2 and reading it
+// regressed the published itinerary on every pass.
+function readJson(path) {
+    const raw = readFile(path) || "";
+    if (!raw || raw.indexOf("%") === 0) return null;
+    try { return JSON.parse(raw); } catch (e) { return null; }
+}
+function pathFor(g, kind) {
+    return DATA_ROOT + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
+}
+function readActiveGeneration(kind) {
+    const m = readJson(DATA_ROOT + "TDS_Run_Manifest.json");
+    const key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
+    if (m && m.state === "committed" && m.activeGeneration) {
+        const p = m[key] || pathFor(m.activeGeneration, kind);
+        const data = readJson(p);
+        if (data !== null) return data;
+        // A committed generation whose file is missing or corrupt must be
+        // observable — the fallback chain (previous → legacy → []) would
+        // otherwise mask a stale/empty publish with zero log trail.
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Finaliser", severity: "warn", code: "ACTIVE_GENERATION_READ_FAILED", tripId: null,
+            details: { kind: kind, path: p, reason: "missing_or_corrupt" } }));
+    }
+    if (m && m.previousGeneration) {
+        const data = readJson(pathFor(m.previousGeneration, kind));
+        if (data !== null) return data;
+    }
+    const legacy = readJson(DATA_ROOT + (kind === "events" || kind === "master" ? "TDS_Master.json" : "Itin_Master.json"));
+    if (legacy !== null) return legacy;
+    return [];
 }
 
 // REQ-6F2-1/2: the serial Tasker model delivers only the LAST staged
@@ -98,7 +143,10 @@ try {
             for (let dKey in rawJson) {
                 if (rawJson.hasOwnProperty(dKey)) diskLower[dKey.trim().toLowerCase()] = rawJson[dKey];
             }
-        } catch(e) {}
+        } catch(e) {
+            flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                component: "Finaliser", severity: "warn", code: "GEOCODE_CACHE_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+        }
     }
 
     let nowSec = Math.floor(Date.now() / 1000);
@@ -121,7 +169,7 @@ try {
     // state.completedDropins and state.trips[].observedArrivalUnix — the
     // legacy globals are no longer read or written here.
     let completed = [];
-    let arrivalMemRaw = "";
+    let arrivalMem = {}; // exact-key arrival dedup (never substring)
     let stateTrips = null;
     try {
         const stRaw = readFile(DATA_ROOT + "TDS_Trip_State.json") || "";
@@ -135,12 +183,15 @@ try {
             if (stateTrips) {
                 for (let tk in stateTrips) {
                     if (stateTrips.hasOwnProperty(tk) && typeof stateTrips[tk].observedArrivalUnix === "number") {
-                        arrivalMemRaw += (arrivalMemRaw.length > 0 ? "," : "") + tk + "~" + stateTrips[tk].observedArrivalUnix;
+                        arrivalMem[tk] = true;
                     }
                 }
             }
         }
-    } catch (e) {}
+    } catch (e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Finaliser", severity: "warn", code: "TRIP_STATE_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+    }
     let survivingEvents = [];
     
     for (let i = 0; i < validEvents.length; i++) {
@@ -149,9 +200,9 @@ try {
         let timeEligible = false;
         if (ev.isDropin) {
             if (isSameUTCDay(ev.start, nowSec)) timeEligible = true;
-            else if (nowSec <= (ev.end + 14400)) timeEligible = true;
+            else if (nowSec <= (ev.end + ELIGIBILITY_GRACE_SECS)) timeEligible = true;
         } else {
-            timeEligible = (nowSec >= (ev.start - 7200) && nowSec <= (ev.end + 14400));
+            timeEligible = (nowSec >= (ev.start - DEPARTURE_LEAD_SECS) && nowSec <= (ev.end + ELIGIBILITY_GRACE_SECS));
         }
         
         if (ev.coords && ev.coords !== "0,0" && timeEligible) {
@@ -159,7 +210,7 @@ try {
             let dPrev = getDist(pLat, pLon, eLat, eLon);
             let dCurr = getDist(cLat, cLon, eLat, eLon);
             
-            if (!isNaN(dPrev) && !isNaN(dCurr) && dPrev <= 200 && dCurr > 200) {
+            if (!isNaN(dPrev) && !isNaN(dCurr) && dPrev <= GEOFENCE_RADIUS_M && dCurr > GEOFENCE_RADIUS_M) {
                 // [SURGICAL UPGRADE: Strict Event Purge Protection]
                 if (ev.isDropin || nowSec > ev.end) {
                     if (completed.indexOf(ev.id) === -1) {
@@ -194,9 +245,13 @@ try {
                 }
             }
 
-            if (!isNaN(dCurr) && dCurr <= 200) {
-                if (arrivalMemRaw.indexOf(ev.id + "~") === -1) {
-                    arrivalMemRaw += (arrivalMemRaw.length > 0 ? "," : "") + ev.id + "~" + nowSec;
+            if (!isNaN(dCurr) && dCurr <= GEOFENCE_RADIUS_M) {
+                // Exact-key arrival dedup (AGENTS.md hard rule: no substring
+                // membership checks). The map is seeded from reducer state
+                // (observedArrivalUnix) and grows in-pass; a suffix-colliding id
+                // can never suppress a legitimate arrival observation.
+                if (!arrivalMem[ev.id]) {
+                    arrivalMem[ev.id] = true;
                     // Phase 3 PR-B: record arrival observation in reducer-managed state.
                     // The legacy Arrival_Memory override remains as a read-side fallback
                     // for components that have not yet been migrated to state.trips[].
@@ -204,7 +259,7 @@ try {
                         generationId: global('TDS_Active_Generation') || "gen:0:0000",
                         tripId: ev.id,
                         at: nowSec,
-                        accuracyM: 150
+                        accuracyM: ARRIVAL_ACCURACY_M
                     });
                 }
             }
@@ -240,7 +295,7 @@ try {
                 nextGeoTitle  = safeTitle;
             }
 
-            if ((ev.start - nowSec) < 43200) {
+            if ((ev.start - nowSec) < GEOFENCE_LOOKAHEAD_SECS) {
                 geofences.push("TDS_" + safeTitle + "~" + ev.coords);
             }
             if (!ev.isDropin) foundStrict = true; 
@@ -263,15 +318,20 @@ try {
     let adHoc = global('AdHoc_Base') || "";
     if (adHoc.indexOf("%") !== 0 && adHoc.length > 5) finalBaseStr += (finalBaseStr.length > 0 ? "|" : "") + adHoc;
 
-    let currentItinRaw = readFile(DATA_ROOT + "Itin_Master.json") || "[]";
-    let currentItin = [];
-    try { currentItin = JSON.parse(currentItinRaw); } catch(e) {}
+    // Phase 2 reader cutover: carry forward the ACTIVE generation's itinerary
+    // (manifest-discovered, legacy fallback while migration is in flight). The
+    // legacy Itin_Master.json is no longer written since Phase 2 — publishing
+    // from it regressed the itinerary on every location-change pass.
+    let currentItin = readActiveGeneration("itinerary");
 
     publishCandidate({ events: validEvents, master: validEvents, itinerary: currentItin });
 
     let baseFilePath = DATA_ROOT + "TDS_Base_Geocodes.txt";
     let oldBaseStr = "";
-    try { oldBaseStr = readFile(baseFilePath) || ""; } catch(e) {}
+    try { oldBaseStr = readFile(baseFilePath) || ""; } catch(e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Finaliser", severity: "warn", code: "BASE_GEOCODES_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+    }
 
     if (finalBaseStr !== oldBaseStr) writeFile(baseFilePath, finalBaseStr, false);
 
@@ -303,13 +363,15 @@ try {
                 }
             }
         }
-    } catch(e) { activeSession = null; }
+    } catch(e) { activeSession = null; flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+        component: "Finaliser", severity: "warn", code: "SESSIONS_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } })); }
     if (activeSession) {
         let completionSeen = false;
         try {
             let stRaw = readFile(DATA_ROOT + "TDS_Trip_State.json") || "";
             if (stRaw) completionSeen = (JSON.parse(stRaw).manualReturnCompleted === true);
-        } catch(e) {}
+        } catch(e) { flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Finaliser", severity: "warn", code: "MANUAL_RETURN_STATE_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } })); }
         if (completionSeen) {
             // Mid-chain rule: save the staged publish candidate BEFORE
             // any shim delivery (reducer/stateCommand set %par1), then
@@ -379,4 +441,7 @@ try {
     setLocal('tds_temp_json', "");
     setLocal('raw_base_data', "");
 
-} catch(err) { flash("Finalizer JS Crash: " + err.message); }
+} catch(err) {
+    flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+        component: "Finaliser", severity: "ERROR", code: "FINALISER_CRASH", tripId: null, details: { message: String(err && err.message || err) } }));
+}

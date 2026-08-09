@@ -332,6 +332,44 @@ section('burst-over-cap-keeps-first-31-and-logs-truncation', function () {
   assert.strictEqual(delivered.details.skipped, 0, 'no capped sub-command may be skipped');
 });
 
+// Phase 2 reader cutover regression: the Finaliser's publish candidate must
+// carry the ACTIVE generation's itinerary (manifest-discovered), never the
+// legacy Itin_Master.json — which no production script writes since Phase 2.
+// Pre-fix, a committed generation with a fresh itinerary was regressed to the
+// legacy file's stale content on every location-change pass.
+section('candidate-carries-active-generation-itinerary-not-legacy', function () {
+  const enc = GEN_ID.replace(/:/g, '_');
+  const ACTIVE_ITIN = DATA + 'Itin_Master.' + enc + '.json';
+  const activeLegs = [
+    { targetEventId: 'active_leg_1', mode: 'DRIVE', departUnix: nowSec + 1800, arriveUnix: nowSec + 3600 },
+    { targetEventId: 'active_leg_2', mode: 'WALK', departUnix: nowSec + 5400, arriveUnix: nowSec + 5700 }
+  ];
+  const staleLegs = [{ targetEventId: 'stale_leg_0', mode: 'DRIVE', departUnix: nowSec - 86400, arriveUnix: nowSec - 82800 }];
+  const manifest = {
+    schemaVersion: 1, generationId: GEN_ID, activeGeneration: GEN_ID, previousGeneration: null,
+    publishedAt: nowSec - 1, writer: 'Generation Publisher',
+    eventsPath: DATA + 'TDS_Events.' + enc + '.json', masterPath: DATA + 'TDS_Master.' + enc + '.json',
+    itineraryPath: ACTIVE_ITIN, eventCount: 1, legCount: 1, itineraryCount: 2,
+    generationHistory: [GEN_ID], state: 'committed'
+  };
+  const files = Object.assign({}, commonFiles(), {
+    [STATE]: seededState({}),
+    [MANIFEST]: JSON.stringify(manifest),
+    [ACTIVE_ITIN]: JSON.stringify(activeLegs),
+    [DATA + 'Itin_Master.json']: JSON.stringify(staleLegs) // legacy content MUST be ignored
+  });
+  const { sandbox, store } = make(files, finaliserGlobals(), { tds_temp_json: '[]' });
+  runScript(FINALISER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+
+  const candidate = JSON.parse(store.locals.par1);
+  assert(Array.isArray(candidate.itinerary), 'candidate must carry an itinerary array');
+  assert.deepStrictEqual(candidate.itinerary, activeLegs,
+    'published itinerary must come from the active generation, not the legacy Itin_Master.json');
+  assert.strictEqual(candidate.itinerary[0].targetEventId, 'active_leg_1',
+    'active-generation legs must lead (legacy content would leak stale_leg_0)');
+});
+
 // ---------------------------------------------------------------------
 try {
   console.log('Serial Finaliser batch regression suite:');

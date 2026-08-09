@@ -299,11 +299,11 @@ Per block, per leg:
 
 ## 5. Known code gaps (fixes needed, not wiring)
 
-1. **Finaliser carries the legacy itinerary** — Finaliser.js:266 reads
-   `Itin_Master.json` (unversioned), which no production script writes since
-   Phase 2. The Finaliser pass should resolve the active-generation itinerary
-   via `readActiveGeneration("itinerary")` like every other reader, or the
-   publication pass regresses the itinerary to the pre-migration state.
+1. ~~Finaliser carries the legacy itinerary~~ — **fixed**: Finaliser.js now
+   resolves the active-generation itinerary via `readActiveGeneration("itinerary")`
+   (manifest-discovered, legacy fallback only while migration is in flight),
+   with the regression covered by `harness/test_serial_finaliser_batch.js`
+   (candidate-carries-active-generation-itinerary-not-legacy).
 2. **Compiler's `pendingChain` file clear** — Compiler.js:428 writes
    `Pending_Compiler.json` = `[]` after pushing the head leg; attached-dropin
    chains accumulate across runs via that file, so per-leg runs preserve it.
