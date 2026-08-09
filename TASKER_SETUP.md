@@ -60,33 +60,43 @@ One task (or a chain of tasks) running these JSlet actions **in this order**
 reproduces the harness `serialMode` behavior exactly. Each line lists the
 action, what it consumes, and what it stages.
 
-### 3.1 Planning pass (Compiler / Sandbox)
+### 3.1 Planning pass (Cluster_Builder / Sandbox / Compiler)
+
+Code-verified order — the Compiler consumes the **Sandbox's** `%block_queue`
+(typed rows); it does NOT consume `%tds_temp_json`. The exact per-block,
+per-leg loop including the API chain lives in `TASKER_PLANNING_TASK.md`;
+this section is the summary chain.
 
 ```
 1. Alpha.js
    consumes: calendar/event inputs, %User_Loc, %User_At_Base, %TDS_Previous_Loc
    stages:   %tds_temp_json (event candidates), %raw_base_data
-2. Compiler.js
-   consumes: %tds_temp_json, committed master/itinerary (via TDS_Helper)
-   stages:   %par1 = publish candidate JSON (its own publishCandidate),
-             %block_queue = typed queue envelope {schemaVersion,rows,eof,...}
-3. Sandbox_Engine.js
-   consumes: %par1 candidate, %TDS_Active_Generation, reducer observations
-   stages:   %par1 = REDUCER_BATCH / %par2 = {generationId, commands:[...]}
-             (flush BEFORE %block_queue emit — never at a halt site),
-             %block_queue = typed queue envelope for Tasker to act on
-4. TDS_State_Command.js
-   consumes: %par1/%par2 (the batch envelope)
-   stages:   %tds_state_owner = Trip_State_Reducer, re-staged %par1/%par2
-5. Trip_State_Reducer.js
-   consumes: %par1/%par2; applies the batch (single commit + project)
-   writes:   Tasker/Tesla/Data/TDS_Trip_State.json (sole writer)
-   stages:   %TDS_Manual_Return_Completed projection (Phase 6)
+2. Cluster_Builder.js (+ cluster chain)
+   groups consecutive dropins into clusters (per %cluster_idx, %cluster_eof);
+   the chain Gatekeeper → API_JSON_Build → HTTP → API_Parser →
+   Route_Cache_Manager → TDS_State_Command enqueues ENQUEUE_REORDER so the
+   next publish applies the optimized dropin order
+3. Finaliser.js → Generation_Publisher.js
+   publishes the calendar events into a committed generation (the Sandbox
+   simulates from the committed master); router + reducer reconcile
+4. Sandbox_Engine.js
+   consumes: %idx, %virtual_loc/%virtual_time/%vcar_loc, committed master,
+             route/temp/order caches (read-only), reducer observations
+   stages:   %block_queue = typed queue envelope {schemaVersion,rows,eof,
+             skipIdxUntil,stepConflict,notifications},
+             %par1 = REDUCER_BATCH / %par2 = {generationId, commands:[...]}
+5. TDS_State_Command.js → Trip_State_Reducer.js
+   deliver the Sandbox's reducer batch
+6. Per leg: Gatekeeper → (API chain) → %api_duration_secs/%api_distance_miles
+7. Compiler.js
+   consumes: %block_queue (the Sandbox's typed rows), %api_duration_secs,
+             %api_distance_miles, %api_transit_steps, committed master/itinerary
+   stages:   %par1 = publish candidate (itinerary grows: reads the committed
+             itinerary and appends), %cal_title_out/%cal_start_out/%cal_end_out
+8. Generation_Publisher.js → router → reducer (publish + reconcile)
+9. Repeat 4–8 per block until eof; calendar feedback from the accumulated
+   cal_*_out locals
 ```
-
-Tasker may read `%block_queue` after action 3 to flash notifications or
-enable/disable blocking actions (it is a local, never processed by Tasker's
-Variable Split).
 
 ### 3.2 Publication pass (Finaliser)
 

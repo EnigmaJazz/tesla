@@ -231,6 +231,11 @@ For `%r = 1` to `%tds_row_count` **[device]**: extract row `%r` from
     itinerary.
 15. **JSlet: TDS_State_Command.js** → **JSlet: Trip_State_Reducer.js** —
     deliver the post-publish batch.
+15b. **Rollup (recommended per block)**: `%par1 = ROLLUP_DUE_TEMP`,
+    `%par2 = {nowSec, prune: true}` → **JSlet: Route_Cache_Manager.js** —
+    session samples whose target time has passed roll into the master Welford
+    cache (`now >= targetUnix` gate; future samples stay in the session cache).
+    Without this, future legs only ever read the session cache.
 16. **Accumulate calendar output** **[device]**:
     `%all_cal_title = %all_cal_title | %cal_title_out` (same for start/end).
 17. **Loop** `%r` → next row.
