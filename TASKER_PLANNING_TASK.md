@@ -119,6 +119,12 @@ then `%cluster_idx += 1` and run Cluster_Builder.js again.
 > The order cache means repeat dropin patterns skip the HTTP call entirely:
 > the Gatekeeper order-cache hit re-stages the learned order (`cluster_bypass`).
 > A `#dropin` day with a known pattern costs zero API calls for ordering.
+>
+> Known limitation (judgment-day suspect A1): the cluster contract has no
+> explicit origin — Gatekeeper and API_JSON_Build resolve it from the live
+> `%User_Loc`. For a mid-day dropin group the true origin is the preceding
+> anchor; live-location origin is accepted for now and tracked for a future
+> contract extension (origin in the cluster + order-cache key).
 
 ### Step C — Publish events into the committed master (bootstrap)
 
