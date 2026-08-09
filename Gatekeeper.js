@@ -26,6 +26,16 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
 (function() {
     const METERS_PER_MILE = 1609.344; // Slice D: JSON distanceMiles field unit
     const CACHE_MODE_WALK = "WALK";   // route-entry mode constant (manager parity)
+    // Named sentinels/windows (AGENTS.md: no magic numbers).
+    const UNUSABLE_COORDS = "0,0";
+    const EARTH_RADIUS_M = 6371e3;                // haversine earth radius (getDist)
+    const ISCLOSE_RADIUS_M = 200;                 // GPS-drift proximity radius
+    const FORCED_ORDER_UNSET = 999;               // forced-order sort default
+    const BUCKET_UNSET = -999;                    // null-bucket sentinel
+    const DEFAULT_LIVE_TRAFFIC_THRESHOLD_SECS = 7200; // isFuture fallback (2h)
+    const TOD_WRAP_MINUTES = 720;                 // tod-diff wrap point (12h)
+    const TOD_DAY_MINUTES = 1440;                 // minutes per day
+    const TOD_BUCKET_TOLERANCE_MINUTES = 60;      // tod bucket tolerance
 
     function forceSeconds(val) {
         let v = parseFloat(val); 
@@ -40,16 +50,16 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
     }
 
     function getDist(lat1, lon1, lat2, lon2) {
-        let R = 6371e3; let rLat1 = lat1 * Math.PI / 180; let rLat2 = lat2 * Math.PI / 180;
+        let R = EARTH_RADIUS_M; let rLat1 = lat1 * Math.PI / 180; let rLat2 = lat2 * Math.PI / 180;
         let dLat = (lat2 - lat1) * Math.PI / 180; let dLon = (lon2 - lon1) * Math.PI / 180;
         let a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(rLat1) * Math.cos(rLat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
         return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
     function isClose(cStrA, cStrB) {
-        if (!cStrA || !cStrB || cStrA === "0,0" || cStrB === "0,0") return false;
+        if (!cStrA || !cStrB || cStrA === UNUSABLE_COORDS || cStrB === UNUSABLE_COORDS) return false;
         let pA = cStrA.split(","), pB = cStrB.split(",");
-        return getDist(parseFloat(pA[0]), parseFloat(pA[1]), parseFloat(pB[0]), parseFloat(pB[1])) <= 200;
+        return getDist(parseFloat(pA[0]), parseFloat(pA[1]), parseFloat(pB[0]), parseFloat(pB[1])) <= ISCLOSE_RADIUS_M;
     }
 
     // Remediation (REQ-5CACHE-2 SCN-5CACHE-3, REQ-5LOG-1): the direct readers
@@ -135,7 +145,12 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
                 out[keys[i]] = e;
             }
             return { schemaVersion: obj.schemaVersion, entries: out };
-        } catch (e) { return null; }
+        } catch (e) {
+            // A present-but-unparseable cache file must be observable — a
+            // silent miss hides valid entries (CACHE_ENTRY_REJECTED class).
+            gkRejectCacheEntry("unparseable cache file", path, { reason: String(e && e.message || e) });
+            return null;
+        }
     }
 
     // [SURGICAL UPGRADE: In-Place Sorting]
@@ -155,28 +170,12 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
         }));
     }
     function sortMasterJson(orderedIdsStr) {
-        let orderedIds = orderedIdsStr.split(",");
-        let masterRaw = readFile(DATA_ROOT + "TDS_Master.json") || "[]";
-        let masterArr = JSON.parse(masterRaw);
-
-        let targetIndices = [];
-        let clusterMap = {};
-        
-        for(let i = 0; i < masterArr.length; i++) {
-            if (orderedIds.indexOf(masterArr[i].id) !== -1) {
-                targetIndices.push(i);
-                clusterMap[masterArr[i].id] = masterArr[i];
-            }
-        }
-        
-        for(let j = 0; j < orderedIds.length; j++) {
-            if (targetIndices[j] !== undefined && clusterMap[orderedIds[j]]) {
-                masterArr[targetIndices[j]] = clusterMap[orderedIds[j]];
-            }
-        }
-
-        // Phase 2 RULE-8A: do not write the live master directly.
-        // Emit a typed reorder command for the Generation Publisher to apply.
+        // Phase 4 (REQ-4REORDER-1): producers never write the queue or masters.
+        // The legacy TDS_Master.json read + in-place reorder are DEAD since
+        // Phase 2 (only the typed command matters); the Generation Publisher
+        // revalidates the ids against its pre-build candidate on drain, so a
+        // Gatekeeper-side read could only add a stale-read class + crash
+        // surface. No master read: emit the typed reorder command directly.
         emitReorderCommand(orderedIdsStr, 'Gatekeeper');
     }
 
@@ -198,8 +197,8 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
             
             if (hasForcedOrder) {
                 forcedWp.sort(function(a, b) {
-                    let valA = a.dropinOrder !== undefined ? a.dropinOrder : 999;
-                    let valB = b.dropinOrder !== undefined ? b.dropinOrder : 999;
+                    let valA = a.dropinOrder !== undefined ? a.dropinOrder : FORCED_ORDER_UNSET;
+                    let valB = b.dropinOrder !== undefined ? b.dropinOrder : FORCED_ORDER_UNSET;
                     return valA - valB;
                 });
                 let sortedIds = forcedWp.map(function(w) { return w.id; }).join(",");
@@ -241,7 +240,7 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
             let targetTod = (d.getHours() * 60) + d.getMinutes();
             let targetDay = (d.getDay() === 0 || d.getDay() === 6) ? 1 : 0; 
             
-            let masterThresh = parseInt(global('Live_Traffic_Threshold'), 10) || 7200;
+            let masterThresh = parseInt(global('Live_Traffic_Threshold'), 10) || DEFAULT_LIVE_TRAFFIC_THRESHOLD_SECS;
             let isFuture     = (targetSec - nowSec) > masterThresh;
 
             if (isFuture || mode === "WALK") {
@@ -258,13 +257,13 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
                         if (!e || typeof e.meanDurationSecs !== "number" || typeof e.mode !== "string") continue;
 
                         if (e.mode === mode && isClose(e.originCell, orig) && isClose(e.destinationCell, dest)) {
-                            let cTod = (e.bucket === null) ? -999 : e.bucket;
+                            let cTod = (e.bucket === null) ? BUCKET_UNSET : e.bucket;
                             let cDay = e.dayClass;
 
-                            if (mode === "WALK" || (isFuture && typeof cTod === "number" && cTod !== -999 && cDay === targetDay)) {
+                            if (mode === "WALK" || (isFuture && typeof cTod === "number" && cTod !== BUCKET_UNSET && cDay === targetDay)) {
                                 let diff = Math.abs(targetTod - cTod);
-                                if (diff > 720) diff = 1440 - diff;
-                                if (mode === "WALK" || diff <= 60) {
+                                if (diff > TOD_WRAP_MINUTES) diff = TOD_DAY_MINUTES - diff;
+                                if (mode === "WALK" || diff <= TOD_BUCKET_TOLERANCE_MINUTES) {
                                     cachedDurSecs = e.meanDurationSecs; cachedDistM = (typeof e.distanceMiles === "number") ? e.distanceMiles : 0; cacheSource = "Master Cache"; 
                                     break;
                                 }
@@ -296,5 +295,9 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
                 }
             }
         }
-    } catch(err) { flash("Gatekeeper Engine Fault: " + err.message); }
+    } catch(err) {
+        flash(JSON.stringify({ timestamp: Date.now(), generationId: global('TDS_Active_Generation') || null,
+            component: "Gatekeeper", severity: "error", code: "GATEKEEPER_FAULT", tripId: null,
+            details: { message: String(err && err.message || err) } }));
+    }
 })();

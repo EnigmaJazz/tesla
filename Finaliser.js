@@ -16,7 +16,7 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
 // ==========================================
 
 function getDist(lat1, lon1, lat2, lon2) {
-    let R = 6371e3; let rLat1 = lat1 * Math.PI / 180; let rLat2 = lat2 * Math.PI / 180;
+    let R = EARTH_RADIUS_M; let rLat1 = lat1 * Math.PI / 180; let rLat2 = lat2 * Math.PI / 180;
     let dLat = (lat2 - lat1) * Math.PI / 180; let dLon = (lon2 - lon1) * Math.PI / 180;
     let a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(rLat1) * Math.cos(rLat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
@@ -39,11 +39,11 @@ function isSameUTCDay(unixSecA, unixSecB) {
         && dA.getUTCDate() === dB.getUTCDate();
 }
 
-// INV-0.2: UTC midnight of the day containing unixSec (the "day boundary" in UTC).
-function utcDayBoundaryUnix(unixSec) {
-    const d = new Date(unixSec * 1000);
-    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000;
-}
+// Named sentinels/windows (AGENTS.md: no magic numbers, no bare literals).
+const UNUSABLE_COORDS = "0,0";        // sentinel: no usable coordinates
+const EARTH_RADIUS_M = 6371e3;         // haversine earth radius (getDist)
+const MIN_BASE_STR_LEN = 3;            // raw_base_data entry length floor
+const MIN_ADHOC_STR_LEN = 5;           // AdHoc_Base entry length floor
 
 // Phase 2 reader cutover: discover the committed generation through the
 // manifest. Canonical resolver (algorithm source of truth: TDS_Helper.js
@@ -56,7 +56,14 @@ function utcDayBoundaryUnix(unixSec) {
 function readJson(path) {
     const raw = readFile(path) || "";
     if (!raw || raw.indexOf("%") === 0) return null;
-    try { return JSON.parse(raw); } catch (e) { return null; }
+    try { return JSON.parse(raw); } catch (e) {
+        // A present-but-corrupt file must be observable — silently turning it
+        // into a miss hides stale/empty publishes (CACHE_ENTRY_REJECTED class).
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Finaliser", severity: "warn", code: "FILE_PARSE_FAILED", tripId: null,
+            details: { path: path, reason: String(e && e.message || e) } }));
+        return null;
+    }
 }
 function pathFor(g, kind) {
     return DATA_ROOT + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
@@ -159,8 +166,8 @@ try {
     // ==========================================
     // SPATIAL DEPARTURE & ARRIVAL TRACKING 
     // ==========================================
-    let pLocRaw = global('TDS_Previous_Loc') || "0,0";
-    let cLocRaw = global('User_Loc') || "0,0";
+    let pLocRaw = global('TDS_Previous_Loc') || UNUSABLE_COORDS;
+    let cLocRaw = global('User_Loc') || UNUSABLE_COORDS;
     let pLat = parseFloat(pLocRaw.split(",")[0]); let pLon = parseFloat(pLocRaw.split(",")[1]);
     let cLat = parseFloat(cLocRaw.split(",")[0]); let cLon = parseFloat(cLocRaw.split(",")[1]);
     
@@ -209,7 +216,7 @@ try {
             timeEligible = (nowSec >= (ev.start - DEPARTURE_LEAD_SECS) && nowSec <= (ev.end + ELIGIBILITY_GRACE_SECS));
         }
         
-        if (ev.coords && ev.coords !== "0,0" && timeEligible) {
+        if (ev.coords && ev.coords !== UNUSABLE_COORDS && timeEligible) {
             let eLat = parseFloat(ev.coords.split(",")[0]); let eLon = parseFloat(ev.coords.split(",")[1]);
             let dPrev = getDist(pLat, pLon, eLat, eLon);
             let dCurr = getDist(cLat, cLon, eLat, eLon);
@@ -291,7 +298,7 @@ try {
 
     for (let i = 0; i < validEvents.length; i++) {
         let ev = validEvents[i];
-        if (ev.coords && ev.coords !== "0,0" && !foundStrict) {
+        if (ev.coords && ev.coords !== UNUSABLE_COORDS && !foundStrict) {
             let safeTitle = (ev.title || "").replace(/[^a-zA-Z0-9 ]/g, "").trim();
             
             if (nextGeoCoords === "NONE" && ev.end > nowSec && !ev.isDropin) {
@@ -309,7 +316,7 @@ try {
     let baseStr = local('raw_base_data') || "";
     let finalBaseStr = "";
     
-    if (baseStr && baseStr.indexOf("%") === -1 && baseStr.length > 3) {
+    if (baseStr && baseStr.indexOf("%") === -1 && baseStr.length > MIN_BASE_STR_LEN) {
         let bases = baseStr.split("|");
         for (let b = 0; b < bases.length; b++) {
             let parts = bases[b].split("~");
@@ -320,7 +327,7 @@ try {
     }
 
     let adHoc = global('AdHoc_Base') || "";
-    if (adHoc.indexOf("%") !== 0 && adHoc.length > 5) finalBaseStr += (finalBaseStr.length > 0 ? "|" : "") + adHoc;
+    if (adHoc.indexOf("%") !== 0 && adHoc.length > MIN_ADHOC_STR_LEN) finalBaseStr += (finalBaseStr.length > 0 ? "|" : "") + adHoc;
 
     // Phase 2 reader cutover: carry forward the ACTIVE generation's itinerary
     // (manifest-discovered, legacy fallback while migration is in flight). The
@@ -423,7 +430,7 @@ try {
     // ==========================================
     // GEOFENCE BASE APPEND
     // ==========================================
-    let activeBaseCoords = "0,0"; let activeBaseName = "";
+    let activeBaseCoords = UNUSABLE_COORDS; let activeBaseName = "";
     if (finalBaseStr.length > 5) {
         let bList = finalBaseStr.split("|");
         for (let b=0; b<bList.length; b++) {
@@ -435,7 +442,7 @@ try {
         }
     }
     
-    if (activeBaseCoords !== "0,0" && activeBaseName.toLowerCase() !== "home") {
+    if (activeBaseCoords !== UNUSABLE_COORDS && activeBaseName.toLowerCase() !== "home") {
         let safeBase = activeBaseName.replace(/[^a-zA-Z0-9 ]/g, "").trim();
         geofences.push("TDS_Base_" + safeBase + "~" + activeBaseCoords);
     }

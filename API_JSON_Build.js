@@ -3,10 +3,16 @@
 // Parses JSON straight from %par1 for clusters.
 // ==========================================
 
+// Named constants (AGENTS.md: no magic numbers).
+const EPOCH_MS_THRESHOLD = 20000000000; // inputNum > this => epoch ms, else seconds
+const REQ_ID_HEX_RANGE = 0x10000;       // request-id random hex range
+const REQ_ID_HEX_PAD = "0000";          // request-id hex left-pad
+const REQ_ID_HEX_LEN = 4;               // request-id hex width
+
 function getCoord(rawStr, splitIndex) {
     if (!rawStr || rawStr.indexOf("%") === 0) return 0.0;
-    var parts = rawStr.split(",");
-    var val = parseFloat(parts[splitIndex]);
+    const parts = rawStr.split(",");
+    const val = parseFloat(parts[splitIndex]);
     return isNaN(val) ? 0.0 : val;
 }
 
@@ -16,24 +22,24 @@ function getCoord(rawStr, splitIndex) {
 // (and par1/par2 as REQUEST_STATE_REGISTER for the manager); the Google Routes
 // wire payload NEVER carries generationId/clusterId/requestId.
 function rqRegisterCorrelation(clusterId) {
-    var rqNow = Math.floor(Date.now() / 1000);
-    var rqHex = ("0000" + Math.floor(Math.random() * 0x10000).toString(16)).slice(-4);
-    var rqRequestId = "req:" + rqNow + ":" + rqHex;
-    var rqGenerationId = global('TDS_Active_Generation') || null;
+    const rqNow = Math.floor(Date.now() / 1000);
+    const rqHex = (REQ_ID_HEX_PAD + Math.floor(Math.random() * REQ_ID_HEX_RANGE).toString(16)).slice(-REQ_ID_HEX_LEN);
+    const rqRequestId = "req:" + rqNow + ":" + rqHex;
+    const rqGenerationId = global('TDS_Active_Generation') || null;
     setLocal('api_correlation', JSON.stringify({ generationId: rqGenerationId, clusterId: clusterId, requestId: rqRequestId }));
     setLocal('par1', 'REQUEST_STATE_REGISTER');
     setLocal('par2', JSON.stringify({ generationId: rqGenerationId, clusterId: clusterId, requestId: rqRequestId, emittedAt: rqNow }));
 }
 
 try {
-    var rawPar1 = local('par1') || "";
+    const rawPar1 = local('par1') || "";
     
     // --- CLUSTER FORK ---
     if (rawPar1.indexOf("{") === 0) {
-        var cluster = JSON.parse(rawPar1);
+        const cluster = JSON.parse(rawPar1);
         
-        var uLoc = (cluster.origin) || global('User_Loc') || "0,0";
-        var body = {
+        const uLoc = (cluster.origin) || global('User_Loc') || "0,0";
+        const body = {
             "origin": { "location": { "latLng": { "latitude": parseFloat(uLoc.split(",")[0]), "longitude": parseFloat(uLoc.split(",")[1]) } } },
             "destination": { "location": { "latLng": { "latitude": parseFloat(cluster.destination.coords.split(",")[0]), "longitude": parseFloat(cluster.destination.coords.split(",")[1]) } } },
             "travelMode": "DRIVE",
@@ -41,9 +47,9 @@ try {
             "intermediates": []
         };
         
-        var rqWpIds = [];
-        for (var w = 0; w < cluster.waypoints.length; w++) {
-            var wC = cluster.waypoints[w].coords.split(",");
+        const rqWpIds = [];
+        for (let w = 0; w < cluster.waypoints.length; w++) {
+            const wC = cluster.waypoints[w].coords.split(",");
             rqWpIds.push(cluster.waypoints[w].id);
             body.intermediates.push({
                 "location": { "latLng": { "latitude": parseFloat(wC[0]), "longitude": parseFloat(wC[1]) } }
@@ -57,16 +63,16 @@ try {
         
     } else {
         // --- STANDARD A-TO-B FORK ---
-        var rawMode = local('par13') || "DRIVE";
-        var routeMode = (rawMode === "TRANSIT") ? "TRANSIT" : ((rawMode === "WALK") ? "WALK" : "DRIVE");
+        const rawMode = local('par13') || "DRIVE";
+        const routeMode = (rawMode === "TRANSIT") ? "TRANSIT" : ((rawMode === "WALK") ? "WALK" : "DRIVE");
 
-        var targetMs = Date.now();
-        var inputNum = parseFloat(local('par14'));
-        if (!isNaN(inputNum) && inputNum > 0) targetMs = (inputNum < 20000000000) ? Math.floor(inputNum * 1000) : Math.floor(inputNum);
+        let targetMs = Date.now();
+        const inputNum = parseFloat(local('par14'));
+        if (!isNaN(inputNum) && inputNum > 0) targetMs = (inputNum < EPOCH_MS_THRESHOLD) ? Math.floor(inputNum * 1000) : Math.floor(inputNum);
 
-        var isoTime = new Date(targetMs).toISOString();
+        const isoTime = new Date(targetMs).toISOString();
 
-        var body = {
+        const body = {
             "origin": { "location": { "latLng": { "latitude": getCoord(local('par11'), 0), "longitude": getCoord(local('par11'), 1) } } },
             "destination": { "location": { "latLng": { "latitude": getCoord(local('par12'), 0), "longitude": getCoord(local('par12'), 1) } } },
             "travelMode": routeMode,
@@ -81,8 +87,8 @@ try {
             else body.departureTime = isoTime;
         }
 
-        var rqOrigin = (local('par11') || "").trim();
-        var rqDest = (local('par12') || "").trim();
+        const rqOrigin = (local('par11') || "").trim();
+        const rqDest = (local('par12') || "").trim();
         if (rqOrigin && rqDest) {
             rqRegisterCorrelation(rqOrigin + "|" + rqDest + "|" + routeMode);
         }
@@ -91,4 +97,8 @@ try {
         setLocal('api_route_mode', routeMode);
     }
 
-} catch(e) { flash("Payload Builder JS Crash:\n" + e.message); }
+} catch(e) {
+    flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+        component: "API_JSON_Build", severity: "error", code: "API_BUILD_FAULT", tripId: null,
+        details: { message: String(e && e.message || e) } }));
+}
