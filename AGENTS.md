@@ -85,6 +85,9 @@ Any other script that writes one of these is a bug.
   actionable trips.
 - `Appender.js`, `Override_Injector.js` — command adapters. No direct
   file writes.
+- `Cluster_Builder.js` — groups consecutive dropins from `%tds_temp_json`
+  into route-optimization clusters; stages `%par1` (cluster JSON),
+  `%cluster_count`, `%cluster_eof`. Read-only; no file writes.
 - `Return_to_Base.js`, `Depart_Now.js`, `Unlock.js` — manual-action
   command adapters.
 - `Stop_Logger.js` — submits stable stop-completion commands.

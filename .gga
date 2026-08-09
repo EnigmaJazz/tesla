@@ -23,7 +23,7 @@
 #   PROVIDER="github:deepseek-r1"
 #   PROVIDER="minimax"
 #   PROVIDER="minimax:MiniMax-M3"
-PROVIDER="opencode:opencode-go-pool/deepseek-v4-pro"
+PROVIDER="opencode:opencode-go/deepseek-v4-flash"
 
 # File patterns to include in review (comma-separated)
 # Default: * (all files)
@@ -46,7 +46,7 @@ RULES_FILE="AGENTS.md"
 
 # Strict mode: fail if AI response is ambiguous
 # Default: true
-STRICT_MODE="true"
+STRICT_MODE="false"
 
 # Timeout in seconds for AI provider response
 # Default: 300 (5 minutes)
