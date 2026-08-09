@@ -96,7 +96,11 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
     // by the caller; only expired entries drop here).
     function readCacheJson(path, nowSec, kind) {
         let raw = "";
-        try { raw = readFile(path) || ""; } catch (e) { return null; }
+        try { raw = readFile(path) || ""; } catch (e) {
+            // A read failure is observable, not a silent miss (CACHE_ENTRY_REJECTED class).
+            gkRejectCacheEntry("cache file read failed", path, { reason: String(e && e.message || e) });
+            return null;
+        }
         if (!raw) return null;
         try {
             let obj = JSON.parse(raw);

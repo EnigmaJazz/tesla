@@ -431,7 +431,7 @@ try {
     // GEOFENCE BASE APPEND
     // ==========================================
     let activeBaseCoords = UNUSABLE_COORDS; let activeBaseName = "";
-    if (finalBaseStr.length > 5) {
+    if (finalBaseStr.length > MIN_ADHOC_STR_LEN) {
         let bList = finalBaseStr.split("|");
         for (let b=0; b<bList.length; b++) {
             if (!bList[b]) continue;

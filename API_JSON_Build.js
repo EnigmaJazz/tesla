@@ -5,6 +5,7 @@
 
 // Named constants (AGENTS.md: no magic numbers).
 const EPOCH_MS_THRESHOLD = 20000000000; // inputNum > this => epoch ms, else seconds
+const ORIGIN_FALLBACK_COORDS = "0,0";   // degraded-invocation origin fallback
 const REQ_ID_HEX_RANGE = 0x10000;       // request-id random hex range
 const REQ_ID_HEX_PAD = "0000";          // request-id hex left-pad
 const REQ_ID_HEX_LEN = 4;               // request-id hex width
@@ -38,9 +39,9 @@ try {
     if (rawPar1.indexOf("{") === 0) {
         const cluster = JSON.parse(rawPar1);
         
-        const uLoc = (cluster.origin) || global('User_Loc') || "0,0";
+        const uLoc = (cluster.origin) || global('User_Loc') || ORIGIN_FALLBACK_COORDS;
         const body = {
-            "origin": { "location": { "latLng": { "latitude": parseFloat(uLoc.split(",")[0]), "longitude": parseFloat(uLoc.split(",")[1]) } } },
+            "origin": { "location": { "latLng": { "latitude": getCoord(uLoc, 0), "longitude": getCoord(uLoc, 1) } } },
             "destination": { "location": { "latLng": { "latitude": parseFloat(cluster.destination.coords.split(",")[0]), "longitude": parseFloat(cluster.destination.coords.split(",")[1]) } } },
             "travelMode": "DRIVE",
             "optimizeWaypointOrder": true, 
