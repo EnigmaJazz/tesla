@@ -30,13 +30,17 @@ const DEPARTURE_LEAD_SECS = 7200;       // eligibility pre-start window (2h)
 const ELIGIBILITY_GRACE_SECS = 14400;   // post-end grace window (4h)
 const GEOFENCE_LOOKAHEAD_SECS = 43200;  // 12h geofence generation limit
 
-// INV-0.2: DST-safe day-boundary comparison. Both unixSec values are in UTC.
-function isSameUTCDay(unixSecA, unixSecB) {
+// INV-0.2: DST-safe LOCAL day-boundary comparison. The device timezone IS the
+// configured timezone (no TZ config exists; Gatekeeper already derives its tod
+// buckets from local getHours()). JS Date local getters resolve the local day
+// exactly — a 23/24/25-hour day still has one unambiguous local midnight — so
+// (y, m, d) equality is DST-safe by construction (unlike fixed-second math).
+function isSameLocalDay(unixSecA, unixSecB) {
     const dA = new Date(unixSecA * 1000);
     const dB = new Date(unixSecB * 1000);
-    return dA.getUTCFullYear() === dB.getUTCFullYear()
-        && dA.getUTCMonth() === dB.getUTCMonth()
-        && dA.getUTCDate() === dB.getUTCDate();
+    return dA.getFullYear() === dB.getFullYear()
+        && dA.getMonth() === dB.getMonth()
+        && dA.getDate() === dB.getDate();
 }
 
 // Named sentinels/windows (AGENTS.md: no magic numbers, no bare literals).
@@ -210,7 +214,7 @@ try {
             // a dropin starting today is eligible; otherwise only within
             // [start - lead, end + grace] — a future dropin stays ineligible
             // until its window opens.
-            if (isSameUTCDay(ev.start, nowSec)) timeEligible = true;
+            if (isSameLocalDay(ev.start, nowSec)) timeEligible = true;
             else if (nowSec >= (ev.start - DEPARTURE_LEAD_SECS) && nowSec <= (ev.end + ELIGIBILITY_GRACE_SECS)) timeEligible = true;
         } else {
             timeEligible = (nowSec >= (ev.start - DEPARTURE_LEAD_SECS) && nowSec <= (ev.end + ELIGIBILITY_GRACE_SECS));

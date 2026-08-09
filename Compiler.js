@@ -18,6 +18,10 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
 // ==========================================
 
 const SECONDS_PER_DAY = 86400;
+// Named dwell/buffer constants (AGENTS.md: no magic numbers).
+const MIN_DWELL_SECS = 60;          // hardFloor minimum dwell after arrival
+const PITSTOP_MIN_DWELL_SECS = 1800; // pitstop minimum dwell
+const BUFFER_UNSET_SENTINEL = 9999; // leg.actualBuffer unset sentinel
 
 // Phase 2: travel leg types whose route duration must be positive before
 // publication. Zero-duration synthetic or placeholder legs are rejected.
@@ -97,19 +101,14 @@ function csvHasExactToken(csv, id) {
     return false;
 }
 
-// INV-0.2: DST-safe day-boundary comparison. Both unixSec values are in UTC.
-function isSameUTCDay(unixSecA, unixSecB) {
-    const dA = new Date(unixSecA * 1000);
-    const dB = new Date(unixSecB * 1000);
-    return dA.getUTCFullYear() === dB.getUTCFullYear()
-        && dA.getUTCMonth() === dB.getUTCMonth()
-        && dA.getUTCDate() === dB.getUTCDate();
-}
-
-// INV-0.2: UTC midnight of the day containing unixSec (the "day boundary" in UTC).
-function utcDayBoundaryUnix(unixSec) {
+// INV-0.2: DST-safe LOCAL day-boundary comparison. The device timezone IS the
+// configured timezone (no TZ config exists; Gatekeeper already derives its tod
+// buckets from local getHours()). JS Date local getters resolve the local day
+// exactly — a 23/24/25-hour day still has one unambiguous local midnight — so
+// (y, m, d) equality is DST-safe by construction (unlike fixed-second math).
+function localDayBoundaryUnix(unixSec) {
     const d = new Date(unixSec * 1000);
-    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000;
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000;
 }
 
 function getDist(lat1, lon1, lat2, lon2) {
@@ -163,9 +162,16 @@ function publishCandidate(candidate) {
 // legacy TDS_Master.json / Itin_Master.json while migration is in flight.
 function readJson(path) {
     let raw = "";
-    try { raw = readFile(path) || ""; } catch(e) {}
+    try { raw = readFile(path) || ""; } catch(e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Compiler", severity: "warn", code: "FILE_READ_FAILED", tripId: null, details: { path: path, reason: String(e && e.message || e) } }));
+    }
     if (!raw || raw.indexOf("%") === 0) return null;
-    try { return JSON.parse(raw); } catch(e) { return null; }
+    try { return JSON.parse(raw); } catch(e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Compiler", severity: "warn", code: "FILE_PARSE_FAILED", tripId: null, details: { path: path, reason: String(e && e.message || e) } }));
+        return null;
+    }
 }
 function pathFor(g, kind) {
     return DATA_ROOT + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
@@ -268,7 +274,8 @@ try {
             details: { compiledRows: compiledRows, legacyStepsRetired: true }
         }));
     }
-} catch(e) { flash("Unified Engine Crash:\n" + e.message); }
+} catch(e) { flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+        component: "Compiler", severity: "error", code: "COMPILER_CRASH", tripId: null, details: { message: String(e && e.message || e) } })); }
 
 // Phase 5: compile one typed row. Replaces the per-leg block_step1-21 local
 // reads with explicit TypedRow fields.
@@ -403,7 +410,10 @@ function compileTypedRow(row) {
     let pendingChain = []; 
     try { 
         pendingChain = JSON.parse(pendingCompilerRaw); 
-    } catch(e) {}
+    } catch(e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Compiler", severity: "warn", code: "PENDING_CHAIN_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+    }
 
     // INV-0.1: assign the explicit departure policy before storing the leg.
     // Attached chains are always ASAP per spec §0.1; non-attached heads carry
@@ -435,7 +445,7 @@ function compileTypedRow(row) {
             let prevLeg = itinerary[itinerary.length - 1];
             let prevArr = parseInt(prevLeg.arriveUnix, 10);
 
-            hardFloor = prevArr + 60; 
+            hardFloor = prevArr + MIN_DWELL_SECS; 
 
             let pId = prevLeg.targetEventId;
             let pEv = masterArr.find(e => (e.id || "DEFAULT") === pId);
@@ -468,7 +478,7 @@ function compileTypedRow(row) {
                     hardFloor = prevEnd + (isPDep ? 0 : (depM ? parseInt(depM[1], 10) : defDepMins) * 60);
                 }
             } else if (prevLeg.pitstopState === "forced" || prevLeg.pitstopState === "handled") {
-                hardFloor = prevArr + 1800; 
+                hardFloor = prevArr + PITSTOP_MIN_DWELL_SECS; 
             } else if (prevLeg.mode === "EOD_RETURN" || prevLeg.pitstopState === "end_of_day") {
                 hardFloor = prevArr;
             }
@@ -528,7 +538,10 @@ function compileTypedRow(row) {
         let OVR = {}; 
         try { 
             OVR = JSON.parse(ovrRaw); 
-        } catch(e) {}
+        } catch(e) {
+            flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                component: "Compiler", severity: "warn", code: "OVERRIDES_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+        }
 
         // Phase 6 (REQ-6STATE-1/4): Depart_Memory is trip-state-only. The
         // reducer records observed departures (OBSERVE_DEPARTURE) in
@@ -543,7 +556,13 @@ function compileTypedRow(row) {
                 const parsedState = JSON.parse(stRaw);
                 stateTrips = parsedState.trips || null;
             }
-        } catch (e) { stateTrips = null; }
+        } catch (e) {
+            // A failed state read silently degrades the cross-day departChanged
+            // signal — make it observable (TRIP_STATE_READ_FAILED precedent).
+            flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                component: "Compiler", severity: "warn", code: "TRIP_STATE_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+            stateTrips = null;
+        }
 
         for (let i = 0; i < cLen; i++) {
             let leg = pendingChain[i];
@@ -557,7 +576,7 @@ function compileTypedRow(row) {
                 leg.actualBuffer = Math.floor(delta / 60);
 
                 if (leg.isDepart) {
-                    leg.actualBuffer = 9999; 
+                    leg.actualBuffer = BUFFER_UNSET_SENTINEL; 
                 }
             } else {
                 leg.actualLate = Math.ceil(Math.abs(delta) / 60);
@@ -589,7 +608,7 @@ function compileTypedRow(row) {
                 if (timeGapFromNow <= RELEVANCE_WINDOW_SECS) {
                     if (oldD !== null && !isNaN(oldD) && oldD !== leg.actualDeparture) {
                         let diffDays = Math.round(
-                            (utcDayBoundaryUnix(leg.apiUnix) - utcDayBoundaryUnix(nowSec)) / SECONDS_PER_DAY
+                            (localDayBoundaryUnix(leg.apiUnix) - localDayBoundaryUnix(nowSec)) / SECONDS_PER_DAY
                         );
 
                         if (

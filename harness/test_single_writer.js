@@ -481,9 +481,9 @@ function runScriptFile(scriptPath, opts) {
 // for the cross-day departChanged/departDiffMins signal — no TDS_Depart_Memory
 // global write (REQ-6STATE-1/4, SCN-6STATE-1/7).
 try {
-  // Cross-day signal: the event must be on the NEXT UTC day (diffDays === 1)
-  // and inside the relevance window. nowSec is 2023-11-14T22:13:20Z; the
-  // next UTC day starts at utcDayBoundaryUnix(nowSec) + 86400.
+  // Cross-day signal: the event must be on the NEXT local day (diffDays === 1)
+  // and inside the relevance window. nowSec is 2023-11-14T22:13:20Z; the suite
+  // pins TZ=UTC so the next local day starts at localDayBoundaryUnix(nowSec) + 86400.
   const SECONDS_PER_DAY = 86400;
   const tomorrowStart = nowSec - (nowSec % SECONDS_PER_DAY) + SECONDS_PER_DAY;
   const futureEventStart = tomorrowStart + 3600;

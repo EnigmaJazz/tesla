@@ -34,29 +34,41 @@ function getSafeId(idStr, startSecInt) {
 }
 
 const SECONDS_PER_DAY = 86400;
+// 8-day ingest horizon (cutoffMs = fetchStartMs + horizon).
+const CUTOFF_LOOKAHEAD_MS = 8 * SECONDS_PER_DAY * 1000;
+// Synthetic IN/OUT event duration and the default dropin close-of-day time.
+const SYNTHETIC_EVENT_SECS = 60;
+const DEFAULT_DROPIN_CLOSE = { h: 23, m: 59, s: 59, ms: 999 };
 
-// INV-0.2: DST-safe day-boundary comparison. Both unixSec values are in UTC.
-function isSameUTCDay(unixSecA, unixSecB) {
+// INV-0.2: DST-safe LOCAL day-boundary comparison. The device timezone IS the
+// configured timezone (no TZ config exists; Gatekeeper already derives its tod
+// buckets from local getHours()). JS Date local getters resolve the local day
+// exactly — a 23/24/25-hour day still has one unambiguous local midnight — so
+// (y, m, d) equality is DST-safe by construction (unlike fixed-second math).
+function isSameLocalDay(unixSecA, unixSecB) {
     const dA = new Date(unixSecA * 1000);
     const dB = new Date(unixSecB * 1000);
-    return dA.getUTCFullYear() === dB.getUTCFullYear()
-        && dA.getUTCMonth() === dB.getUTCMonth()
-        && dA.getUTCDate() === dB.getUTCDate();
+    return dA.getFullYear() === dB.getFullYear()
+        && dA.getMonth() === dB.getMonth()
+        && dA.getDate() === dB.getDate();
 }
 
-// INV-0.2: UTC midnight of the day containing unixSec (the "day boundary" in UTC).
-function utcDayBoundaryUnix(unixSec) {
+// INV-0.2: local midnight of the day containing unixSec (device timezone).
+function localDayBoundaryUnix(unixSec) {
     const d = new Date(unixSec * 1000);
-    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000;
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000;
 }
 
 try {
     let nowSec       = Math.floor(Date.now() / 1000);
     let fetchStartMs = forceMs(global('TIMEMS')); 
-    let cutoffMs     = fetchStartMs + 691200000;  
+    let cutoffMs     = fetchStartMs + CUTOFF_LOOKAHEAD_MS;  
 
     let mem = {};
-    try { mem = JSON.parse(readFile(DATA_ROOT + "TDS_Overrides.json") || "{}"); } catch(e) {}
+    try { mem = JSON.parse(readFile(DATA_ROOT + "TDS_Overrides.json") || "{}"); } catch(e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Alpha", severity: "warn", code: "OVERRIDES_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+    }
     let trimmedEventsRaw = mem['Trimmed_Events'] || "";
 
     // Phase 5 Slice B (REQ-5CACHE-1): Alpha no longer reads or writes the route
@@ -71,8 +83,8 @@ try {
     if (isNaN(lastSyncUnix) || lastSyncUnix <= 0) {
         lastSyncUnix = 0; // legacy date-string or empty value forces a one-time migration
     }
-    if (!isSameUTCDay(lastSyncUnix, nowSec)) {
-        setGlobal('Tesla_Last_Sync', String(utcDayBoundaryUnix(nowSec)));
+    if (!isSameLocalDay(lastSyncUnix, nowSec)) {
+        setGlobal('Tesla_Last_Sync', String(localDayBoundaryUnix(nowSec)));
         setGlobal('Daily_Walk_Meters', "0");
     }
 
@@ -82,7 +94,10 @@ try {
         try {
             let rawJson = JSON.parse(diskRaw);
             for (let dKey in rawJson) if (rawJson.hasOwnProperty(dKey)) diskLower[dKey.trim().toLowerCase()] = rawJson[dKey];
-        } catch(e) {}
+        } catch(e) {
+            flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                component: "Alpha", severity: "warn", code: "GEOCODE_CACHE_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+        }
     }
 
     let leavePeriods = []; let l = 1;
@@ -137,7 +152,7 @@ try {
                 expireSec = Math.floor(closeD.getTime() / 1000);
             } else {
                 let midnightD = new Date(startMs);
-                midnightD.setHours(23, 59, 59, 999);
+                midnightD.setHours(DEFAULT_DROPIN_CLOSE.h, DEFAULT_DROPIN_CLOSE.m, DEFAULT_DROPIN_CLOSE.s, DEFAULT_DROPIN_CLOSE.ms);
                 expireSec = Math.floor(midnightD.getTime() / 1000);
             }
             if (nowSec >= expireSec) { i++; continue; }
@@ -179,7 +194,7 @@ try {
                     
                     validEvents.push({
                         "id": id + "_IN", "desc": desc, "title": "Start: " + title,
-                        "start": startSecInt, "end": startSecInt + 60,     
+                        "start": startSecInt, "end": startSecInt + SYNTHETIC_EVENT_SECS,     
                         "loc": loc, "coords": resolvedCoords,
                         "deadline": bEndSec,
                         "isEssential": isPriority 
@@ -188,7 +203,7 @@ try {
                     if (bEndSec <= cutoffMs) {
                         validEvents.push({
                             "id": id + "_OUT", "desc": desc, "title": "End: " + title,
-                            "start": bEndSec - 60, "end": bEndSec,     
+                            "start": bEndSec - SYNTHETIC_EVENT_SECS, "end": bEndSec,     
                             "loc": loc, "coords": resolvedCoords,
                             "deadline": bEndSec,
                             "isEssential": isPriority 
@@ -266,5 +281,6 @@ try {
     // Generation_Publisher owns all writes to TDS_Master.* and Itin_Master.*.
 
 } catch(e) { 
-    flash("Monolithic Alpha Engine Crash:\n" + e.message); 
+    flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+        component: "Alpha", severity: "error", code: "ALPHA_CRASH", tripId: null, details: { message: String(e && e.message || e) } })); 
 }

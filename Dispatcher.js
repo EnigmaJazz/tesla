@@ -23,7 +23,23 @@ const RELEVANCE_EOD_SECS = 24 * 3600;  // INV-0.6: EOD return remains actionable
 const RELEVANCE_DROPIN_GRACE_SECS = 15 * 60;  // INV-0.6: drop-in explicit deadline; if absent, +15 min after planned arrival.
 const LOCK_FRESH_SECS = 7200;  // Phase 4 Slice B: legacy lock freshness for the migration-only fallback.
 
-const SECONDS_PER_DAY = 86400;
+// Named windows/radii (AGENTS.md: no magic numbers).
+const EARTH_RADIUS_M = 6371e3;              // haversine earth radius (getDist)
+const SCHEDULE_MIN_LEAD_SECS = 1200;        // schedule push lower lead bound
+const SCHEDULE_CHANGE_TOLERANCE_SECS = 300; // schedule-change delta threshold
+const HVAC_OPEN_START_SECS = -300;          // hvac/nav push window start
+const HVAC_OPEN_END_SECS = 1200;            // hvac push window end
+const HVAC_COOLDOWN_SECS = 1800;            // hvac push cooldown
+const NAV_OPEN_END_SECS = 3600;             // nav push window end
+const SHORT_STAY_MINS = 45;                 // short-stay clustering rule
+const NAV_TAIL_MATCH_RADIUS_M = 50;         // nav tail-match / phone delta radius
+const PHONE_OPEN_START_SECS = -60;          // phone window start
+const PHONE_OPEN_END_SECS = 600;            // phone window end
+const PHONE_DIST_UNKNOWN = 99999;           // no prior google-nav sentinel
+const SYNC_GAP_HIGH_MINS = 180;             // sync bucket thresholds
+const SYNC_GAP_MED_MINS = 60;
+const SYNC_GAP_LOW_MINS = 30;
+const BOLT_MINS_CAP = 1424;                 // getBoltMins cap (23:44)
 
 // AC-5 (Slice B): local planning-day label for a unix timestamp. Mirrors
 // Sandbox_Engine's localPlanningDay (reader-convergence: byte-identical
@@ -36,23 +52,21 @@ function localPlanningDay(targetUnixSecs) {
     return y + "-" + m + "-" + day;
 }
 
-// INV-0.2: DST-safe day-boundary comparison. Both unixSec values are in UTC.
-function isSameUTCDay(unixSecA, unixSecB) {
+// INV-0.2: DST-safe LOCAL day-boundary comparison. The device timezone IS the
+// configured timezone (no TZ config exists; Gatekeeper already derives its tod
+// buckets from local getHours()). JS Date local getters resolve the local day
+// exactly — a 23/24/25-hour day still has one unambiguous local midnight — so
+// (y, m, d) equality is DST-safe by construction (unlike fixed-second math).
+function isSameLocalDay(unixSecA, unixSecB) {
     const dA = new Date(unixSecA * 1000);
     const dB = new Date(unixSecB * 1000);
-    return dA.getUTCFullYear() === dB.getUTCFullYear()
-        && dA.getUTCMonth() === dB.getUTCMonth()
-        && dA.getUTCDate() === dB.getUTCDate();
-}
-
-// INV-0.2: UTC midnight of the day containing unixSec (the "day boundary" in UTC).
-function utcDayBoundaryUnix(unixSec) {
-    const d = new Date(unixSec * 1000);
-    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000;
+    return dA.getFullYear() === dB.getFullYear()
+        && dA.getMonth() === dB.getMonth()
+        && dA.getDate() === dB.getDate();
 }
 
 function getDist(lat1, lon1, lat2, lon2) {
-    var R = 6371e3; var rLat1 = lat1 * Math.PI / 180; var rLat2 = lat2 * Math.PI / 180;
+    var R = EARTH_RADIUS_M; var rLat1 = lat1 * Math.PI / 180; var rLat2 = lat2 * Math.PI / 180;
     var dLat = (lat2 - lat1) * Math.PI / 180; var dLon = (lon2 - lon1) * Math.PI / 180;
     var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(rLat1) * Math.cos(rLat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
@@ -63,7 +77,10 @@ function getDist(lat1, lon1, lat2, lon2) {
 // is in flight.
 function readJson(path) {
     var raw = "";
-    try { raw = readFile(path) || ""; } catch(e) {}
+    try { raw = readFile(path) || ""; } catch(e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Dispatcher", severity: "warn", code: "FILE_READ_FAILED", tripId: null, details: { path: path, reason: String(e && e.message || e) } }));
+    }
     if (!raw || raw.indexOf("%") === 0) return null;
     try { return JSON.parse(raw); } catch(e) { return null; }
 }
@@ -100,7 +117,7 @@ function getBoltMins(unixSecs) {
     if (isNaN(ms) || ms <= 0) return 0;
     var d = new Date(ms);
     var mins = (d.getHours() * 60) + d.getMinutes();
-    return mins > 1424 ? 1424 : mins; 
+    return mins > BOLT_MINS_CAP ? BOLT_MINS_CAP : mins; 
 }
 
 /**
@@ -227,12 +244,12 @@ try {
         var lastCommittedSched = parseInt(global('Tesla_Last_Scheduled')) || 0;
         var timeDeltaSecs      = Math.abs(dTime - lastCommittedSched);
         
-        var grantSchedulePush  = (timeToDepart > 1200 && timeToDepart <= 86400 && (lastCommittedSched === 0 || timeDeltaSecs > 300));
+        var grantSchedulePush  = (timeToDepart > SCHEDULE_MIN_LEAD_SECS && timeToDepart <= ACTIONABLE_LOOKAHEAD_SECS && (lastCommittedSched === 0 || timeDeltaSecs > SCHEDULE_CHANGE_TOLERANCE_SECS));
         
         var lastHvacPush = parseInt(global('Tesla_Last_HVAC_Unix')) || 0;
-        var grantHvacPush = (timeToDepart >= -300 && timeToDepart <= 1200 && (nowSec - lastHvacPush > 1800));
+        var grantHvacPush = (timeToDepart >= HVAC_OPEN_START_SECS && timeToDepart <= HVAC_OPEN_END_SECS && (nowSec - lastHvacPush > HVAC_COOLDOWN_SECS));
 
-        var isNavWindowOpen = (timeToDepart >= -300 && timeToDepart <= 3600);
+        var isNavWindowOpen = (timeToDepart >= HVAC_OPEN_START_SECS && timeToDepart <= NAV_OPEN_END_SECS);
         
         var navPayloadStr = coords; 
         if (evalMode === "DRIVE" && driveIdx !== -1) {
@@ -244,10 +261,10 @@ try {
                 let nextT = master[j];
                 let nextDep = parseInt(nextT.departUnix || nextT.time || 0);
                 
-                if (!isSameUTCDay(lastArrive, nextDep)) break; // Break clustering at overnight boundaries
+                if (!isSameLocalDay(lastArrive, nextDep)) break; // Break clustering at overnight boundaries
                 
                 let stayMins = (nextDep - lastArrive) / 60;
-                let isShortStay = stayMins >= 0 && stayMins <= 45; 
+                let isShortStay = stayMins >= 0 && stayMins <= SHORT_STAY_MINS; 
                 
                 if (currentIsDropin || isShortStay) {
                     let nc = nextT.targetCoords || nextT.coords || "0,0";
@@ -280,7 +297,7 @@ try {
                     for (var n = 0; n < newNavP.length; n++) {
                         var oC = oldNavP[offset + n].split(",");
                         var nC = newNavP[n].split(",");
-                        if (getDist(parseFloat(oC[0]), parseFloat(oC[1]), parseFloat(nC[0]), parseFloat(nC[1])) > 50) {
+                        if (getDist(parseFloat(oC[0]), parseFloat(oC[1]), parseFloat(nC[0]), parseFloat(nC[1])) > NAV_TAIL_MATCH_RADIUS_M) {
                             isTailMatch = false;
                             break;
                         }
@@ -293,14 +310,14 @@ try {
         var lastCommittedGoogle = (global('Google_Last_Nav') || "").trim();
         if (lastCommittedGoogle.indexOf("%") === 0) lastCommittedGoogle = "";
 
-        var isPhoneWindowOpen = (timeToDepart >= -60 && timeToDepart <= 600);
-        var phoneDistDelta = 99999;
+        var isPhoneWindowOpen = (timeToDepart >= PHONE_OPEN_START_SECS && timeToDepart <= PHONE_OPEN_END_SECS);
+        var phoneDistDelta = PHONE_DIST_UNKNOWN;
 
         if (lastCommittedGoogle !== "" && lastCommittedGoogle.indexOf(",") !== -1) {
             var oldGNavP = lastCommittedGoogle.split(",");
             phoneDistDelta = getDist(parseFloat(oldGNavP[0]), parseFloat(oldGNavP[1]), parseFloat(coordArr[0]), parseFloat(coordArr[1]));
         }
-        var grantGooglePush = (isPhoneWindowOpen && (lastCommittedGoogle === "" || phoneDistDelta > 50) && coords !== "0,0");
+        var grantGooglePush = (isPhoneWindowOpen && (lastCommittedGoogle === "" || phoneDistDelta > NAV_TAIL_MATCH_RADIUS_M) && coords !== "0,0");
 
         setLocal('itin_time1', dTime.toString());
         setLocal('itin_mode1', evalMode);
@@ -371,7 +388,11 @@ try {
                 }
             }
         }
-    } catch(e) { sessionStoreReadable = false; }
+    } catch(e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Dispatcher", severity: "warn", code: "SESSIONS_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+        sessionStoreReadable = false;
+    }
 
     if (!sessionStoreReadable) {
         try {
@@ -382,7 +403,10 @@ try {
                     isActionLocked = true;
                 }
             }
-        } catch(e) {}
+        } catch(e) {
+            flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                component: "Dispatcher", severity: "warn", code: "ACTION_LOCK_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+        }
     }
 
     if (isDriving) {
@@ -408,9 +432,9 @@ try {
         }));
     } else {
         var gapMins = Math.floor((targetDrive.departUnix - nowSec) / 60);
-        if (gapMins > 180) syncIntervalMins = 120;
-        else if (gapMins > 60) syncIntervalMins = 60;
-        else if (gapMins > 30) syncIntervalMins = 30;
+        if (gapMins > SYNC_GAP_HIGH_MINS) syncIntervalMins = 120;
+        else if (gapMins > SYNC_GAP_MED_MINS) syncIntervalMins = 60;
+        else if (gapMins > SYNC_GAP_LOW_MINS) syncIntervalMins = 30;
         // If targetDrive is overdue, gapMins is negative → SOON_SYNC_MINS; IDLE_SYNC_ENGAGED is reserved for the empty-master / all-truly-stale case.
         else syncIntervalMins = SOON_SYNC_MINS;
     }
@@ -419,4 +443,7 @@ try {
     var syncDate   = new Date(nextSyncMs);
     setGlobal('Next_Sync', (syncDate.getHours()<10?'0':'')+syncDate.getHours() + "." + (syncDate.getMinutes()<10?'0':'')+syncDate.getMinutes());
 
-} catch(err) { flash("Dispatcher Fault: " + err.message); }
+} catch(err) {
+    flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+        component: "Dispatcher", severity: "error", code: "DISPATCHER_FAULT", tripId: null, details: { message: String(err && err.message || err) } }));
+}

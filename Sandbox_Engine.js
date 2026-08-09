@@ -17,10 +17,54 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
 
 let GLOBAL_MASTER_ARR = [];
 
+// Named windows/radii/speeds (AGENTS.md: no magic numbers).
+const UNUSABLE_COORDS = "0,0";
+const SNAP_RADIUS_M = 75;                 // snapCoords / base-latch proximity
+const LATCH_RELEASE_RADIUS_M = 1000;      // geolatch release radius
+const MEETING_RADIUS_M = 300;             // meeting / observation-marker proximity
+const MEETING_LEAD_SECS = 7200;           // meeting eligibility pre-start window
+const DRIVE_DISTANCE_M = 1500;            // walk→drive distance threshold
+const TRANSIT_ZONE_RADIUS_M = 5000;       // city transit zone radius
+const RECOVERY_WALK_RADIUS_M = 1500;      // recovery-mode walk threshold
+const CAR_RECOVERY_RADIUS_M = 200;        // car-recovery / drive-mode radius
+const BASE_DISTANCE_M = 300;              // away-from-base threshold
+const NEXT_EVENT_DISTANCE_M = 500;        // far-next-event threshold
+const DEPARTURE_WINDOW_SECS = 600;        // departure-window lower bound
+const LATEST_DEPART_GRACE_SECS = 3600;    // latest-valid-depart grace
+const GHOST_ATTACH_GRACE_SECS = 7200;     // ghost-attachment window
+const GHOST_ATTACH_HORIZON_SECS = 43200;  // dropin attachment horizon (12h)
+const ARRIVAL_SKIP_FORCED_RADIUS_M = 50;  // arrival-skip radius when forced
+const ARRIVAL_SKIP_RADIUS_M = 200;        // arrival-skip radius
+const ARRIVAL_SKIP_WINDOW_SECS = 10800;   // arrival-skip relevance window (3h)
+const LONG_GAP_SECS = 10800;              // pitstop long-gap threshold (3h)
+const PITSTOP_BUFFER_SECS = 1800;         // pitstop stay/detour buffer (30m)
+const OVERNIGHT_STAY_SECS = 18000;        // overnight stay threshold (5h)
+const SIM_MIN_ADVANCE_SECS = 120;         // simulation floor (now + 2m)
+const EARLY_EOD_EVAL_WINDOW_SECS = 14400; // early-EOD evalStart window (4h)
+const CLOSE_UNSET_SENTINEL = 2000000000;  // no-close sentinel (year 2033)
+const DIST_UNKNOWN_SENTINEL = 99999;      // no-base distance sentinel
+const EOD_HORIZON_DAYS = 8;               // sevenDayHorizonSec horizon (8 days)
+const DURATION_ESTIMATE_SECS = 3600;       // EOD/event duration fallback estimate
+const CACHE_RECENCY_WINDOW_SECS = 900;     // master-cache recency window (15m)
+const TOD_WRAP_MINUTES = 720;              // tod-diff wrap point (12h)
+const TOD_DAY_MINUTES = 1440;              // minutes per day
+const TOD_BUCKET_TOLERANCE_MINUTES = 60;   // tod bucket tolerance
+const BLOCK_BREAK_RADIUS_M = 50;           // mode-change block-break radius
+const DEFAULT_MAX_WALK_METERS = 8046;      // Max_Walk_Meters default (5 mi)
+const EOF_SKIP_OFFSET = 99;                // EOF skipIdxUntil offset
+const LATENESS_DELTA_MINS = 5;             // lateness-reduction delta threshold
+const DAY_GROUP_DUPE_LIMIT = 3;            // same-day group duplicates before fetch
+
 let ovrRaw = "";
-try { ovrRaw = readFile(DATA_ROOT + "TDS_Overrides.json") || "{}"; } catch(e) {}
+try { ovrRaw = readFile(DATA_ROOT + "TDS_Overrides.json") || "{}"; } catch(e) {
+    flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+        component: "Sandbox", severity: "warn", code: "OVERRIDES_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+}
 let OVR = {};
-try { OVR = JSON.parse(ovrRaw); } catch(e) {}
+try { OVR = JSON.parse(ovrRaw); } catch(e) {
+    flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+        component: "Sandbox", severity: "warn", code: "OVERRIDES_PARSE_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+}
 function getOvr(key) { return OVR[key] || ""; }
 
 // Phase 6 (REQ-6STATE-1): Completed_Stops is trip-state-only. The snapshot is
@@ -38,14 +82,23 @@ try {
         }
         completedStopsRaw = stopKeys.join(",");
     }
-} catch (e) {}
+} catch (e) {
+    flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+        component: "Sandbox", severity: "warn", code: "TRIP_STATE_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+}
 
 // E1 (RULE-8C): preferences are read directly from the PREFS file —
 // Route_Defaults lives in TDS_Routine_Preferences.json, not OVR.
 let prefsRaw = "";
-try { prefsRaw = readFile(DATA_ROOT + "TDS_Routine_Preferences.json") || "{}"; } catch(e) {}
+try { prefsRaw = readFile(DATA_ROOT + "TDS_Routine_Preferences.json") || "{}"; } catch(e) {
+    flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+        component: "Sandbox", severity: "warn", code: "PREFS_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+}
 let PREFS = {};
-try { PREFS = JSON.parse(prefsRaw); } catch(e) {}
+try { PREFS = JSON.parse(prefsRaw); } catch(e) {
+    flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+        component: "Sandbox", severity: "warn", code: "PREFS_PARSE_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+}
 function getPrefs(key) { return PREFS[key] || ""; }
 
 // OVR-10 (REQ-OVR10-1): exact-key readers over the schema-v2 stores. Identity
@@ -202,7 +255,7 @@ function readActiveGeneration(kind) {
 }
 
 function getTrimmedEnd(evId, rawEnd, start, trimRaw) {
-    let e = rawEnd || (start + 3600);
+    let e = rawEnd || (start + DURATION_ESTIMATE_SECS);
     if (trimRaw && csvHasOccurrence(trimRaw, evId)) {
         let tRows = trimRaw.split(",");
         for (let t = 0; t < tRows.length; t++) {
@@ -250,19 +303,14 @@ function getSpeed(mode) {
 
 const SECONDS_PER_DAY = 86400;
 
-// INV-0.2: DST-safe day-boundary comparison. Both unixSec values are in UTC.
-function isSameUTCDay(unixSecA, unixSecB) {
-    const dA = new Date(unixSecA * 1000);
-    const dB = new Date(unixSecB * 1000);
-    return dA.getUTCFullYear() === dB.getUTCFullYear()
-        && dA.getUTCMonth() === dB.getUTCMonth()
-        && dA.getUTCDate() === dB.getUTCDate();
-}
-
-// INV-0.2: UTC midnight of the day containing unixSec (the "day boundary" in UTC).
-function utcDayBoundaryUnix(unixSec) {
+// INV-0.2: DST-safe LOCAL day-boundary comparison. The device timezone IS the
+// configured timezone (no TZ config exists; Gatekeeper already derives its tod
+// buckets from local getHours()). JS Date local getters resolve the local day
+// exactly — a 23/24/25-hour day still has one unambiguous local midnight — so
+// (y, m, d) equality is DST-safe by construction (unlike fixed-second math).
+function localDayBoundaryUnix(unixSec) {
     const d = new Date(unixSec * 1000);
-    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000;
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000;
 }
 
 function getBase(targetTimeSecs) {
@@ -305,7 +353,7 @@ function getDayPrefix(targetUnixSecs, currentUnixSecs) {
     let cDate = new Date(currentUnixSecs * 1000);
     let tMidnight = new Date(tDate.getFullYear(), tDate.getMonth(), tDate.getDate()).getTime();
     let cMidnight = new Date(cDate.getFullYear(), cDate.getMonth(), cDate.getDate()).getTime();
-    let diffDays = Math.round((tMidnight - cMidnight) / (86400 * 1000));
+    let diffDays = Math.round((tMidnight - cMidnight) / (SECONDS_PER_DAY * 1000));
     
     if (diffDays === 0) return "Today";
     if (diffDays === 1) return "Tomorrow";
@@ -322,14 +370,14 @@ function localPlanningDay(targetUnixSecs) {
 }
 
 function snapCoords(rawCoords, masterArray, targetCoordsToIgnore) {
-    if (!rawCoords || rawCoords === "0,0") return { coords: rawCoords, snapped: false };
+    if (!rawCoords || rawCoords === UNUSABLE_COORDS) return { coords: rawCoords, snapped: false };
     let parts = rawCoords.split(",");
     let rLat = parseFloat(parts[0]); let rLon = parseFloat(parts[1]);
     if (isNaN(rLat) || isNaN(rLon)) return { coords: rawCoords, snapped: false };
 
-    if (targetCoordsToIgnore && targetCoordsToIgnore !== "0,0") {
+    if (targetCoordsToIgnore && targetCoordsToIgnore !== UNUSABLE_COORDS) {
         let tParts = targetCoordsToIgnore.split(",");
-        if (getDist(rLat, rLon, parseFloat(tParts[0]), parseFloat(tParts[1])) <= 75) {
+        if (getDist(rLat, rLon, parseFloat(tParts[0]), parseFloat(tParts[1])) <= SNAP_RADIUS_M) {
             return { coords: rawCoords, snapped: true };
         }
     }
@@ -338,7 +386,7 @@ function snapCoords(rawCoords, masterArray, targetCoordsToIgnore) {
     let hParts = homeRaw.split(",");
     let hLat = parseFloat(hParts[0]); let hLon = parseFloat(hParts[1]);
     if (!isNaN(hLat) && !isNaN(hLon) && hLat !== 0) {
-        if (getDist(rLat, rLon, hLat, hLon) <= 75) return { coords: homeRaw.trim(), snapped: true };
+        if (getDist(rLat, rLon, hLat, hLon) <= SNAP_RADIUS_M) return { coords: homeRaw.trim(), snapped: true };
     }
 
     let baseGeos = readFile(DATA_ROOT + "TDS_Base_Geocodes.txt") || "";
@@ -348,13 +396,13 @@ function snapCoords(rawCoords, masterArray, targetCoordsToIgnore) {
             if (!bRows[b]) continue;
             let bParts = bRows[b].split("~");
             let bcP = (bParts[2] || "0,0").split(",");
-            if (getDist(rLat, rLon, parseFloat(bcP[0]), parseFloat(bcP[1])) <= 75) return { coords: bParts[2].trim(), snapped: true };
+            if (getDist(rLat, rLon, parseFloat(bcP[0]), parseFloat(bcP[1])) <= SNAP_RADIUS_M) return { coords: bParts[2].trim(), snapped: true };
         }
     }
 
     for (let e = 0; e < masterArray.length; e++) {
         let ecP = (masterArray[e].coords || "0,0").split(",");
-        if (getDist(rLat, rLon, parseFloat(ecP[0]), parseFloat(ecP[1])) <= 75) return { coords: masterArray[e].coords.trim(), snapped: true };
+        if (getDist(rLat, rLon, parseFloat(ecP[0]), parseFloat(ecP[1])) <= SNAP_RADIUS_M) return { coords: masterArray[e].coords.trim(), snapped: true };
     }
     return { coords: rawCoords, snapped: false };
 }
@@ -362,15 +410,15 @@ function snapCoords(rawCoords, masterArray, targetCoordsToIgnore) {
 function calcMode(startCoords, targetCoords, evStartStr, evText, evId) {
     let dist = getDist(parseFloat(startCoords.split(",")[0]), parseFloat(startCoords.split(",")[1]), parseFloat(targetCoords.split(",")[0]), parseFloat(targetCoords.split(",")[1]));
     let mode = "WALK";
-    if (dist >= 1500) mode = "DRIVE";
+    if (dist >= DRIVE_DISTANCE_M) mode = "DRIVE";
 
     let cityZonesRaw = global('City_Transit_Zones') || "";
-    if (cityZonesRaw.length > 5 && dist >= 1500) {
+    if (cityZonesRaw.length > 5 && dist >= DRIVE_DISTANCE_M) {
         let zones = cityZonesRaw.split("|");
         let evLat = parseFloat(targetCoords.split(",")[0]); let evLon = parseFloat(targetCoords.split(",")[1]);
         for (let z = 0; z < zones.length; z++) {
             let zLat = parseFloat(zones[z].split(",")[0]); let zLon = parseFloat(zones[z].split(",")[1]);
-            if (getDist(evLat, evLon, zLat, zLon) <= 5000) { mode = "TRANSIT"; break; }
+            if (getDist(evLat, evLon, zLat, zLon) <= TRANSIT_ZONE_RADIUS_M) { mode = "TRANSIT"; break; }
         }
     }
     
@@ -393,7 +441,7 @@ function calcMode(startCoords, targetCoords, evStartStr, evText, evId) {
 }
 
 function getRecoveryMode(bLoc, cLoc, d) {
-    if (d < 1500) return "WALK";
+    if (d < RECOVERY_WALK_RADIUS_M) return "WALK";
     let m = calcMode(bLoc, cLoc, "0", "", "").mode;
     return (m === "TRANSIT") ? "TRANSIT" : "LIFT";
 }
@@ -459,12 +507,12 @@ try {
 
     if (idx > master.length) { 
         // REQ-5QUEUE-1: EOF is an empty-row envelope, never a bare token.
-        setLocal('block_queue', JSON.stringify({ schemaVersion: 1, rows: [], eof: true, skipIdxUntil: (master.length + 99), stepConflict: null, notifications: [] }));
+        setLocal('block_queue', JSON.stringify({ schemaVersion: 1, rows: [], eof: true, skipIdxUntil: (master.length + EOF_SKIP_OFFSET), stepConflict: null, notifications: [] }));
         setLocal('is_drive_block', "false");
     } else {
         let nowSec = Math.floor(Date.now() / 1000);
         let incomingStatus = global('Current_Status') || "Idle";
-        const sevenDayHorizonSec = utcDayBoundaryUnix(nowSec) + 8 * SECONDS_PER_DAY - 1;
+        const sevenDayHorizonSec = localDayBoundaryUnix(nowSec) + EOD_HORIZON_DAYS * SECONDS_PER_DAY - 1;
 
         let resolvedStatus = incomingStatus;
         let isAtMeeting = false;
@@ -480,7 +528,7 @@ try {
 
             if (uLat !== 0 && uLng !== 0) {
                 let hCoords = (global('Home_Coords') || "0,0").split(",");
-                let isAtHome = getDist(uLat, uLng, parseFloat(hCoords[0]), parseFloat(hCoords[1])) < 75;
+                let isAtHome = getDist(uLat, uLng, parseFloat(hCoords[0]), parseFloat(hCoords[1])) < SNAP_RADIUS_M;
                 if (isAtHome) nextLatch = ""; 
 
                 let isAtAdHocBase = false; let adHocRaw = global('AdHoc_Base') || "";
@@ -488,9 +536,9 @@ try {
                     let aParts = adHocRaw.split("~");
                     if (aParts.length >= 3) {
                         let dA = getDist(uLat, uLng, parseFloat(aParts[2].split(",")[0]), parseFloat(aParts[2].split(",")[1]));
-                        let isALatched = (activeLatch === "ADHOC~" + aParts[2] && dA < 1000);
-                        if (dA < 75 || isALatched) { isAtAdHocBase = true; nextLatch = "ADHOC~" + aParts[2]; } 
-                        else if (activeLatch === "ADHOC~" + aParts[2] && dA >= 1000) {
+                        let isALatched = (activeLatch === "ADHOC~" + aParts[2] && dA < LATCH_RELEASE_RADIUS_M);
+                        if (dA < SNAP_RADIUS_M || isALatched) { isAtAdHocBase = true; nextLatch = "ADHOC~" + aParts[2]; } 
+                        else if (activeLatch === "ADHOC~" + aParts[2] && dA >= LATCH_RELEASE_RADIUS_M) {
                             if (nextLatch === activeLatch) nextLatch = "";
                         }
                     }
@@ -511,12 +559,12 @@ try {
                         if (nowSec >= bStart && nowSec <= bEnd) {
                             let bCStr = parts[2] || "0,0";
                             let dB = getDist(uLat, uLng, parseFloat(bCStr.split(",")[0]), parseFloat(bCStr.split(",")[1]));
-                            let isBLatched = (activeLatch === "BASE~" + bCStr && dB < 1000);
-                            if (dB < 75 || isBLatched) { 
+                            let isBLatched = (activeLatch === "BASE~" + bCStr && dB < LATCH_RELEASE_RADIUS_M);
+                            if (dB < SNAP_RADIUS_M || isBLatched) { 
                                 isAtBase = true; activeBaseName = parts[4] || "Base"; activeBaseId = bId || "";
                                 nextLatch = "BASE~" + bCStr; break; 
                             } 
-                            else if (activeLatch === "BASE~" + bCStr && dB >= 1000) {
+                            else if (activeLatch === "BASE~" + bCStr && dB >= LATCH_RELEASE_RADIUS_M) {
                                 if (nextLatch === activeLatch) nextLatch = "";
                             }
                         }
@@ -531,11 +579,11 @@ try {
                     let mId = getSafeId(nextMeet);
                     let dM = getDist(uLat, uLng, parseFloat(mCoords[0]), parseFloat(mCoords[1]));
                     
-                    let isMLatched = (activeLatch === "MEET~" + mId && dM < 1000);
+                    let isMLatched = (activeLatch === "MEET~" + mId && dM < LATCH_RELEASE_RADIUS_M);
 
-                    if ((dM < 300 || isMLatched) && nowSec >= (mStartSec - 7200) && nowSec <= mEndSec) {
+                    if ((dM < BASE_DISTANCE_M || isMLatched) && nowSec >= (mStartSec - MEETING_LEAD_SECS) && nowSec <= mEndSec) {
                         isAtMeeting = true; nextLatch = "MEET~" + mId;
-                    } else if (activeLatch === "MEET~" + mId && dM >= 1000) {
+                    } else if (activeLatch === "MEET~" + mId && dM >= LATCH_RELEASE_RADIUS_M) {
                         if (nextLatch === activeLatch) nextLatch = "";
                     }
                 }
@@ -576,7 +624,10 @@ try {
                                 }
                             });
                         }
-                    } catch (e) {}
+                    } catch (e) {
+                        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                            component: "Sandbox", severity: "warn", code: "TRIP_STATE_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+                    }
                     activeManualTrips.forEach(function (tid) {
                         const completionPayload = {
                             generationId: global('TDS_Active_Generation') || "gen:0:0000",
@@ -631,13 +682,13 @@ try {
                         targetId = activeLeg.targetEventId || "";
                     }
                     
-                    let latestValidDepart = leaveSec + 3600; 
+                    let latestValidDepart = leaveSec + LATEST_DEPART_GRACE_SECS; 
                     if (targetId) {
                         let tEv = master.find(e => getSafeId(e) === targetId);
                         if (tEv) latestValidDepart = forceSeconds(tEv.end) - (activeLeg.durationSecs || 0);
                     }
 
-                    if (leaveSec > 0 && nowSec >= (leaveSec - 600) && nowSec <= latestValidDepart) {
+                    if (leaveSec > 0 && nowSec >= (leaveSec - DEPARTURE_WINDOW_SECS) && nowSec <= latestValidDepart) {
                         let isCarPaired = (global('Car_Connected') || "").toLowerCase() === "true";
                         if (legMode === "DRIVE") resolvedStatus = isCarPaired ? ("Driving" + pitStr) : ("Lift" + pitStr);
                         else {
@@ -665,7 +716,10 @@ try {
                                     const lastDep = deps[deps.length - 1];
                                     departureRecordedToday = !!(lastDep && lastDep.planningDay === localPlanningDay(nowSec));
                                 }
-                            } catch (e) {}
+                            } catch (e) {
+                                flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                                    component: "Sandbox", severity: "warn", code: "TRIP_STATE_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+                            }
                             if (!departureRecordedToday) {
                                 stageReducerCommand('OBSERVE_DEPARTURE', {
                                     generationId: global('TDS_Active_Generation') || "gen:0:0000",
@@ -695,7 +749,7 @@ try {
         let state = { time: forceSeconds(local('virtual_time')) || nowSec, loc: snapLoc.coords, carLoc: snapCar.coords, isStableOrigin: snapLoc.snapped };
         
         if (idx === 1) {
-            state.time = Math.max(state.time, nowSec + 120);
+            state.time = Math.max(state.time, nowSec + SIM_MIN_ADVANCE_SECS);
         }
 
         let queue = []; let notifQueue = []; let blockMode = null; let skipIdx = idx; let stepConflict = "";
@@ -775,7 +829,7 @@ try {
         
         let ignoredLateness = getOvr('Ignored_Lateness'); let ignoredWalks = getOvr('Ignored_Walks');
 
-        let maxWalk = parseInt(global('Max_Walk_Meters'), 10) || 8046; 
+        let maxWalk = parseInt(global('Max_Walk_Meters'), 10) || DEFAULT_MAX_WALK_METERS; 
         let dailyWalkDist = parseInt(global('Daily_Walk_Meters'), 10) || 0;
         let liveThreshold = parseInt(global('Live_Traffic_Threshold'), 10) || 7200;
 
@@ -960,7 +1014,7 @@ try {
                 for (let r = 0; r < ramTier.length; r++) {
                     let item = ramTier[r];
                     if (item.o === orig && item.d === dest && item.m === mode) {
-                        if ((nowSec - item.pulledSec) <= liveThreshold && item.pulledSec > latestTimestamp && !isNaN(item.dur) && item.dur > 0 && item.dur <= 86400) {
+                        if ((nowSec - item.pulledSec) <= liveThreshold && item.pulledSec > latestTimestamp && !isNaN(item.dur) && item.dur > 0 && item.dur <= SECONDS_PER_DAY) {
                             latestTimestamp = item.pulledSec; bestRamDur = item.dur;
                         }
                     }
@@ -977,11 +1031,11 @@ try {
                     let row = ssdTier[s];
                     if (row.o === orig && row.d === dest && row.m === mode) {
                         if (isNaN(row.meanDur) || row.meanDur <= 0 || row.meanDur > 86400) continue;
-                        if ((nowSec - row.updatedSec) < 900 && row.updatedSec > 0) return row.meanDur;
+                        if ((nowSec - row.updatedSec) < CACHE_RECENCY_WINDOW_SECS && row.updatedSec > 0) return row.meanDur;
                         if (row.tod !== -999 && row.dayType === targetDayType) {
                             let diff = Math.abs(targetTod - row.tod);
-                            if (diff > 720) diff = 1440 - diff;
-                            if (diff <= 60) return row.meanDur;
+                            if (diff > TOD_WRAP_MINUTES) diff = TOD_DAY_MINUTES - diff;
+                            if (diff <= TOD_BUCKET_TOLERANCE_MINUTES) return row.meanDur;
                         }
                     }
                 }
@@ -990,7 +1044,7 @@ try {
             for (let r = 0; r < ramTier.length; r++) {
                 let item = ramTier[r];
                 if (item.o === orig && item.d === dest && item.m === mode) {
-                    if (item.pulledSec > latestTimestamp && !isNaN(item.dur) && item.dur > 0 && item.dur <= 86400) {
+                    if (item.pulledSec > latestTimestamp && !isNaN(item.dur) && item.dur > 0 && item.dur <= SECONDS_PER_DAY) {
                         latestTimestamp = item.pulledSec; bestRamDur = item.dur;
                     }
                 }
@@ -1015,7 +1069,7 @@ try {
                 let travelSecs = 0; let recSecs = 0;
                 if (targetMode === "DRIVE") {
                     let cDist = getDist(parseFloat(sLoc.split(",")[0]), parseFloat(sLoc.split(",")[1]), parseFloat(sCarLoc.split(",")[0]), parseFloat(sCarLoc.split(",")[1]));
-                    if (cDist > 200) {
+                    if (cDist > CAR_RECOVERY_RADIUS_M) {
                         let cMode = getRecoveryMode(sLoc, sCarLoc, cDist);
                         recSecs = getCachedTime(sLoc, sCarLoc, cMode, sTime) || Math.round(cDist / getSpeed(cMode));
                         travelSecs += recSecs; sLoc = sCarLoc; 
@@ -1085,7 +1139,7 @@ try {
 
                 if (mode === "DRIVE") {
                     let dCar = getDist(parseFloat(simLoc.split(",")[0]), parseFloat(simLoc.split(",")[1]), parseFloat(simCar.split(",")[0]), parseFloat(simCar.split(",")[1]));
-                    if (dCar > 200) {
+                    if (dCar > CAR_RECOVERY_RADIUS_M) {
                         let rMode = getRecoveryMode(simLoc, simCar, dCar);
                         legSecs += getCachedTime(simLoc, simCar, rMode, simTime) || Math.round(dCar / getSpeed(rMode));
                         simLoc = simCar;
@@ -1160,17 +1214,17 @@ try {
             } else if (chainPlanningDay !== evPlanningDay) {
                 let activeBase = getBase(state.time);
                 let distToBase = getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(activeBase.coords.split(",")[0]), parseFloat(activeBase.coords.split(",")[1]));
-                if (distToBase > 300) {
+                if (distToBase > BASE_DISTANCE_M) {
                     let eodModeB = calcMode(state.loc, activeBase.coords, "", "", "").mode;
                     let carDistB = getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(state.carLoc.split(",")[0]), parseFloat(state.carLoc.split(",")[1]));
-                    if (carDistB > 200 && eodModeB === "DRIVE") {
+                    if (carDistB > CAR_RECOVERY_RADIUS_M && eodModeB === "DRIVE") {
                         let recModeB = getRecoveryMode(state.loc, state.carLoc, carDistB);
                         let rTimeB = getCachedTime(state.loc, state.carLoc, recModeB, state.time) || Math.round(carDistB / getSpeed(recModeB));
                         enqueueTypedRow({ rowType: "RECOVERY", title: "Car", coords: state.carLoc, mode: recModeB, displayTime: state.time, departTime: (state.time + rTimeB), pitstopState: "false", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: "REC_BND_" + evId, evLoc: state.carLoc, engineLateMins: 0, currentLegStable: false, dropinStatusFlag: "none", safeDesc: "Vehicle Retrieval", adHoc: [], departurePolicy: "ASAP", planningDay: chainPlanningDay });
                         state.time += rTimeB;
                         state.loc = state.carLoc;
                     }
-                    enqueueTypedRow({ rowType: "EOD_RETURN", title: activeBase.name, coords: activeBase.coords, mode: eodModeB, displayTime: state.time, departTime: (state.time + 3600), pitstopState: "end_of_day", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: "EOD_BND_" + evId, evLoc: activeBase.name, engineLateMins: 0, currentLegStable: true, dropinStatusFlag: "none", safeDesc: "Return Journey", adHoc: [], departurePolicy: "ASAP", planningDay: chainPlanningDay });
+                    enqueueTypedRow({ rowType: "EOD_RETURN", title: activeBase.name, coords: activeBase.coords, mode: eodModeB, displayTime: state.time, departTime: (state.time + DURATION_ESTIMATE_SECS), pitstopState: "end_of_day", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: "EOD_BND_" + evId, evLoc: activeBase.name, engineLateMins: 0, currentLegStable: true, dropinStatusFlag: "none", safeDesc: "Return Journey", adHoc: [], departurePolicy: "ASAP", planningDay: chainPlanningDay });
                     simAtBase = true;
                     state.loc = activeBase.coords;
                     if (eodModeB === "DRIVE") state.carLoc = activeBase.coords;
@@ -1202,7 +1256,7 @@ try {
             // uppercase "_OUT" (legacy structural convention, not a suffix
             // inference). Match both so the observation row is enqueued and
             // the tail EOD return stays suppressed.
-            if (evId.toUpperCase().indexOf("_OUT") !== -1 && (distToEventDirect < 300 || isMeetingLatched)) {
+            if (evId.toUpperCase().indexOf("_OUT") !== -1 && (distToEventDirect < BASE_DISTANCE_M || isMeetingLatched)) {
                 let sDepMatch = evDesc.match(/(?:#dep:|#leave:)(\d+)/i);
                 let evDepBufSecs = (sDepMatch ? parseInt(sDepMatch[1], 10) : defDepMins) * 60;
                 state.time = Math.max(state.time, evEnd) + evDepBufSecs;
@@ -1221,19 +1275,19 @@ try {
                 let activeBase = getBase(state.time);
                 let distToBase = getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(activeBase.coords.split(",")[0]), parseFloat(activeBase.coords.split(",")[1]));
 
-                if (distToBase > 300) {
+                if (distToBase > BASE_DISTANCE_M) {
                     let distToNextEv = getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(evCoords.split(",")[0]), parseFloat(evCoords.split(",")[1]));
                     let timeGapSecs  = evStart - state.time;
 
-                    if (distToNextEv > 500 || timeGapSecs > RELEVANCE_WINDOW_SECS) {
+                    if (distToNextEv > NEXT_EVENT_DISTANCE_M || timeGapSecs > RELEVANCE_WINDOW_SECS) {
                         let eodMode = calcMode(state.loc, activeBase.coords, "", "", "").mode;
                         let tailInheritedId = "EOD_EARLY_" + (master[i - 2] ? getSafeId(master[i - 2]) : "DEFAULT");
 
                         let carDistToBase = getDist(parseFloat(state.carLoc.split(",")[0]), parseFloat(state.carLoc.split(",")[1]), parseFloat(activeBase.coords.split(",")[0]), parseFloat(activeBase.coords.split(",")[1]));
-                        if (carDistToBase > 300) eodMode = "DRIVE";
+                        if (carDistToBase > BASE_DISTANCE_M) eodMode = "DRIVE";
 
                         let carDistEOD = getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(state.carLoc.split(",")[0]), parseFloat(state.carLoc.split(",")[1]));
-                        if (eodMode === "DRIVE" && carDistEOD > 200) {
+                        if (eodMode === "DRIVE" && carDistEOD > CAR_RECOVERY_RADIUS_M) {
                             let recModeEOD = getRecoveryMode(state.loc, state.carLoc, carDistEOD);
                             let rTimeEOD = getCachedTime(state.loc, state.carLoc, recModeEOD, state.time) || Math.round(carDistEOD / getSpeed(recModeEOD));
                             
@@ -1242,12 +1296,12 @@ try {
                             state.loc = state.carLoc;
                         }
 
-                        enqueueTypedRow({ rowType: "EOD_RETURN", title: activeBase.name, coords: activeBase.coords, mode: eodMode, displayTime: state.time, departTime: (state.time + 3600), pitstopState: "end_of_day", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: tailInheritedId, evLoc: activeBase.name, engineLateMins: 0, currentLegStable: true, dropinStatusFlag: "none", safeDesc: "Return Journey", adHoc: [], departurePolicy: "ASAP" });
+                        enqueueTypedRow({ rowType: "EOD_RETURN", title: activeBase.name, coords: activeBase.coords, mode: eodMode, displayTime: state.time, departTime: (state.time + DURATION_ESTIMATE_SECS), pitstopState: "end_of_day", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: tailInheritedId, evLoc: activeBase.name, engineLateMins: 0, currentLegStable: true, dropinStatusFlag: "none", safeDesc: "Return Journey", adHoc: [], departurePolicy: "ASAP" });
                         state.loc = activeBase.coords;
                         if (eodMode === "DRIVE") state.carLoc = activeBase.coords;
                     } else state.loc = activeBase.coords;
                 }
-                 skipIdx = master.length + 99; break;
+                 skipIdx = master.length + EOF_SKIP_OFFSET; break;
             }
             
             let isDepart = /(#leave|#depart)\b/i.test(evText);
@@ -1256,12 +1310,12 @@ try {
             let evArrBufSecs = isDepart ? 0 : (arrMatch ? parseInt(arrMatch[1], 10) : defArrMins) * 60;
             let evDepBufSecs = isDepart ? 0 : (depMatch ? parseInt(depMatch[1], 10) : defDepMins) * 60;
             
-            let evStartTarget = isDepart ? evStart + (getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(evCoords.split(",")[0]), parseFloat(evCoords.split(",")[1])) / 13.0) : evStart - evArrBufSecs;
+            let evStartTarget = isDepart ? evStart + (getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(evCoords.split(",")[0]), parseFloat(evCoords.split(",")[1])) / getSpeed("DRIVE")) : evStart - evArrBufSecs;
 
             let isBypassed = ((csvHasOccurrence(ignoredLateness, evId) || hasExactOverride(evId, "ignoreLateness")) || /(#late)\b/i.test(evText));
             
             let openUnix = state.time;
-            let closeUnix = 2000000000;
+            let closeUnix = CLOSE_UNSET_SENTINEL;
             let isAttachedDropin = false;
             let isNormalStrict = false;
 
@@ -1286,25 +1340,25 @@ try {
                 if (nextStrict) {
                     let nC = nextStrict.coords.split(",");
                     let sLocP = state.loc.split(",");
-                    let ghostDriveSecs = Math.round(getDist(parseFloat(sLocP[0]), parseFloat(sLocP[1]), parseFloat(nC[0]), parseFloat(nC[1])) / 13.0);
+                    let ghostDriveSecs = Math.round(getDist(parseFloat(sLocP[0]), parseFloat(sLocP[1]), parseFloat(nC[0]), parseFloat(nC[1])) / getSpeed("DRIVE"));
                     let nArrMatch = (nextStrict.desc || "").match(/#arr:(\d+)/i);
                     let nArrBuf = nArrMatch ? (parseInt(nArrMatch[1], 10) * 60) : (defArrMins * 60);
                     
                     let ghostArrival = forceSeconds(nextStrict.start) - nArrBuf;
                     let ghostDepart = ghostArrival - ghostDriveSecs;
                     
-                    if (evStart >= (ghostDepart - 7200) && evStart <= (ghostArrival + 7200)) {
+                    if (evStart >= (ghostDepart - GHOST_ATTACH_GRACE_SECS) && evStart <= (ghostArrival + GHOST_ATTACH_GRACE_SECS)) {
                         isAttachedDropin = true;
                     }
                 } else {
-                    if (Math.abs(evStart - state.time) < 43200) isAttachedDropin = true;
+                    if (Math.abs(evStart - state.time) < GHOST_ATTACH_HORIZON_SECS) isAttachedDropin = true;
                 }
                 
                 if (isAttachedDropin) {
                     if (isPrevBase && nextStrict) {
                         let nC = nextStrict.coords.split(",");
                         let eLocP = evCoords.split(",");
-                        let baseDriveSecs = Math.round(getDist(parseFloat(eLocP[0]), parseFloat(eLocP[1]), parseFloat(nC[0]), parseFloat(nC[1])) / 13.0);
+                        let baseDriveSecs = Math.round(getDist(parseFloat(eLocP[0]), parseFloat(eLocP[1]), parseFloat(nC[0]), parseFloat(nC[1])) / getSpeed("DRIVE"));
                         
                         let nArrMatch = (nextStrict.desc || "").match(/#arr:(\d+)/i);
                         let nArrBuf = nArrMatch ? (parseInt(nArrMatch[1], 10) * 60) : (defArrMins * 60);
@@ -1341,9 +1395,9 @@ try {
             let routeToEv = calcMode(state.loc, evCoords, evStartStr, evText, evId);
             if (routeToEv.isForced) isBypassed = true;
 
-            let arrivalSkipRadius = routeToEv.isForced ? 50 : 200;
+            let arrivalSkipRadius = routeToEv.isForced ? ARRIVAL_SKIP_FORCED_RADIUS_M : ARRIVAL_SKIP_RADIUS_M;
 
-            if (!ev.isDropin && (distToEventDirect < arrivalSkipRadius || (isMeetingLatched && distToEventDirect < 1000)) && (evStart - state.time) < 10800 && state.time < evDeadline) {
+            if (!ev.isDropin && (distToEventDirect < arrivalSkipRadius || (isMeetingLatched && distToEventDirect < LATCH_RELEASE_RADIUS_M)) && (evStart - state.time) < ARRIVAL_SKIP_WINDOW_SECS && state.time < evDeadline) {
                 let currentIgnoredPref = getLatenessMode(evId, ignoredLateness);
                 if (currentIgnoredPref === "fixed") state.time = Math.max(state.time, evEnd) + evDepBufSecs;
                 else state.time = Math.max(state.time, evStartTarget) + evArrBufSecs + (evEnd - evStart) + evDepBufSecs;
@@ -1359,7 +1413,7 @@ try {
 
             let carDist = getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(state.carLoc.split(",")[0]), parseFloat(state.carLoc.split(",")[1]));
 
-            if (routeToEv.mode === "DRIVE" && carDist > 200) {
+            if (routeToEv.mode === "DRIVE" && carDist > CAR_RECOVERY_RADIUS_M) {
                 let recMode4 = getRecoveryMode(state.loc, state.carLoc, carDist);
                 recWalkSecs = getCachedTime(state.loc, state.carLoc, recMode4, state.time) || Math.round(carDist / getSpeed(recMode4));
                 estTravelSecs += recWalkSecs;
@@ -1377,15 +1431,15 @@ try {
 
             let activeBase = getBase(state.time);
             let pitstopState = "false"; 
-            let distToBaseCheck = activeBase.coords !== "0,0" ? getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(activeBase.coords.split(",")[0]), parseFloat(activeBase.coords.split(",")[1])) : 99999;
+            let distToBaseCheck = activeBase.coords !== UNUSABLE_COORDS ? getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(activeBase.coords.split(",")[0]), parseFloat(activeBase.coords.split(",")[1])) : DIST_UNKNOWN_SENTINEL;
             
-            if (preGap > 0 && activeBase.coords !== "0,0" && distToBaseCheck > 300 && !(csvHasOccurrence(getOvr('Skipped_Pitstops'), evId) || hasExactOverride(evId, "pitstop", "skipped"))) {
+            if (preGap > 0 && activeBase.coords !== UNUSABLE_COORDS && distToBaseCheck > BASE_DISTANCE_M && !(csvHasOccurrence(getOvr('Skipped_Pitstops'), evId) || hasExactOverride(evId, "pitstop", "skipped"))) {
                 let routeToBase = calcMode(state.loc, activeBase.coords, evStartStr, "", evId); let recTimeBase = 0;
                 
                 let carDistToBasePit = getDist(parseFloat(state.carLoc.split(",")[0]), parseFloat(state.carLoc.split(",")[1]), parseFloat(activeBase.coords.split(",")[0]), parseFloat(activeBase.coords.split(",")[1]));
-                if (carDistToBasePit > 300) routeToBase.mode = "DRIVE";
+                if (carDistToBasePit > BASE_DISTANCE_M) routeToBase.mode = "DRIVE";
 
-                if (routeToBase.mode === "DRIVE" && carDist > 200) {
+                if (routeToBase.mode === "DRIVE" && carDist > CAR_RECOVERY_RADIUS_M) {
                     let cRecMode = getRecoveryMode(state.loc, state.carLoc, carDist);
                     recTimeBase = getCachedTime(state.loc, state.carLoc, cRecMode, state.time) || Math.round(carDist / getSpeed(cRecMode));
                 }
@@ -1395,16 +1449,16 @@ try {
                 let tempCarDist = getDist(parseFloat(activeBase.coords.split(",")[0]), parseFloat(activeBase.coords.split(",")[1]), parseFloat(tempCarLoc.split(",")[0]), parseFloat(tempCarLoc.split(",")[1]));
                 
                 let routeBaseToEv = calcMode(activeBase.coords, evCoords, evStartStr, evText, evId); let recTimeEv = 0;
-                let estPitLeave = state.time + recTimeBase + timeToBase + 1800;
-                if (routeBaseToEv.mode === "DRIVE" && tempCarDist > 200) {
+                let estPitLeave = state.time + recTimeBase + timeToBase + PITSTOP_BUFFER_SECS;
+                if (routeBaseToEv.mode === "DRIVE" && tempCarDist > CAR_RECOVERY_RADIUS_M) {
                      let cRecMode2 = getRecoveryMode(activeBase.coords, tempCarLoc, tempCarDist);
                      recTimeEv = getCachedTime(activeBase.coords, tempCarLoc, cRecMode2, estPitLeave) || Math.round(tempCarDist / getSpeed(cRecMode2));
                 }
                 let timeBaseToEv = getCachedTime(tempCarLoc, evCoords, routeBaseToEv.mode, (estPitLeave + recTimeEv)) || Math.round(routeBaseToEv.dist / getSpeed(routeBaseToEv.mode));
                 
-                let totalDetour = recTimeBase + timeToBase + 1800 + recTimeEv + timeBaseToEv;
+                let totalDetour = recTimeBase + timeToBase + PITSTOP_BUFFER_SECS + recTimeEv + timeBaseToEv;
                 let isForcedPitstop = (csvHasOccurrence(getOvr('Forced_Pitstops'), evId) || hasExactOverride(evId, "pitstop", "forced"));
-                let isLongGap       = (preGap >= 10800); 
+                let isLongGap       = (preGap >= LONG_GAP_SECS); 
 
                 if (isForcedPitstop || isLongGap) {
                     if ((state.time + totalDetour) > evStartTarget) { 
@@ -1423,11 +1477,11 @@ try {
                     let simDep = evStartTarget - timeBaseToEv;
                     let stayDuration = simDep - simArr;
 
-                    if (i === idx && distToBaseCheck < 300) {
+                    if (i === idx && distToBaseCheck < BASE_DISTANCE_M) {
                         stayDuration = simDep - baseArrivalUnix;
                     }
 
-                    let isOvernight = (stayDuration >= 18000); 
+                    let isOvernight = (stayDuration >= OVERNIGHT_STAY_SECS); 
 
                     let stopType     = isOvernight ? "EOD_RETURN" : "PITSTOP";
                     let stopIdPrefix = isOvernight ? "EOD_" : "PIT_";
@@ -1436,7 +1490,7 @@ try {
                     let pitFlag      = isOvernight ? "end_of_day" : "forced";
 
                     if (!blockMode) blockMode = routeToBase.mode;
-                    if (routeToBase.mode === "DRIVE" && carDist > 200) {
+                    if (routeToBase.mode === "DRIVE" && carDist > CAR_RECOVERY_RADIUS_M) {
                         let recMode3 = getRecoveryMode(state.loc, state.carLoc, carDist);
                         enqueueTypedRow({ rowType: "RECOVERY", title: "Car", coords: state.carLoc, mode: recMode3, displayTime: state.time, departTime: (state.time + recTimeBase), pitstopState: "false", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: "REC_PIT_" + evId, evLoc: state.carLoc, engineLateMins: 0, currentLegStable: false, dropinStatusFlag: "none", safeDesc: "Vehicle Retrieval", adHoc: [], departurePolicy: "ASAP" });
                         state.time += recTimeBase; state.loc = state.carLoc;
@@ -1446,7 +1500,7 @@ try {
                     let stopPolicy = (stopType === "EOD_RETURN" || pitFlag === "forced" || pitstopState === "handled" || pitstopState === "forced") ? "ASAP" : "JIT";
                     enqueueTypedRow({ rowType: stopType, title: activeBase.name, coords: activeBase.coords, mode: routeToBase.mode, displayTime: evStart, departTime: (state.time + timeToBase), pitstopState: pitFlag, apiTimeType: "DEPART", apiTimeUnix: state.time, evId: compositeId, evLoc: activeBase.name, engineLateMins: 0, currentLegStable: currentLegStable, dropinStatusFlag: "none", safeDesc: stopDesc, adHoc: [], departurePolicy: stopPolicy });
                     state.loc = activeBase.coords; 
-                    state.time += timeToBase + (isOvernight ? 0 : 1800); 
+                    state.time += timeToBase + (isOvernight ? 0 : PITSTOP_BUFFER_SECS); 
                     if (routeToBase.mode === "DRIVE") state.carLoc = activeBase.coords;
                     pitstopState = "handled"; 
                     carDist = getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(state.carLoc.split(",")[0]), parseFloat(state.carLoc.split(",")[1]));
@@ -1532,7 +1586,7 @@ try {
                     if (nEv.isDropin || csvHasOccurrence(skippedEvents, getSafeId(nEv)) || hasExactOverride(getSafeId(nEv), "skip") || /(#late)\b/i.test(nEv.desc)) continue; 
                     
                     let nDist = getDist(parseFloat(simLoc.split(",")[0]), parseFloat(simLoc.split(",")[1]), parseFloat(nEv.coords.split(",")[0]), parseFloat(nEv.coords.split(",")[1]));
-                    let nTravel = Math.round(nDist / 13.0); 
+                    let nTravel = Math.round(nDist / getSpeed("DRIVE")); 
                     simTime += nTravel;
                     
                     let nTarget = forceSeconds(nEv.start) - (defArrMins * 60);
@@ -1622,14 +1676,14 @@ try {
                     for(let b=0; b<bountyQueue.length; b++) {
                         let key = bountyQueue[b];
                         bMap[key] = (bMap[key] || 0) + 1;
-                        if (bMap[key] >= 3) triggerFetch.push(key);
+                        if (bMap[key] >= DAY_GROUP_DUPE_LIMIT) triggerFetch.push(key);
                     }
                     
                     for (let key in bMap) newTracker.push(key + "=" + bMap[key]);
                     setGlobal('API_Spam_Tracker', newTracker.join(","));
                     if (triggerFetch.length > 0) setLocal('api_bounty_queue', triggerFetch.join("|"));
 
-                    let deltaThreshold = 5;
+                    let deltaThreshold = LATENESS_DELTA_MINS;
 
                     for (let k = i - 1; k >= idx; k--) {
                         let pEv = master[k - 1]; let pId = getSafeId(pEv); 
@@ -1653,7 +1707,7 @@ try {
                         
                         let pEnd = getTrimmedEnd(pId, forceSeconds(pEv.end), forceSeconds(pEv.start), trimmedEventsRaw);
                         let evalStart = forceSeconds(pEv.start);
-                        if (pId.indexOf("_OUT") !== -1) evalStart = Math.min(nowSec, forceSeconds(pEv.start) - 14400); 
+                        if (pId.indexOf("_OUT") !== -1) evalStart = Math.min(nowSec, forceSeconds(pEv.start) - EARLY_EOD_EVAL_WINDOW_SECS); 
 
                         let deadDrop = pEnd - ((engineLateMins - Math.max(0, Math.ceil((simulateChainArrival(k, i, currentStateObj, routeToEv.mode, pId) - doorTarget) / 60))) * 60);
 
@@ -1717,9 +1771,9 @@ try {
                 } 
             }
 
-            if (routeToEv.mode !== blockMode && queue.length > 0 && pitstopState !== "handled" && routeToEv.dist > 50) break;
+            if (routeToEv.mode !== blockMode && queue.length > 0 && pitstopState !== "handled" && routeToEv.dist > BLOCK_BREAK_RADIUS_M) break;
 
-            if (routeToEv.mode === "DRIVE" && carDist > 200) {
+            if (routeToEv.mode === "DRIVE" && carDist > CAR_RECOVERY_RADIUS_M) {
                 let recMode5 = getRecoveryMode(state.loc, state.carLoc, carDist);
                 let rTime = getCachedTime(state.loc, state.carLoc, recMode5, state.time) || Math.round(carDist / getSpeed(recMode5));
                 enqueueTypedRow({ rowType: "RECOVERY", title: "Car", coords: state.carLoc, mode: recMode5, displayTime: state.time, departTime: (state.time + rTime), pitstopState: "false", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: "REC_EV_" + evId, evLoc: state.carLoc, engineLateMins: 0, currentLegStable: false, dropinStatusFlag: "none", safeDesc: "Vehicle Retrieval", adHoc: [], departurePolicy: "ASAP" });
@@ -1742,7 +1796,7 @@ try {
             }
             
             let isWithinTravelWindow = false;
-            let windowStartLimit = (isDepart ? evStart : evStartTarget) - 600;
+            let windowStartLimit = (isDepart ? evStart : evStartTarget) - DEPARTURE_WINDOW_SECS;
             let windowEndLimit = evEnd;
             if (nowSec >= windowStartLimit && nowSec <= windowEndLimit) isWithinTravelWindow = true;
 
@@ -1805,15 +1859,15 @@ try {
             let eodBase = getBase(state.time);
             let distToEndBase = getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(eodBase.coords.split(",")[0]), parseFloat(eodBase.coords.split(",")[1]));
             
-            if (distToEndBase > 200) {
+            if (distToEndBase > CAR_RECOVERY_RADIUS_M) {
                 let eodMode = calcMode(state.loc, eodBase.coords, "", "", "").mode;
                 let finalAnchorId = "EOD_FINAL_" + (master.length > 0 ? getSafeId(master[master.length - 1]) : "DEFAULT");
 
                 let carDistToBase = getDist(parseFloat(state.carLoc.split(",")[0]), parseFloat(state.carLoc.split(",")[1]), parseFloat(eodBase.coords.split(",")[0]), parseFloat(eodBase.coords.split(",")[1]));
-                if (carDistToBase > 300) eodMode = "DRIVE";
+                if (carDistToBase > BASE_DISTANCE_M) eodMode = "DRIVE";
 
                 let carDistEOD = getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(state.carLoc.split(",")[0]), parseFloat(state.carLoc.split(",")[1]));
-                if (eodMode === "DRIVE" && carDistEOD > 200) {
+                if (eodMode === "DRIVE" && carDistEOD > CAR_RECOVERY_RADIUS_M) {
                     let recModeEOD = getRecoveryMode(state.loc, state.carLoc, carDistEOD);
                     let rTimeEOD = getCachedTime(state.loc, state.carLoc, recModeEOD, state.time) || Math.round(carDistEOD / getSpeed(recModeEOD));
                     enqueueTypedRow({ rowType: "RECOVERY", title: "Car", coords: state.carLoc, mode: recModeEOD, displayTime: state.time, departTime: (state.time + rTimeEOD), pitstopState: "false", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: "REC_EOD_FINAL", evLoc: state.carLoc, engineLateMins: 0, currentLegStable: false, dropinStatusFlag: "none", safeDesc: "Vehicle Retrieval", adHoc: [], departurePolicy: "ASAP" });
@@ -1821,7 +1875,7 @@ try {
                     state.loc = state.carLoc;
                 }
 
-                enqueueTypedRow({ rowType: "EOD_RETURN", title: eodBase.name, coords: eodBase.coords, mode: eodMode, displayTime: state.time, departTime: (state.time + 3600), pitstopState: "end_of_day", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: finalAnchorId, evLoc: eodBase.name, engineLateMins: 0, currentLegStable: true, dropinStatusFlag: "none", safeDesc: "Return Journey", adHoc: [], departurePolicy: "ASAP" });
+                enqueueTypedRow({ rowType: "EOD_RETURN", title: eodBase.name, coords: eodBase.coords, mode: eodMode, displayTime: state.time, departTime: (state.time + DURATION_ESTIMATE_SECS), pitstopState: "end_of_day", apiTimeType: "DEPART", apiTimeUnix: state.time, evId: finalAnchorId, evLoc: eodBase.name, engineLateMins: 0, currentLegStable: true, dropinStatusFlag: "none", safeDesc: "Return Journey", adHoc: [], departurePolicy: "ASAP" });
                 simAtBase = true;
             }
             }
@@ -1855,4 +1909,5 @@ try {
         }));
         setLocal('is_drive_block', (blockMode === "DRIVE") ? "true" : "false");
     }
-} catch(e) { flash("Sandbox Crash: " + e.message); }
+} catch(e) { flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+        component: "Sandbox", severity: "error", code: "SANDBOX_CRASH", tripId: null, details: { message: String(e && e.message || e) } })); }

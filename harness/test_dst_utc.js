@@ -1,8 +1,10 @@
-// DST-safe UTC day-boundary regression test.
+// DST-safe LOCAL day-boundary regression test.
 //
-// Verifies the pure UTC helpers used across Alpha.js, Sandbox_Engine.js,
-// Finaliser.js, Compiler.js, and Dispatcher.js, plus the Dispatcher multi-
-// waypoint chain-break behaviour around the UK BST→GMT transition.
+// Verifies the local-time helpers (isSameLocalDay / localDayBoundaryUnix)
+// used across Alpha.js, Sandbox_Engine.js, Finaliser.js, Compiler.js, and
+// Dispatcher.js, plus the Dispatcher multi-waypoint chain-break behaviour
+// around local midnight on a DST day. INV-0.2: day comparisons use the
+// configured local timezone (the device timezone) and must be DST-safe.
 //
 // Run: node harness/test_dst_utc.js
 
@@ -12,9 +14,9 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { createSandbox } = require('./mock_tasker');
 const { runScript } = require('./runner');
-const { isSameUTCDay, utcDayBoundaryUnix, SECONDS_PER_DAY } = require('./day_utils');
+const { isSameLocalDay, localDayBoundaryUnix } = require('./day_utils');
 
-const testName = 'DST: UTC day-boundary math is correct across UK BST→GMT and GMT→BST transitions';
+const testName = 'DST: LOCAL day-boundary math is correct across UK BST→GMT and GMT→BST transitions';
 
 function fail(msg) {
     console.log('FAIL: ' + testName + ' — ' + msg);
@@ -23,66 +25,81 @@ function fail(msg) {
 
 try {
     // -----------------------------------------------------------------
-    // 1. isSameUTCDay with known UTC timestamps
+    // 1. isSameLocalDay with known timestamps (local == UTC in GMT months)
     // -----------------------------------------------------------------
-    const t1 = 1700000000;                 // ~2023-11-14 22:13:20 UTC
-    const t1Plus1h = 1700003600;           // same UTC day
-    const t1Plus24h = 1700086400;          // next UTC day
+    const t1 = 1700000000;                 // ~2023-11-14 22:13:20 UTC == local (GMT)
+    const t1Plus1h = 1700003600;           // same local day
+    const t1Plus24h = 1700086400;          // next local day
 
-    assert.equal(isSameUTCDay(t1, t1Plus1h), true, 'same UTC day (1 h apart)');
-    assert.equal(isSameUTCDay(t1, t1Plus24h), false, 'different UTC days (24 h apart)');
+    assert.equal(isSameLocalDay(t1, t1Plus1h), true, 'same local day (1 h apart)');
+    assert.equal(isSameLocalDay(t1, t1Plus24h), false, 'different local days (24 h apart)');
 
     // UK BST→GMT transition: clocks go back at 2026-10-25 02:00 BST (01:00 UTC).
     // 00:30 UTC and 01:30 UTC are both in the doubled local hour (01:30 BST / 01:30 GMT)
-    // but, crucially, both are the same UTC day.
+    // and both fall on local 2026-10-25.
     const bstToGmtA = Date.parse('2026-10-25T00:30:00Z') / 1000;
     const bstToGmtB = Date.parse('2026-10-25T01:30:00Z') / 1000;
-    assert.equal(isSameUTCDay(bstToGmtA, bstToGmtB), true, 'BST→GMT doubled hour: same UTC day');
+    assert.equal(isSameLocalDay(bstToGmtA, bstToGmtB), true, 'BST→GMT doubled hour: same local day');
 
     // UK GMT→BST transition: clocks spring forward at 2027-03-28 01:00 GMT (01:00 UTC).
-    // 00:30 UTC and 01:30 UTC are on the same UTC day but local time jumps from 00:30 GMT to 02:30 BST.
+    // 00:30 UTC and 01:30 UTC land on local 00:30 GMT and 02:30 BST — same local day.
     const gmtToBstA = Date.parse('2027-03-28T00:30:00Z') / 1000;
     const gmtToBstB = Date.parse('2027-03-28T01:30:00Z') / 1000;
-    assert.equal(isSameUTCDay(gmtToBstA, gmtToBstB), true, 'GMT→BST skipped hour: same UTC day');
+    assert.equal(isSameLocalDay(gmtToBstA, gmtToBstB), true, 'GMT→BST skipped hour: same local day');
 
-    // Midnight boundary
+    // Local midnight boundary (GMT month: local midnight == 00:00Z).
     const justBeforeMidnight = Date.parse('2026-10-25T23:59:59Z') / 1000;
     const justAfterMidnight = Date.parse('2026-10-26T00:00:00Z') / 1000;
-    assert.equal(isSameUTCDay(justBeforeMidnight, justAfterMidnight), false, 'UTC midnight boundary: different days');
+    assert.equal(isSameLocalDay(justBeforeMidnight, justAfterMidnight), false, 'local midnight boundary: different days');
+
+    // THE DST PROOF: in BST, local midnight is 23:00Z of the PREVIOUS UTC day.
+    // 2026-07-14T22:00Z is local 23:00 BST on 14 Jul; 2026-07-14T23:30Z is
+    // local 00:30 BST on 15 Jul — the SAME UTC day, different LOCAL days.
+    // A UTC-based implementation returns true here, so this pair discriminates.
+    const bstEvening = Date.parse('2026-07-14T22:00:00Z') / 1000;
+    const bstAfterMidnight = Date.parse('2026-07-14T23:30:00Z') / 1000;
+    assert.equal(isSameLocalDay(bstEvening, bstAfterMidnight), false,
+        'BST: 23:00 and 00:30 local are different local days despite the same UTC day');
 
     // -----------------------------------------------------------------
-    // 2. utcDayBoundaryUnix
+    // 2. localDayBoundaryUnix — local midnight, DST-aware
     // -----------------------------------------------------------------
-    const boundaryForT1 = utcDayBoundaryUnix(t1);
-    assert.equal(boundaryForT1, Date.parse('2023-11-14T00:00:00Z') / 1000, 'UTC midnight of t1');
+    const boundaryForT1 = localDayBoundaryUnix(t1);
+    assert.equal(boundaryForT1, Date.parse('2023-11-14T00:00:00Z') / 1000, 'local midnight of t1 (GMT month)');
 
     assert.equal(
-        utcDayBoundaryUnix(bstToGmtB),
-        Date.parse('2026-10-25T00:00:00Z') / 1000,
-        'UTC midnight of BST→GMT transition day'
+        localDayBoundaryUnix(bstToGmtB),
+        Date.parse('2026-10-24T23:00:00Z') / 1000,
+        'local midnight of the BST→GMT transition day must be 23:00Z (BST still active at midnight)'
+    );
+
+    // DST proof for the boundary: local midnight of 14 Jul 2026 (BST) is
+    // 2026-07-13T23:00:00Z, NOT 2026-07-14T00:00:00Z.
+    assert.equal(
+        localDayBoundaryUnix(bstEvening),
+        Date.parse('2026-07-13T23:00:00Z') / 1000,
+        'BST local midnight must be 23:00Z of the previous UTC day'
     );
 
     // -----------------------------------------------------------------
-    // 3. Dispatcher multi-waypoint chain break across the BST→GMT transition
+    // 3. Dispatcher multi-waypoint chain break at the LOCAL midnight
     //
-    // Old code compared local days via getDate(), so two timestamps that both
-    // displayed as "25 Oct" in local time would cluster even when they straddle
-    // the UTC day boundary. The new code must break the chain at the UTC boundary.
+    // Old code compared UTC days, so two legs straddling LOCAL midnight
+    // (23:00 BST on 14 Jul → 00:30 BST on 15 Jul, both UTC 14 Jul) would
+    // cluster. The local helper must break the chain at the local boundary.
+    // Stay is 90 min (> 45 min) so the stay fallback cannot mask the result,
+    // and the pair shares a UTC day so a UTC-only implementation would NOT
+    // break — the single waypoint can only come from the local-day check.
     // -----------------------------------------------------------------
-    const nowSec = Date.parse('2026-10-25T00:15:00Z') / 1000; // during the transition night
+    const nowSec = Date.parse('2026-07-14T21:50:00Z') / 1000;
 
-    // Leg 0 arrives at 23:50 UTC on 24 Oct (local 25 Oct 00:50 BST).
-    // Leg 1 departs at 00:10 UTC on 25 Oct (local 25 Oct 00:10 GMT).
-    // Same local day, different UTC days, and only a 20-minute stay -> old
-    // getDate() logic would cluster, but the UTC helper must break the chain.
-    const leg0Arrive = Date.parse('2026-10-24T23:50:00Z') / 1000;
-    const leg1Depart = Date.parse('2026-10-25T00:10:00Z') / 1000;
-    const nowForDispatcher = Date.parse('2026-10-24T23:55:00Z') / 1000;
+    const leg0Arrive = bstEvening;            // local 23:00 BST, 14 Jul
+    const leg1Depart = bstAfterMidnight;      // local 00:30 BST, 15 Jul (same UTC day)
 
     assert.equal(
-        isSameUTCDay(leg0Arrive, leg1Depart),
+        isSameLocalDay(leg0Arrive, leg1Depart),
         false,
-        'Dispatcher chain-break probe: different UTC days despite same local date'
+        'Dispatcher chain-break probe: different LOCAL days despite same UTC date'
     );
 
     const chainBreakMaster = JSON.stringify([
@@ -95,15 +112,15 @@ try {
         },
         {
             mode: 'DRIVE',
-            departUnix: leg1Depart + 1800,
-            arriveUnix: leg1Depart + 1800,
+            departUnix: leg1Depart + 3600,
+            arriveUnix: leg1Depart + 3600,
             targetTitle: 'Leg1',
             targetCoords: '52.0,-2.0'
         }
     ]);
 
     const dispatcherGlobals = {
-        Tesla_Last_Scheduled: String(nowForDispatcher - 7200),
+        Tesla_Last_Scheduled: String(nowSec - 7200),
         Tesla_Last_HVAC_Unix: '0',
         Tesla_Last_Nav: '',
         Google_Last_Nav: '',
@@ -118,7 +135,7 @@ try {
     const { sandbox: dispSandbox, store: dispStore } = createSandbox({
         globals: dispatcherGlobals,
         files: dispatcherFiles,
-        nowMs: nowForDispatcher * 1000
+        nowMs: nowSec * 1000
     });
 
     const dispatcherPath = path.resolve(__dirname, '..', 'Dispatcher.js');
@@ -134,17 +151,8 @@ try {
     assert.equal(
         waypoints.length,
         1,
-        'Dispatcher must break multi-waypoint chain at UTC day boundary; expected 1 waypoint, got ' + waypoints.length
+        'Dispatcher must break multi-waypoint chain at the LOCAL day boundary; expected 1 waypoint, got ' + waypoints.length
     );
-
-    console.log('PASS: ' + testName);
-    console.log('  same UTC day (1 h apart) = true');
-    console.log('  different UTC days (24 h apart) = false');
-    console.log('  BST→GMT doubled hour same UTC day = true');
-    console.log('  GMT→BST skipped hour same UTC day = true');
-    console.log('  UTC midnight boundary = false');
-    console.log('  utcDayBoundaryUnix(1700000000) = ' + boundaryForT1);
-    console.log('  Dispatcher chain-break waypoints = ' + waypoints.length);
 
     // -----------------------------------------------------------------
     // 4. Slice A: Sandbox planningDay must be DST-local, not UTC.
@@ -235,12 +243,14 @@ try {
     }
 
     console.log('PASS: ' + testName);
-    console.log('  same UTC day (1 h apart) = true');
-    console.log('  different UTC days (24 h apart) = false');
-    console.log('  BST→GMT doubled hour same UTC day = true');
-    console.log('  GMT→BST skipped hour same UTC day = true');
-    console.log('  UTC midnight boundary = false');
-    console.log('  utcDayBoundaryUnix(1700000000) = ' + boundaryForT1);
+    console.log('  same local day (1 h apart) = true');
+    console.log('  different local days (24 h apart) = false');
+    console.log('  BST→GMT doubled hour same local day = true');
+    console.log('  GMT→BST skipped hour same local day = true');
+    console.log('  local midnight boundary = false');
+    console.log('  BST 22:00Z/23:30Z = different local days, same UTC day = false');
+    console.log('  localDayBoundaryUnix(1700000000) = ' + boundaryForT1);
+    console.log('  BST local midnight = 23:00Z previous UTC day (verified)');
     console.log('  Dispatcher chain-break waypoints = ' + waypoints.length);
     console.log('  DST-local planningDay = ' + dstHead.planningDay + ' (local, typed envelope)');
     process.exit(0);
