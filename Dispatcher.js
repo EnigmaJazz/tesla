@@ -35,7 +35,6 @@ const SHORT_STAY_MINS = 45;                 // short-stay clustering rule
 const DURATION_FALLBACK_SECS = 1800;         // missing-duration fallback (30m)
 const BOLT_REVERSED_STOPS = true;            // Bolt plugin navigates staged stops in reverse order → sequential-stop payload is emitted chronologically reversed
 const UNUSABLE_COORDS = "0,0";               // unusable-coordinates sentinel
-const OVERNIGHT_STAY_MINS = 300;             // stay this long = overnight boundary → chain breaks (5h)
 const SYNC_INTERVAL_HIGH_MINS = 120;         // far-gap sync interval
 const SYNC_INTERVAL_MED_MINS = 60;           // medium-gap sync interval
 const SYNC_INTERVAL_LOW_MINS = 30;           // near-gap sync interval
@@ -261,31 +260,25 @@ try {
         var navPayloadStr = coords; 
         if (evalMode === "DRIVE" && driveIdx !== -1) {
             var multiCoords = [coords];
-            // Chain gate is STOP LENGTH, not clock time (user-directed): a
-            // short stop that happens to straddle local midnight (e.g. a
-            // 15-min errand arriving 23:50, departing 00:05) keeps the chain —
-            // the next stop is the same trip. Only a genuinely overnight stay
-            // (> OVERNIGHT_STAY_MINS) or a negative gap breaks the chain.
+            // Chain gate is DWELL LENGTH only (user-directed 2026-08-10): a
+            // stop sequences into the payload only when the dwell before it is
+            // short (<= SHORT_STAY_MINS). Dropins get NO dwell carve-out — a
+            // dropin with a long dwell is its own trip, never sequenced with
+            // the next stop (e.g. the trip home hours after work never joins
+            // the work payload). Negative gaps break too.
             var lastArrive = parseInt(targetDrive.arriveUnix || (dTime + (targetDrive.durationSecs || DURATION_FALLBACK_SECS)));
-            var currentIsDropin = targetDrive.legType === "DROPIN" || (targetDrive.targetDesc && /(#dropin)/i.test(targetDrive.targetDesc));
 
             for (let j = driveIdx + 1; j < master.length; j++) {
                 let nextT = master[j];
                 let nextDep = parseInt(nextT.departUnix || nextT.time || 0);
                 
                 let stayMins = (nextDep - lastArrive) / 60;
-                if (stayMins < 0 || stayMins > OVERNIGHT_STAY_MINS) break; // negative or overnight gap never chains
-                let isShortStay = stayMins <= SHORT_STAY_MINS; 
+                if (stayMins < 0 || stayMins > SHORT_STAY_MINS) break; // long dwell or negative gap never chains
                 
-                if (currentIsDropin || isShortStay) {
-                    let nc = nextT.targetCoords || nextT.coords || UNUSABLE_COORDS;
-                    if (nc === UNUSABLE_COORDS) break; // a coord-less stop cannot navigate
-                    multiCoords.push(nc);
-                    lastArrive = parseInt(nextT.arriveUnix || (nextDep + (nextT.durationSecs || DURATION_FALLBACK_SECS)));
-                    currentIsDropin = nextT.legType === "DROPIN" || (nextT.targetDesc && /(#dropin)/i.test(nextT.targetDesc));
-                } else {
-                    break; 
-                }
+                let nc = nextT.targetCoords || nextT.coords || UNUSABLE_COORDS;
+                if (nc === UNUSABLE_COORDS) break; // a coord-less stop cannot navigate
+                multiCoords.push(nc);
+                lastArrive = parseInt(nextT.arriveUnix || (nextDep + (nextT.durationSecs || DURATION_FALLBACK_SECS)));
             }
             // BOLT_REVERSED_STOPS: the Bolt nav plugin hands the stop list to
             // the car in reverse navigation order, so the sequential-stop

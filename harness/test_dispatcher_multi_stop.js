@@ -82,19 +82,34 @@ try {
     'a short stop straddling midnight must keep the chain (length gate), got: ' + store.locals['tds_next_coords']);
 } catch (e) { fail('midnight-straddling short stop: ' + e.message); }
 
-// SCN-5: a genuinely OVERNIGHT stop breaks the chain even when the previous
-// stop is a dropin — 7h stay between stops never sequences into one payload.
+// SCN-5: a LONG dwell breaks the chain even when the previous stop is a
+// dropin — a 6h17m dwell between stops never sequences into one payload.
 try {
   // leg0 dropin departs 23:13, arrives 23:43 (day 14); leg1 dropin departs
-  // 06:00 (day 15) — 6h17m stay > OVERNIGHT_STAY_MINS.
+  // 06:00 (day 15) — 6h17m dwell > SHORT_STAY_MINS.
   const master = [
     leg('leg0', aCoords, nowSec + 3600, nowSec + 5400, '#dropin'),
     leg('leg1', bCoords, nowSec + 27800, nowSec + 29600, '#dropin')
   ];
   const store = make(master);
   assert.strictEqual(store.locals['tds_next_coords'], aCoords,
-    'an overnight stay (> OVERNIGHT_STAY_MINS) must break the chain, got: ' + store.locals['tds_next_coords']);
-} catch (e) { fail('overnight-stay chain break: ' + e.message); }
+    'a long dwell (> SHORT_STAY_MINS) must break the chain, got: ' + store.locals['tds_next_coords']);
+} catch (e) { fail('long-dwell chain break: ' + e.message); }
+
+// SCN-8: a DROPIN with a long dwell gets NO carve-out — it is its own trip
+// and never sequences with the next stop (dropins chain only when the dwell
+// before the next stop is short).
+try {
+  // leg0 dropin departs 22:00, arrives 22:00; leg1 dropin departs 23:30
+  // (90-min dwell > SHORT_STAY_MINS) — must NOT chain.
+  const master = [
+    leg('leg0', aCoords, nowSec + 600, nowSec + 600, '#dropin'),
+    leg('leg1', bCoords, nowSec + 6000, nowSec + 7800, '#dropin')
+  ];
+  const store = make(master);
+  assert.strictEqual(store.locals['tds_next_coords'], aCoords,
+    'a dropin with a long dwell must not sequence the next stop, got: ' + store.locals['tds_next_coords']);
+} catch (e) { fail('dropin long-dwell no carve-out: ' + e.message); }
 
 // SCN-2: broken chain (next stop is a >5h overnight gap) -> single coords.
 try {

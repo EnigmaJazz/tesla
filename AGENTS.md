@@ -34,10 +34,12 @@ commit.
 - **No day-boundary crossing chains.** Pending drop-in lookahead, ASAP
   propagation, and route chains must terminate at the local planning day.
   **Exception (user-directed 2026-08-10, Dispatcher sequential-stop nav
-  payload):** the chain gate is stop length, not clock time — a short stop
-  straddling local midnight keeps the chain (stay <= SHORT_STAY_MINS or
-  dropin); a stay > OVERNIGHT_STAY_MINS (5h) or a negative gap breaks it.
-  Day comparisons use the configured timezone and must be DST-safe.
+  payload):** the chain gate is DWELL LENGTH only — a stop sequences into
+  the payload only when the dwell before it is <= SHORT_STAY_MINS (45 min);
+  dropins get no dwell carve-out (a dropin with a long dwell is its own
+  trip, never sequenced with the next stop — e.g. the trip home hours after
+  work never joins the work payload); negative gaps break it. Day
+  comparisons use the configured timezone and must be DST-safe.
 - **No stale itinerary override of live location.** A fresh planning
   pass honours live `User_At_Base` and active trip state ahead of
   legacy itinerary assumptions.
