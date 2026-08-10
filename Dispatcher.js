@@ -164,6 +164,36 @@ try {
     var masterReadable = (master !== null);
     if (master === null) master = [];
 
+    // Completion exclusion (user-directed 2026-08-10): the Dispatcher never
+    // consulted completion state, so a completed trip still in the committed
+    // itinerary (between arrival and the next planning pass) could be
+    // re-routed as overdue-within-window. Read the reducer state and exclude
+    // legs whose tripId is completed (observedArrivalUnix) or whose target
+    // event is in the completed stops/dropins maps — explicit state, never
+    // inferred. A failed read degrades to no exclusion (current behavior),
+    // logged TRIP_STATE_READ_FAILED.
+    var completedTripIds = {};
+    var completedEventIds = {};
+    try {
+        var stRaw = readFile(DATA_ROOT + "TDS_Trip_State.json") || "";
+        if (stRaw && stRaw.indexOf("%") === -1) {
+            var st = JSON.parse(stRaw);
+            var trips = (st && st.trips) || {};
+            for (var tk in trips) {
+                if (trips.hasOwnProperty(tk) && typeof trips[tk].observedArrivalUnix === "number") {
+                    completedTripIds[tk] = true;
+                }
+            }
+            var stopMap = (st && st.completedStops) || {};
+            for (var sk in stopMap) if (stopMap.hasOwnProperty(sk)) completedEventIds[sk] = true;
+            var dropinMap = (st && st.completedDropins) || {};
+            for (var dk in dropinMap) if (dropinMap.hasOwnProperty(dk)) completedEventIds[dk] = true;
+        }
+    } catch (e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Dispatcher", severity: "warn", code: "TRIP_STATE_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+    }
+
     let targetDrive = undefined;
     let driveIdx = -1;
     let skippedStale = 0;
@@ -176,6 +206,23 @@ try {
     for (let i = 0; i < master.length; i++) {
         const trip = master[i];
         if (!trip) continue;
+
+        // A completed trip is never re-routed: explicit reducer state, not
+        // inference (the leg may still sit in the committed itinerary between
+        // arrival and the next planning pass).
+        const tripId = trip.tripId || null;
+        if ((tripId && completedTripIds[tripId]) || (trip.targetEventId && completedEventIds[trip.targetEventId])) {
+            flash(JSON.stringify({
+                timestamp: nowSec,
+                generationId: global('TDS_Active_Generation') || null,
+                component: "Dispatcher",
+                severity: "INFO",
+                code: "COMPLETED_TRIP_SKIPPED",
+                tripId: tripId,
+                details: { depUnix: parseInt(trip.departUnix || trip.time || 0, 10) || 0 }
+            }));
+            continue;
+        }
 
         const tripMode = (trip.mode || "").toUpperCase();
         const depUnix = parseInt(trip.departUnix || trip.time || 0, 10) || 0;

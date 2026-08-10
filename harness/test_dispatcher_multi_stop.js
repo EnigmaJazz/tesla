@@ -22,7 +22,7 @@ const aCoords = '51.9,-2.1';
 const bCoords = '52.0,-2.0';
 const cCoords = '52.1,-2.3';
 
-function make(master, extraGlobals) {
+function make(master, extraGlobals, stateFile) {
   const globals = Object.assign({
     Tesla_Last_Scheduled: '0', Tesla_Last_HVAC_Unix: '0', Tesla_Last_Nav: '',
     Google_Last_Nav: '', Current_Status: '', User_At_AdHoc: '',
@@ -30,7 +30,7 @@ function make(master, extraGlobals) {
   }, extraGlobals || {});
   const { sandbox, store } = createSandbox({
     globals: globals,
-    files: { [DATA + 'Itin_Master.json']: JSON.stringify(master), [DATA + 'TDS_Trip_State.json']: '{}' },
+    files: { [DATA + 'Itin_Master.json']: JSON.stringify(master), [DATA + 'TDS_Trip_State.json']: stateFile || '{}' },
     nowMs: nowSec * 1000
   });
   runScript(DISPATCHER, sandbox, store);
@@ -43,7 +43,7 @@ function fail(msg) { failures += 1; console.log('FAIL: dispatcher-multi-stop —
 
 function leg(id, coords, departSec, arriveSec, desc) {
   return {
-    targetEventId: id, targetTitle: 'Stop ' + id, targetCoords: coords,
+    tripId: 'trip_' + id, targetEventId: id, targetTitle: 'Stop ' + id, targetCoords: coords,
     targetDesc: desc || '', mode: 'DRIVE',
     departUnix: departSec, arriveUnix: arriveSec, durationSecs: 1800
   };
@@ -160,6 +160,41 @@ try {
   assert.strictEqual(store.locals['do_tesla_nav'], 'false',
     'an identical payload must suppress the re-push, got: ' + store.locals['do_tesla_nav']);
 } catch (e) { fail('identical-payload suppression: ' + e.message); }
+
+// SCN-9: a COMPLETED trip (observedArrivalUnix in reducer state, still inside
+// its relevance window) is never re-routed — the Dispatcher excludes it
+// (COMPLETED_TRIP_SKIPPED) instead of selecting it as overdue-within-window.
+try {
+  // leg0 departed 40 min ago, arrives 10 min ago — within the arrival+grace
+  // relevance window, so without completion state it WOULD be bestOverdue.
+  const master = [
+    leg('leg0', aCoords, nowSec - 2400, nowSec - 600)
+  ];
+  const state = JSON.stringify({
+    schemaVersion: 1, revision: 1, generationId: 'gen:1700000000:ab12',
+    currentOrigin: 'PLANNED', currentPlanningDay: '', userAtBase: false,
+    baseArrivalUnix: null, latenessHalt: false, currentStatus: '',
+    manualReturnCompleted: false,
+    trips: { trip_leg0: { observedArrivalUnix: nowSec - 600 } },
+    stops: {}, completedStops: {}, completedDropins: {}, manualSessions: {}
+  });
+  const store = make(master, {}, state);
+  assert.strictEqual(store.locals['do_tesla_nav'], 'false',
+    'a completed trip must never be re-routed, got do_tesla_nav=' + store.locals['do_tesla_nav']);
+  assert.strictEqual(store.locals['itin_mode1'], 'NONE', 'completed trip must leave the dispatcher with no target');
+} catch (e) { fail('completed-trip exclusion: ' + e.message); }
+
+// SCN-10: control — the SAME overdue-within-window leg WITHOUT completion
+// state is still selected (the exclusion is explicit-state driven, not
+// time-driven).
+try {
+  const master = [
+    leg('leg0', aCoords, nowSec - 2400, nowSec - 600)
+  ];
+  const store = make(master);
+  assert.strictEqual(store.locals['itin_mode1'], 'DRIVE',
+    'an uncompleted overdue-within-window leg must still be selected');
+} catch (e) { fail('uncompleted overdue control: ' + e.message); }
 
 if (failures > 0) { console.log('FAIL: dispatcher-multi-stop — ' + failures + ' group(s) failed'); process.exit(1); }
 console.log('PASS: dispatcher-multi-stop — reversed sequential-stop payload (Bolt plugin contract), length-gate chain, equality-only re-push dedup');
