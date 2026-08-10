@@ -39,6 +39,7 @@ const OVERNIGHT_STAY_MINS = 300;             // stay this long = overnight bound
 const SYNC_INTERVAL_HIGH_MINS = 120;         // far-gap sync interval
 const SYNC_INTERVAL_MED_MINS = 60;           // medium-gap sync interval
 const SYNC_INTERVAL_LOW_MINS = 30;           // near-gap sync interval
+const MS_PER_MINUTE = 60000;                  // ms-per-minute for sync math
 const NAV_TAIL_MATCH_RADIUS_M = 50;         // nav tail-match / phone delta radius
 const PHONE_OPEN_START_SECS = -60;          // phone window start
 const PHONE_OPEN_END_SECS = 600;            // phone window end
@@ -57,19 +58,6 @@ function localPlanningDay(targetUnixSecs) {
     let m = ("0" + (d.getMonth() + 1)).slice(-2);
     let day = ("0" + d.getDate()).slice(-2);
     return y + "-" + m + "-" + day;
-}
-
-// INV-0.2: DST-safe LOCAL day-boundary comparison. The device timezone IS the
-// configured timezone (no TZ config exists; Gatekeeper already derives its tod
-// buckets from local getHours()). JS Date local getters resolve the local day
-// exactly — a 23/24/25-hour day still has one unambiguous local midnight — so
-// (y, m, d) equality is DST-safe by construction (unlike fixed-second math).
-function isSameLocalDay(unixSecA, unixSecB) {
-    const dA = new Date(unixSecA * 1000);
-    const dB = new Date(unixSecB * 1000);
-    return dA.getFullYear() === dB.getFullYear()
-        && dA.getMonth() === dB.getMonth()
-        && dA.getDate() === dB.getDate();
 }
 
 function getDist(lat1, lon1, lat2, lon2) {
@@ -120,7 +108,11 @@ function readActiveGeneration(kind) {
         var legacyItin = readJson(DATA_ROOT + "Itin_Master.json");
         if (legacyItin !== null) return legacyItin;
     }
-    return [];
+    // Nothing readable (no manifest, or committed files missing/corrupt):
+    // return null so callers can distinguish UNKNOWN from a genuinely empty
+    // day — a failed read must never look like an empty itinerary (a
+    // transient read failure must not cancel a real scheduled departure).
+    return null;
 }
 
 function getBoltMins(unixSecs) {
@@ -168,6 +160,10 @@ try {
     setLocal('itin_bolt_last', getBoltMins(lastSched).toString());
 
     var master = readActiveGeneration("itinerary");
+    // Distinguish UNKNOWN (read failure — never cancel from it) from a
+    // genuinely empty itinerary (safe to cancel stale future schedules).
+    var masterReadable = (master !== null);
+    if (master === null) master = [];
 
     let targetDrive = undefined;
     let driveIdx = -1;
@@ -271,7 +267,7 @@ try {
             // the next stop is the same trip. Only a genuinely overnight stay
             // (> OVERNIGHT_STAY_MINS) or a negative gap breaks the chain.
             var lastArrive = parseInt(targetDrive.arriveUnix || (dTime + (targetDrive.durationSecs || DURATION_FALLBACK_SECS)));
-            var currentIsDropin = targetDrive.targetDesc && /(#dropin)/i.test(targetDrive.targetDesc);
+            var currentIsDropin = targetDrive.legType === "DROPIN" || (targetDrive.targetDesc && /(#dropin)/i.test(targetDrive.targetDesc));
 
             for (let j = driveIdx + 1; j < master.length; j++) {
                 let nextT = master[j];
@@ -286,7 +282,7 @@ try {
                     if (nc === UNUSABLE_COORDS) break; // a coord-less stop cannot navigate
                     multiCoords.push(nc);
                     lastArrive = parseInt(nextT.arriveUnix || (nextDep + (nextT.durationSecs || DURATION_FALLBACK_SECS)));
-                    currentIsDropin = nextT.targetDesc && /(#dropin)/i.test(nextT.targetDesc);
+                    currentIsDropin = nextT.legType === "DROPIN" || (nextT.targetDesc && /(#dropin)/i.test(nextT.targetDesc));
                 } else {
                     break; 
                 }
@@ -311,21 +307,28 @@ try {
                 var oldNavP = lastCommittedNav.split("~");
                 var newNavP = navPayloadStr.split("~");
                 
-                var isTailMatch = true;
-                if (newNavP.length > oldNavP.length) {
-                    isTailMatch = false; 
+                // Nav re-push dedup: with BOLT_REVERSED_STOPS the payload is
+                // chronologically reversed, so a suffix comparison would
+                // suppress the re-push when a chain SHRINKS (a cancelled tail
+                // stop makes the new payload a suffix of the committed one and
+                // the car would keep driving the stale stop). Only an
+                // EQUAL payload (same stops, same order, coordinate jitter
+                // within NAV_TAIL_MATCH_RADIUS_M) suppresses the push; any
+                // structural change re-stages the list.
+                var isSamePayload = true;
+                if (newNavP.length !== oldNavP.length) {
+                    isSamePayload = false;
                 } else {
-                    var offset = oldNavP.length - newNavP.length;
                     for (var n = 0; n < newNavP.length; n++) {
-                        var oC = oldNavP[offset + n].split(",");
+                        var oC = oldNavP[n].split(",");
                         var nC = newNavP[n].split(",");
                         if (getDist(parseFloat(oC[0]), parseFloat(oC[1]), parseFloat(nC[0]), parseFloat(nC[1])) > NAV_TAIL_MATCH_RADIUS_M) {
-                            isTailMatch = false;
+                            isSamePayload = false;
                             break;
                         }
                     }
                 }
-                if (!isTailMatch) grantNavPush = true;
+                if (!isSamePayload) grantNavPush = true;
             }
         }
 
@@ -370,7 +373,10 @@ try {
 
     } else {
         var cancelSchedule = "false";
-        if (lastSched > 0 && lastSched > nowSec) {
+        // Cancelling a real scheduled departure requires a READABLE
+        // generation: a transient read failure (masterReadable false) must
+        // never look like an empty day and cancel the schedule.
+        if (masterReadable && lastSched > 0 && lastSched > nowSec) {
             cancelSchedule = "true";
         }
         
@@ -461,7 +467,7 @@ try {
         else syncIntervalMins = SOON_SYNC_MINS;
     }
 
-    var nextSyncMs = Date.now() + (syncIntervalMins * 60000);
+    var nextSyncMs = Date.now() + (syncIntervalMins * MS_PER_MINUTE);
     var syncDate   = new Date(nextSyncMs);
     setGlobal('Next_Sync', (syncDate.getHours()<10?'0':'')+syncDate.getHours() + "." + (syncDate.getMinutes()<10?'0':'')+syncDate.getMinutes());
 

@@ -68,10 +68,10 @@ try {
 } catch (e) { fail('reversed 3-stop chain: ' + e.message); }
 
 // SCN-4: midnight-straddling SHORT stop keeps the chain (gate = stop length,
-// not clock time) — a 10-min stop arriving 23:50 day 14 and departing 00:05
+// not clock time) — a 10-min stop arriving 23:50 day 14 and departing 00:01
 // day 15 sequences the next stop into the same payload.
 try {
-  // leg0 arrives 23:50 (day 14); leg1 (plain stop, NOT dropin) departs 00:05
+  // leg0 arrives 23:50 (day 14); leg1 (plain stop, NOT dropin) departs 00:01
   // day 15 — stay 10 min ≤ SHORT_STAY_MINS, so the length gate chains it.
   const master = [
     leg('leg0', aCoords, nowSec + 3600, nowSec + 5860),
@@ -85,9 +85,10 @@ try {
 // SCN-5: a genuinely OVERNIGHT stop breaks the chain even when the previous
 // stop is a dropin — 7h stay between stops never sequences into one payload.
 try {
-  // leg0 dropin arrives 23:00 (day 14); leg1 dropin departs 06:00 (day 15).
+  // leg0 dropin departs 23:13, arrives 23:43 (day 14); leg1 dropin departs
+  // 06:00 (day 15) — 6h17m stay > OVERNIGHT_STAY_MINS.
   const master = [
-    leg('leg0', aCoords, nowSec + 3600, nowSec + 2800, '#dropin'),
+    leg('leg0', aCoords, nowSec + 3600, nowSec + 5400, '#dropin'),
     leg('leg1', bCoords, nowSec + 27800, nowSec + 29600, '#dropin')
   ];
   const store = make(master);
@@ -95,7 +96,7 @@ try {
     'an overnight stay (> OVERNIGHT_STAY_MINS) must break the chain, got: ' + store.locals['tds_next_coords']);
 } catch (e) { fail('overnight-stay chain break: ' + e.message); }
 
-// SCN-2: broken chain (next stop on a different local day) -> single coords.
+// SCN-2: broken chain (next stop is a >5h overnight gap) -> single coords.
 try {
   const master = [
     leg('leg0', aCoords, nowSec + 1800, nowSec + 3600, '#dropin'),
@@ -114,6 +115,39 @@ try {
     'single destination payload must be unchanged, got: ' + store.locals['tds_next_coords']);
 } catch (e) { fail('single destination: ' + e.message); }
 
+// SCN-6: nav re-push dedup — a SHRUNK chain (tail stop cancelled between
+// syncs) must re-stage the payload. The committed payload is reversed
+// (C~B~A); the new plan drops stop C, so the new payload (B~A) is a SUFFIX
+// of the committed one — the old suffix dedup suppressed the push and the
+// car kept driving the cancelled stop. Equality-only dedup must re-push.
+try {
+  const master = [
+    leg('leg0', aCoords, nowSec + 1800, nowSec + 3600, '#dropin'),
+    leg('leg1', bCoords, nowSec + 4500, nowSec + 6300, '#dropin')
+  ];
+  const store = make(master, { Tesla_Last_Nav: cCoords + '~' + bCoords + '~' + aCoords });
+  assert.strictEqual(store.locals['tds_next_coords'], bCoords + '~' + aCoords,
+    'shrunk chain payload, got: ' + store.locals['tds_next_coords']);
+  assert.strictEqual(store.locals['do_tesla_nav'], 'true',
+    'a shrunk chain must re-push the nav payload (cancelled stop must not keep driving), got: ' + store.locals['do_tesla_nav']);
+} catch (e) { fail('shrunk-chain re-push: ' + e.message); }
+
+// SCN-7: an EQUAL payload (same stops, same order) suppresses the re-push.
+try {
+  const master = [
+    leg('leg0', aCoords, nowSec + 1800, nowSec + 3600, '#dropin'),
+    leg('leg1', bCoords, nowSec + 4500, nowSec + 6300, '#dropin'),
+    leg('leg2', cCoords, nowSec + 6300, nowSec + 8100, '#dropin')
+  ];
+  const store = make(master, { Tesla_Last_Nav: cCoords + '~' + bCoords + '~' + aCoords });
+  assert.strictEqual(store.locals['tds_next_coords'], cCoords + '~' + bCoords + '~' + aCoords,
+    'identical chain payload, got: ' + store.locals['tds_next_coords']);
+  assert.strictEqual(store.locals['do_tesla_nav'], 'false',
+    'an identical payload must suppress the re-push, got: ' + store.locals['do_tesla_nav']);
+} catch (e) { fail('identical-payload suppression: ' + e.message); }
+
 if (failures > 0) { console.log('FAIL: dispatcher-multi-stop — ' + failures + ' group(s) failed'); process.exit(1); }
+console.log('PASS: dispatcher-multi-stop — reversed sequential-stop payload (Bolt plugin contract), length-gate chain, equality-only re-push dedup');
+process.exit(0);
 console.log('PASS: dispatcher-multi-stop — reversed sequential-stop payload (Bolt plugin contract), single/broken chains unchanged');
 process.exit(0);
