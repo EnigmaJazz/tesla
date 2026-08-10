@@ -32,6 +32,12 @@ const HVAC_OPEN_END_SECS = 1200;            // hvac push window end
 const HVAC_COOLDOWN_SECS = 1800;            // hvac push cooldown
 const NAV_OPEN_END_SECS = 3600;             // nav push window end
 const SHORT_STAY_MINS = 45;                 // short-stay clustering rule
+const DURATION_FALLBACK_SECS = 1800;         // missing-duration fallback (30m)
+const BOLT_REVERSED_STOPS = true;            // Bolt plugin navigates staged stops in reverse order → sequential-stop payload is emitted chronologically reversed
+const UNUSABLE_COORDS = "0,0";               // unusable-coordinates sentinel
+const SYNC_INTERVAL_HIGH_MINS = 120;         // far-gap sync interval
+const SYNC_INTERVAL_MED_MINS = 60;           // medium-gap sync interval
+const SYNC_INTERVAL_LOW_MINS = 30;           // near-gap sync interval
 const NAV_TAIL_MATCH_RADIUS_M = 50;         // nav tail-match / phone delta radius
 const PHONE_OPEN_START_SECS = -60;          // phone window start
 const PHONE_OPEN_END_SECS = 600;            // phone window end
@@ -82,7 +88,11 @@ function readJson(path) {
             component: "Dispatcher", severity: "warn", code: "FILE_READ_FAILED", tripId: null, details: { path: path, reason: String(e && e.message || e) } }));
     }
     if (!raw || raw.indexOf("%") === 0) return null;
-    try { return JSON.parse(raw); } catch(e) { return null; }
+    try { return JSON.parse(raw); } catch(e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Dispatcher", severity: "warn", code: "FILE_PARSE_FAILED", tripId: null, details: { path: path, reason: String(e && e.message || e) } }));
+        return null;
+    }
 }
 function pathFor(g, kind) {
     return DATA_ROOT + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
@@ -234,7 +244,7 @@ try {
     if (targetDrive) {
         var dTime    = parseInt(targetDrive.departUnix || targetDrive.time || 0);
         var title    = targetDrive.targetTitle || targetDrive.loc || "Destination";
-        var coords   = targetDrive.targetCoords || targetDrive.coords || "0,0";
+        var coords   = targetDrive.targetCoords || targetDrive.coords || UNUSABLE_COORDS;
         var coordArr = coords.split(',');
         var startVal = parseInt(targetDrive.arriveUnix || targetDrive.start || dTime);
         var evalMode = targetDrive.mode || "WALK";
@@ -254,27 +264,41 @@ try {
         var navPayloadStr = coords; 
         if (evalMode === "DRIVE" && driveIdx !== -1) {
             var multiCoords = [coords];
-            var lastArrive = parseInt(targetDrive.arriveUnix || (dTime + (targetDrive.durationSecs || 1800)));
+            // Chain anchor (AGENTS.md: no day-boundary crossing chains): the
+            // sequential-stop chain terminates at the LOCAL planning day of the
+            // target leg's departure — a later stop departing on another local
+            // day is never pulled into today's payload (mirrors the
+            // FUTURE_TRIP_NOT_DUE selection guard, which the loop previously
+            // bypassed for legs arriving after local midnight).
+            var chainDay = parseInt(targetDrive.departUnix || targetDrive.time || 0);
+            var lastArrive = parseInt(targetDrive.arriveUnix || (dTime + (targetDrive.durationSecs || DURATION_FALLBACK_SECS)));
             var currentIsDropin = targetDrive.targetDesc && /(#dropin)/i.test(targetDrive.targetDesc);
 
             for (let j = driveIdx + 1; j < master.length; j++) {
                 let nextT = master[j];
                 let nextDep = parseInt(nextT.departUnix || nextT.time || 0);
                 
-                if (!isSameLocalDay(lastArrive, nextDep)) break; // Break clustering at overnight boundaries
+                if (!isSameLocalDay(chainDay, nextDep)) break; // chain stays on the target's local planning day
                 
                 let stayMins = (nextDep - lastArrive) / 60;
                 let isShortStay = stayMins >= 0 && stayMins <= SHORT_STAY_MINS; 
                 
                 if (currentIsDropin || isShortStay) {
-                    let nc = nextT.targetCoords || nextT.coords || "0,0";
+                    let nc = nextT.targetCoords || nextT.coords || UNUSABLE_COORDS;
+                    if (nc === UNUSABLE_COORDS) break; // a coord-less stop cannot navigate
                     multiCoords.push(nc);
-                    lastArrive = parseInt(nextT.arriveUnix || (nextDep + (nextT.durationSecs || 1800)));
+                    lastArrive = parseInt(nextT.arriveUnix || (nextDep + (nextT.durationSecs || DURATION_FALLBACK_SECS)));
                     currentIsDropin = nextT.targetDesc && /(#dropin)/i.test(nextT.targetDesc);
                 } else {
                     break; 
                 }
             }
+            // BOLT_REVERSED_STOPS: the Bolt nav plugin hands the stop list to
+            // the car in reverse navigation order, so the sequential-stop
+            // payload is emitted chronologically REVERSED (last stop first,
+            // destination last) to land in the correct driving sequence. A
+            // single destination is unaffected (reverse of [A] is [A]).
+            if (BOLT_REVERSED_STOPS) multiCoords.reverse();
             navPayloadStr = multiCoords.join("~");
         }
 
@@ -282,7 +306,7 @@ try {
         var lastCommittedNav = (global('Tesla_Last_Nav') || "").trim();
         if (lastCommittedNav.indexOf("%") === 0) lastCommittedNav = ""; 
 
-        if (isNavWindowOpen && coords !== "0,0") {
+        if (isNavWindowOpen && coords !== UNUSABLE_COORDS) {
             if (lastCommittedNav === "") {
                 grantNavPush = true;
             } else {
@@ -317,7 +341,7 @@ try {
             var oldGNavP = lastCommittedGoogle.split(",");
             phoneDistDelta = getDist(parseFloat(oldGNavP[0]), parseFloat(oldGNavP[1]), parseFloat(coordArr[0]), parseFloat(coordArr[1]));
         }
-        var grantGooglePush = (isPhoneWindowOpen && (lastCommittedGoogle === "" || phoneDistDelta > NAV_TAIL_MATCH_RADIUS_M) && coords !== "0,0");
+        var grantGooglePush = (isPhoneWindowOpen && (lastCommittedGoogle === "" || phoneDistDelta > NAV_TAIL_MATCH_RADIUS_M) && coords !== UNUSABLE_COORDS);
 
         setLocal('itin_time1', dTime.toString());
         setLocal('itin_mode1', evalMode);
@@ -415,9 +439,9 @@ try {
         isActionLocked = false;
     }
 
-    var syncIntervalMins = 120;
+    var syncIntervalMins = SYNC_INTERVAL_HIGH_MINS;
     if (isActionLocked) {
-        syncIntervalMins = 120;
+        syncIntervalMins = SYNC_INTERVAL_HIGH_MINS;
     } else if (targetDrive === undefined) {
         // INV-0.6 AC-10: no actionable trip → idle sync.
         syncIntervalMins = IDLE_SYNC_MINS;
@@ -432,9 +456,9 @@ try {
         }));
     } else {
         var gapMins = Math.floor((targetDrive.departUnix - nowSec) / 60);
-        if (gapMins > SYNC_GAP_HIGH_MINS) syncIntervalMins = 120;
-        else if (gapMins > SYNC_GAP_MED_MINS) syncIntervalMins = 60;
-        else if (gapMins > SYNC_GAP_LOW_MINS) syncIntervalMins = 30;
+        if (gapMins > SYNC_GAP_HIGH_MINS) syncIntervalMins = SYNC_INTERVAL_HIGH_MINS;
+        else if (gapMins > SYNC_GAP_MED_MINS) syncIntervalMins = SYNC_INTERVAL_MED_MINS;
+        else if (gapMins > SYNC_GAP_LOW_MINS) syncIntervalMins = SYNC_INTERVAL_LOW_MINS;
         // If targetDrive is overdue, gapMins is negative → SOON_SYNC_MINS; IDLE_SYNC_ENGAGED is reserved for the empty-master / all-truly-stale case.
         else syncIntervalMins = SOON_SYNC_MINS;
     }
