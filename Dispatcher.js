@@ -35,6 +35,7 @@ const SHORT_STAY_MINS = 45;                 // short-stay clustering rule
 const DURATION_FALLBACK_SECS = 1800;         // missing-duration fallback (30m)
 const BOLT_REVERSED_STOPS = true;            // Bolt plugin navigates staged stops in reverse order → sequential-stop payload is emitted chronologically reversed
 const UNUSABLE_COORDS = "0,0";               // unusable-coordinates sentinel
+const COORD_FALLBACK = "0";                   // single-component coordinate fallback
 const SYNC_INTERVAL_HIGH_MINS = 120;         // far-gap sync interval
 const SYNC_INTERVAL_MED_MINS = 60;           // medium-gap sync interval
 const SYNC_INTERVAL_LOW_MINS = 30;           // near-gap sync interval
@@ -175,19 +176,19 @@ try {
     var completedTripIds = {};
     var completedEventIds = {};
     try {
-        var stRaw = readFile(DATA_ROOT + "TDS_Trip_State.json") || "";
+        let stRaw = readFile(DATA_ROOT + "TDS_Trip_State.json") || "";
         if (stRaw && stRaw.indexOf("%") === -1) {
-            var st = JSON.parse(stRaw);
-            var trips = (st && st.trips) || {};
-            for (var tk in trips) {
+            let st = JSON.parse(stRaw);
+            let trips = (st && st.trips) || {};
+            for (let tk in trips) {
                 if (trips.hasOwnProperty(tk) && typeof trips[tk].observedArrivalUnix === "number") {
                     completedTripIds[tk] = true;
                 }
             }
-            var stopMap = (st && st.completedStops) || {};
-            for (var sk in stopMap) if (stopMap.hasOwnProperty(sk)) completedEventIds[sk] = true;
-            var dropinMap = (st && st.completedDropins) || {};
-            for (var dk in dropinMap) if (dropinMap.hasOwnProperty(dk)) completedEventIds[dk] = true;
+            let stopMap = (st && st.completedStops) || {};
+            for (let sk in stopMap) if (stopMap.hasOwnProperty(sk)) completedEventIds[sk] = true;
+            let dropinMap = (st && st.completedDropins) || {};
+            for (let dk in dropinMap) if (dropinMap.hasOwnProperty(dk)) completedEventIds[dk] = true;
         }
     } catch (e) {
         flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
@@ -196,7 +197,6 @@ try {
 
     let targetDrive = undefined;
     let driveIdx = -1;
-    let skippedStale = 0;
     let bestFuture = null;
     let bestFutureIdx = -1;
     let bestOverdue = null;
@@ -249,7 +249,6 @@ try {
 
             const relDeadline = relevanceDeadlineForLeg(trip, nowSec);
             if (nowSec >= relDeadline) {
-                skippedStale++;
                 flash(JSON.stringify({
                     timestamp: nowSec,
                     generationId: global('TDS_Active_Generation') || null,
@@ -318,6 +317,17 @@ try {
             for (let j = driveIdx + 1; j < master.length; j++) {
                 let nextT = master[j];
                 let nextDep = parseInt(nextT.departUnix || nextT.time || 0);
+                
+                // The Tesla nav payload is DRIVE-only: a non-DRIVE next stop
+                // (WALK/TRANSIT) is a separate navigation mode and never
+                // sequences into it, regardless of dwell.
+                if ((nextT.mode || "").toUpperCase() !== "DRIVE") break;
+                
+                // A COMPLETED stop is never routed — the exclusion applies to
+                // chain stops too, not just target selection (a completed
+                // stop's successor is also stale, so break).
+                let nextTid = nextT.tripId || null;
+                if ((nextTid && completedTripIds[nextTid]) || (nextT.targetEventId && completedEventIds[nextT.targetEventId])) break;
                 
                 let stayMins = (nextDep - lastArrive) / 60;
                 if (stayMins < 0 || stayMins > SHORT_STAY_MINS) break; // long dwell or negative gap never chains
@@ -388,8 +398,8 @@ try {
         setLocal('itin_mode1', evalMode);
         setLocal('itin_loc1', title);
         setLocal('itin_start1', startVal.toString());
-        setLocal('itin_lat1', coordArr[0] || "0");
-        setLocal('itin_lng1', coordArr[1] || "0");
+        setLocal('itin_lat1', coordArr[0] || COORD_FALLBACK);
+        setLocal('itin_lng1', coordArr[1] || COORD_FALLBACK);
         setLocal('itin_bolt_time', getBoltMins(dTime).toString());
 
         setLocal('do_tesla_schedule', (grantSchedulePush && evalMode === "DRIVE") ? "true" : "false");

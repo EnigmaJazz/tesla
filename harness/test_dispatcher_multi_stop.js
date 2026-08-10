@@ -41,10 +41,10 @@ function make(master, extraGlobals, stateFile) {
 let failures = 0;
 function fail(msg) { failures += 1; console.log('FAIL: dispatcher-multi-stop — ' + msg); }
 
-function leg(id, coords, departSec, arriveSec, desc) {
+function leg(id, coords, departSec, arriveSec, desc, mode) {
   return {
     tripId: 'trip_' + id, targetEventId: id, targetTitle: 'Stop ' + id, targetCoords: coords,
-    targetDesc: desc || '', mode: 'DRIVE',
+    targetDesc: desc || '', mode: mode || 'DRIVE',
     departUnix: departSec, arriveUnix: arriveSec, durationSecs: 1800
   };
 }
@@ -195,6 +195,42 @@ try {
   assert.strictEqual(store.locals['itin_mode1'], 'DRIVE',
     'an uncompleted overdue-within-window leg must still be selected');
 } catch (e) { fail('uncompleted overdue control: ' + e.message); }
+
+// SCN-11: a non-DRIVE next stop never sequences into the Tesla nav payload —
+// a short-dwell WALK leg is a separate navigation mode, regardless of dwell.
+try {
+  // leg0 DRIVE arrives 23:50; leg1 WALK departs 00:01 (10-min dwell) — the
+  // dwell gate would chain it, the mode gate must break it.
+  const master = [
+    leg('leg0', aCoords, nowSec + 3600, nowSec + 5860, '#dropin'),
+    leg('leg1', bCoords, nowSec + 6460, nowSec + 8260, '', 'WALK')
+  ];
+  const store = make(master);
+  assert.strictEqual(store.locals['tds_next_coords'], aCoords,
+    'a non-DRIVE next stop must never sequence into the Tesla payload, got: ' + store.locals['tds_next_coords']);
+} catch (e) { fail('non-DRIVE stop mode gate: ' + e.message); }
+
+// SCN-12: a COMPLETED chain stop is never appended to the payload — the
+// completion exclusion applies to chain stops too, not just target selection.
+try {
+  // leg0: uncompleted overdue-within-window DRIVE (selected as bestOverdue);
+  // leg1: COMPLETED (observedArrivalUnix) with a 5-min dwell — must NOT chain.
+  const master = [
+    leg('leg0', aCoords, nowSec - 1800, nowSec - 600, '#dropin'),
+    leg('leg1', bCoords, nowSec - 300, nowSec + 1500, '#dropin')
+  ];
+  const state = JSON.stringify({
+    schemaVersion: 1, revision: 1, generationId: 'gen:1700000000:ab12',
+    currentOrigin: 'PLANNED', currentPlanningDay: '', userAtBase: false,
+    baseArrivalUnix: null, latenessHalt: false, currentStatus: '',
+    manualReturnCompleted: false,
+    trips: { trip_leg1: { observedArrivalUnix: nowSec - 300 } },
+    stops: {}, completedStops: {}, completedDropins: {}, manualSessions: {}
+  });
+  const store = make(master, {}, state);
+  assert.strictEqual(store.locals['tds_next_coords'], aCoords,
+    'a completed chain stop must never appear in the payload, got: ' + store.locals['tds_next_coords']);
+} catch (e) { fail('completed chain stop: ' + e.message); }
 
 if (failures > 0) { console.log('FAIL: dispatcher-multi-stop — ' + failures + ' group(s) failed'); process.exit(1); }
 console.log('PASS: dispatcher-multi-stop — reversed sequential-stop payload (Bolt plugin contract), length-gate chain, equality-only re-push dedup');
