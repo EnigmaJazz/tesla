@@ -216,8 +216,8 @@ try {
                 timestamp: nowSec,
                 generationId: global('TDS_Active_Generation') || null,
                 component: "Dispatcher",
-                severity: "INFO",
-                code: "COMPLETED_TRIP_SKIPPED",
+                    severity: "info",
+                    code: "COMPLETED_TRIP_SKIPPED",
                 tripId: tripId,
                 details: { depUnix: parseInt(trip.departUnix || trip.time || 0, 10) || 0 }
             }));
@@ -239,8 +239,8 @@ try {
                     timestamp: nowSec,
                     generationId: global('TDS_Active_Generation') || null,
                     component: "Dispatcher",
-                    severity: "INFO",
-                    code: "FUTURE_TRIP_NOT_DUE",
+                severity: "info",
+                code: "FUTURE_TRIP_NOT_DUE",
                     tripId: trip.tripId || null,
                     details: { planningDay: tripDay, depUnix: depUnix, nowSec: nowSec }
                 }));
@@ -253,7 +253,7 @@ try {
                     timestamp: nowSec,
                     generationId: global('TDS_Active_Generation') || null,
                     component: "Dispatcher",
-                    severity: "WARN",
+                    severity: "warn",
                     code: "STALE_TRIP_REJECTED",
                     tripId: trip.tripId || null,
                     details: { depUnix: depUnix, nowSec: nowSec, relevanceDeadline: relDeadline }
@@ -372,7 +372,13 @@ try {
                     for (var n = 0; n < newNavP.length; n++) {
                         var oC = oldNavP[n].split(",");
                         var nC = newNavP[n].split(",");
-                        if (getDist(parseFloat(oC[0]), parseFloat(oC[1]), parseFloat(nC[0]), parseFloat(nC[1])) > NAV_TAIL_MATCH_RADIUS_M) {
+                        var oLat = parseFloat(oC[0]), oLon = parseFloat(oC[1]);
+                        var nLat = parseFloat(nC[0]), nLon = parseFloat(nC[1]);
+                        // Non-finite coords in a committed payload are never
+                        // "equal" — re-push rather than risk suppressing a
+                        // needed re-stage on malformed legacy data.
+                        if (!isFinite(oLat) || !isFinite(oLon) || !isFinite(nLat) || !isFinite(nLon)
+                            || getDist(oLat, oLon, nLat, nLon) > NAV_TAIL_MATCH_RADIUS_M) {
                             isSamePayload = false;
                             break;
                         }
@@ -503,7 +509,7 @@ try {
             timestamp: nowSec,
             generationId: global('TDS_Active_Generation') || null,
             component: "Dispatcher",
-            severity: "INFO",
+            severity: "info",
             code: "IDLE_SYNC_ENGAGED",
             tripId: null,
             details: { syncIntervalMins: IDLE_SYNC_MINS }

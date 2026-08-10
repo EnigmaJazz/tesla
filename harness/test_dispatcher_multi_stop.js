@@ -83,10 +83,10 @@ try {
 } catch (e) { fail('midnight-straddling short stop: ' + e.message); }
 
 // SCN-5: a LONG dwell breaks the chain even when the previous stop is a
-// dropin — a 6h17m dwell between stops never sequences into one payload.
+// dropin — a 6h13m dwell between stops never sequences into one payload.
 try {
   // leg0 dropin departs 23:13, arrives 23:43 (day 14); leg1 dropin departs
-  // 06:00 (day 15) — 6h17m dwell > SHORT_STAY_MINS.
+  // 05:56 (day 15) — 6h13m dwell > SHORT_STAY_MINS.
   const master = [
     leg('leg0', aCoords, nowSec + 3600, nowSec + 5400, '#dropin'),
     leg('leg1', bCoords, nowSec + 27800, nowSec + 29600, '#dropin')
