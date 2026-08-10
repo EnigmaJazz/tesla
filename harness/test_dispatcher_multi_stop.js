@@ -67,19 +67,33 @@ try {
     'multi-stop payload must be chronologically REVERSED (last stop first), got: ' + payload);
 } catch (e) { fail('reversed 3-stop chain: ' + e.message); }
 
-// SCN-4: midnight-straddle — a next stop DEPARTING after local midnight must
-// break the chain (no day-boundary crossing), even though the target leg's
-// own arrival crosses midnight.
+// SCN-4: midnight-straddling SHORT stop keeps the chain (gate = stop length,
+// not clock time) — a 10-min stop arriving 23:50 day 14 and departing 00:05
+// day 15 sequences the next stop into the same payload.
 try {
-  // leg0 departs 23:13, arrives 23:43 (day 14); leg1 departs 00:10 (day 15).
+  // leg0 arrives 23:50 (day 14); leg1 (plain stop, NOT dropin) departs 00:05
+  // day 15 — stay 10 min ≤ SHORT_STAY_MINS, so the length gate chains it.
   const master = [
-    leg('leg0', aCoords, nowSec + 3600, nowSec + 5400, '#dropin'),
-    leg('leg1', bCoords, nowSec + 9400, nowSec + 11200, '#dropin')
+    leg('leg0', aCoords, nowSec + 3600, nowSec + 5860),
+    leg('leg1', bCoords, nowSec + 6460, nowSec + 8260)
+  ];
+  const store = make(master);
+  assert.strictEqual(store.locals['tds_next_coords'], bCoords + '~' + aCoords,
+    'a short stop straddling midnight must keep the chain (length gate), got: ' + store.locals['tds_next_coords']);
+} catch (e) { fail('midnight-straddling short stop: ' + e.message); }
+
+// SCN-5: a genuinely OVERNIGHT stop breaks the chain even when the previous
+// stop is a dropin — 7h stay between stops never sequences into one payload.
+try {
+  // leg0 dropin arrives 23:00 (day 14); leg1 dropin departs 06:00 (day 15).
+  const master = [
+    leg('leg0', aCoords, nowSec + 3600, nowSec + 2800, '#dropin'),
+    leg('leg1', bCoords, nowSec + 27800, nowSec + 29600, '#dropin')
   ];
   const store = make(master);
   assert.strictEqual(store.locals['tds_next_coords'], aCoords,
-    'a stop departing on the next local day must break the chain, got: ' + store.locals['tds_next_coords']);
-} catch (e) { fail('midnight-straddle chain break: ' + e.message); }
+    'an overnight stay (> OVERNIGHT_STAY_MINS) must break the chain, got: ' + store.locals['tds_next_coords']);
+} catch (e) { fail('overnight-stay chain break: ' + e.message); }
 
 // SCN-2: broken chain (next stop on a different local day) -> single coords.
 try {

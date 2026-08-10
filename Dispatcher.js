@@ -35,6 +35,7 @@ const SHORT_STAY_MINS = 45;                 // short-stay clustering rule
 const DURATION_FALLBACK_SECS = 1800;         // missing-duration fallback (30m)
 const BOLT_REVERSED_STOPS = true;            // Bolt plugin navigates staged stops in reverse order → sequential-stop payload is emitted chronologically reversed
 const UNUSABLE_COORDS = "0,0";               // unusable-coordinates sentinel
+const OVERNIGHT_STAY_MINS = 300;             // stay this long = overnight boundary → chain breaks (5h)
 const SYNC_INTERVAL_HIGH_MINS = 120;         // far-gap sync interval
 const SYNC_INTERVAL_MED_MINS = 60;           // medium-gap sync interval
 const SYNC_INTERVAL_LOW_MINS = 30;           // near-gap sync interval
@@ -264,13 +265,11 @@ try {
         var navPayloadStr = coords; 
         if (evalMode === "DRIVE" && driveIdx !== -1) {
             var multiCoords = [coords];
-            // Chain anchor (AGENTS.md: no day-boundary crossing chains): the
-            // sequential-stop chain terminates at the LOCAL planning day of the
-            // target leg's departure — a later stop departing on another local
-            // day is never pulled into today's payload (mirrors the
-            // FUTURE_TRIP_NOT_DUE selection guard, which the loop previously
-            // bypassed for legs arriving after local midnight).
-            var chainDay = parseInt(targetDrive.departUnix || targetDrive.time || 0);
+            // Chain gate is STOP LENGTH, not clock time (user-directed): a
+            // short stop that happens to straddle local midnight (e.g. a
+            // 15-min errand arriving 23:50, departing 00:05) keeps the chain —
+            // the next stop is the same trip. Only a genuinely overnight stay
+            // (> OVERNIGHT_STAY_MINS) or a negative gap breaks the chain.
             var lastArrive = parseInt(targetDrive.arriveUnix || (dTime + (targetDrive.durationSecs || DURATION_FALLBACK_SECS)));
             var currentIsDropin = targetDrive.targetDesc && /(#dropin)/i.test(targetDrive.targetDesc);
 
@@ -278,10 +277,9 @@ try {
                 let nextT = master[j];
                 let nextDep = parseInt(nextT.departUnix || nextT.time || 0);
                 
-                if (!isSameLocalDay(chainDay, nextDep)) break; // chain stays on the target's local planning day
-                
                 let stayMins = (nextDep - lastArrive) / 60;
-                let isShortStay = stayMins >= 0 && stayMins <= SHORT_STAY_MINS; 
+                if (stayMins < 0 || stayMins > OVERNIGHT_STAY_MINS) break; // negative or overnight gap never chains
+                let isShortStay = stayMins <= SHORT_STAY_MINS; 
                 
                 if (currentIsDropin || isShortStay) {
                     let nc = nextT.targetCoords || nextT.coords || UNUSABLE_COORDS;
