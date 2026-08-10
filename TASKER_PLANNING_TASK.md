@@ -55,7 +55,15 @@ Bootstrap the data files per TASKER_SETUP.md §5 before the first run.
 1. **Read Calendar** (Tasker action) → set `%ce_title1..N`, `%ce_description1..N`,
    `%ce_start_time1..N` (epoch ms), `%ce_end_time1..N`, `%ce_location1..N`,
    `%ce_event_id1..N`, `%ce_calendar1..N`. Alpha.js loops `while (local('ce_title' + i))`.
-2. **JSlet: Alpha.js** → stages `%tds_temp_json` (event candidates), `%raw_base_data`.
+2. **JSlet: Alpha.js** → stages `%tds_temp_json` (event candidates),
+   `%raw_base_data`, and `%locs_to_fetch` (`^^`-joined location strings with
+   no `Geocode_Cache.json` entry).
+3. **Geocode missing locations** **[device]** — for each item in
+   `%locs_to_fetch` (split on `^^`): Google Geocode API call → set `%http_data`
+   (response JSON), `%loc_text` (the location) → **JSlet: Geocode_Updater.js**
+   (commits the normalized key into `Geocode_Cache.json`; a corrupt cache
+   ABORTS without writing). Only locations already in the cache resolve to
+   coords — events without coords are dropped from routing until geocoded.
 
 ### Step B — Dropin cluster task (identify dropin order)
 

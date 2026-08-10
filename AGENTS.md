@@ -88,6 +88,10 @@ Any other script that writes one of these is a bug.
 - `Cluster_Builder.js` — groups consecutive dropins from `%tds_temp_json`
   into route-optimization clusters; stages `%par1` (cluster JSON),
   `%cluster_count`, `%cluster_eof`. Read-only; no file writes.
+- `Geocode_Updater.js` — device-maintained writer of `Geocode_Cache.json`
+  (location string → `lat,lon`): commits ONE Google Geocode result per run,
+  normalized key, corrupt-cache abort, structured logs. Alpha/Finaliser only
+  read that cache.
 - `Return_to_Base.js`, `Depart_Now.js`, `Unlock.js` — manual-action
   command adapters.
 - `Stop_Logger.js` — submits stable stop-completion commands.
