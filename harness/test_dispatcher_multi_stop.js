@@ -149,5 +149,3 @@ try {
 if (failures > 0) { console.log('FAIL: dispatcher-multi-stop — ' + failures + ' group(s) failed'); process.exit(1); }
 console.log('PASS: dispatcher-multi-stop — reversed sequential-stop payload (Bolt plugin contract), length-gate chain, equality-only re-push dedup');
 process.exit(0);
-console.log('PASS: dispatcher-multi-stop — reversed sequential-stop payload (Bolt plugin contract), single/broken chains unchanged');
-process.exit(0);
