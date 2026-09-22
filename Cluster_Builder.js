@@ -60,7 +60,7 @@ try {
   try {
     events = JSON.parse(rawEvents);
   } catch (e) {
-    flashLog("ERROR", "CLUSTER_BUILDER_FAULT", { message: "Failed to parse %tds_temp_json: " + String(e.message || e) });
+    flashLog("error", "CLUSTER_BUILDER_FAULT", { message: "Failed to parse %tds_temp_json: " + String(e.message || e) });
     setLocal("par1", "");
     setLocal("cluster_count", "0");
     setLocal("cluster_eof", "true");
@@ -69,7 +69,7 @@ try {
   }
 
   if (!Array.isArray(events)) {
-    flashLog("ERROR", "CLUSTER_BUILDER_FAULT", { message: "%tds_temp_json is not an array" });
+    flashLog("error", "CLUSTER_BUILDER_FAULT", { message: "%tds_temp_json is not an array" });
     setLocal("par1", "");
     setLocal("cluster_count", "0");
     setLocal("cluster_eof", "true");
@@ -158,7 +158,7 @@ try {
     // Validate destination coords
     if (!destCoords || destCoords === UNUSABLE_COORDS) {
       const reason = group.nextNonDropin ? "no_destination_coords" : "no_base_coords";
-      flashLog("WARN", "CLUSTER_SKIPPED", {
+      flashLog("warn", "CLUSTER_SKIPPED", {
         index: clusterLogIndex,
         reason: reason
       });
@@ -170,7 +170,7 @@ try {
     // optimizes the waypoint order from this origin.
     const originCoords = group.prevNonDropin ? group.prevNonDropin.coords : baseCoords;
     if (!originCoords || originCoords === UNUSABLE_COORDS) {
-      flashLog("WARN", "CLUSTER_SKIPPED", {
+      flashLog("warn", "CLUSTER_SKIPPED", {
         index: clusterLogIndex,
         reason: "no_origin_coords"
       });
@@ -180,7 +180,7 @@ try {
     // Per-event waypoint skips (dropins with unusable coords)
     if (group.skippedIds.length > 0) {
       for (let s = 0; s < group.skippedIds.length; s++) {
-        flashLog("WARN", "CLUSTER_SKIPPED", {
+        flashLog("warn", "CLUSTER_SKIPPED", {
           index: clusterLogIndex,
           reason: "no_waypoint_coords",
           eventId: group.skippedIds[s]
@@ -190,7 +190,7 @@ try {
 
     // Validate waypoints
     if (group.waypoints.length === 0) {
-      flashLog("WARN", "CLUSTER_SKIPPED", {
+      flashLog("warn", "CLUSTER_SKIPPED", {
         index: clusterLogIndex,
         reason: "no_waypoint_coords"
       });
@@ -224,7 +224,7 @@ try {
     for (let w = 0; w < c.waypoints.length; w++) {
       wpIds.push(c.waypoints[w].id);
     }
-    flashLog("INFO", "CLUSTER_BUILT", {
+    flashLog("info", "CLUSTER_BUILT", {
       index: idx,
       count: clusterCount,
       destinationId: c.destination.id,
@@ -237,7 +237,7 @@ try {
   }
 
   if (clusterCount === 0) {
-    flashLog("INFO", "NO_DROPIN_CLUSTERS", {});
+    flashLog("info", "NO_DROPIN_CLUSTERS", {});
   }
 
   setLocal("par1", par1);
@@ -248,7 +248,7 @@ try {
 } catch (e) {
   // Outer catch — anything unexpected
   try {
-    flashLog("ERROR", "CLUSTER_BUILDER_FAULT", { message: String(e.message || e) });
+    flashLog("error", "CLUSTER_BUILDER_FAULT", { message: String(e.message || e) });
   } catch (_) {
     // Can't even flash — nothing we can do
   }

@@ -73,6 +73,13 @@ function getOvr(key) { return OVR[key] || ""; }
 let completedStopsRaw = "";
 try {
     const stRaw = readFile(DATA_ROOT + "TDS_Trip_State.json") || "";
+    if (!stRaw) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Sandbox", severity: "warn", code: "TRIP_STATE_READ_FAILED", tripId: null, details: { path: DATA_ROOT + "TDS_Trip_State.json", reason: "empty" } }));
+    } else if (stRaw.indexOf("%") === 0) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Sandbox", severity: "warn", code: "TRIP_STATE_READ_FAILED", tripId: null, details: { path: DATA_ROOT + "TDS_Trip_State.json", reason: "unexpanded" } }));
+    }
     if (stRaw) {
         const parsedState = JSON.parse(stRaw);
         const stopMap = parsedState.completedStops || {};
@@ -221,9 +228,16 @@ function rejectOccurrenceId(rawId, reason, component) {
 // is in flight.
 function readJson(path) {
     let raw = "";
-    try { raw = readFile(path) || ""; } catch(e) {}
+    try { raw = readFile(path) || ""; } catch(e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Sandbox", severity: "error", code: "FILE_READ_FAILED", tripId: null, details: { path: path, reason: String(e && e.message || e) } }));
+    }
     if (!raw || raw.indexOf("%") === 0) return null;
-    try { return JSON.parse(raw); } catch(e) { return null; }
+    try { return JSON.parse(raw); } catch(e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Sandbox", severity: "error", code: "FILE_PARSE_FAILED", tripId: null, details: { path: path, reason: String(e && e.message || e) } }));
+        return null;
+    }
 }
 function pathFor(g, kind) {
     return DATA_ROOT + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
@@ -613,6 +627,13 @@ try {
                     let activeManualTrips = [];
                     try {
                         const stRaw = readFile(DATA_ROOT + "TDS_Trip_State.json") || "";
+                        if (!stRaw) {
+                            flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                                component: "Sandbox", severity: "warn", code: "TRIP_STATE_READ_FAILED", tripId: null, details: { path: DATA_ROOT + "TDS_Trip_State.json", reason: "empty" } }));
+                        } else if (stRaw.indexOf("%") === 0) {
+                            flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                                component: "Sandbox", severity: "warn", code: "TRIP_STATE_READ_FAILED", tripId: null, details: { path: DATA_ROOT + "TDS_Trip_State.json", reason: "unexpanded" } }));
+                        }
                         if (stRaw) {
                             const st = JSON.parse(stRaw);
                             const trips = st.trips || {};

@@ -16,7 +16,7 @@ Copy the repo's production scripts to the device. Two trees:
 
 | Path (device) | Content |
 |---|---|
-| `Tasker/Tesla/*.js` | All production scripts (Alpha, Compiler, Sandbox_Engine, Finaliser, Generation_Publisher, TDS_State_Command, Trip_State_Reducer, Override_Handler, Route_Cache_Manager, Gatekeeper, API_JSON_Build, API_Parser, Dispatcher, Dashboard, Appender, Override_Injector, Return_to_Base, Depart_Now, Unlock, Stop_Logger, TDS_Helper) |
+| `Tasker/Tesla/*.js` | All production scripts (Alpha, Cluster_Builder, Compiler, Sandbox_Engine, Finaliser, Geocode_Updater, Generation_Publisher, TDS_State_Command, Trip_State_Reducer, Override_Handler, Route_Cache_Manager, Gatekeeper, API_JSON_Build, API_Parser, Dispatcher, Dashboard, Appender, Override_Injector, Return_to_Base, Depart_Now, Unlock, Stop_Logger, TDS_Helper) |
 | `Tasker/Tesla/TESLA_CONFIG.json` | Per-device setup constants (`dataRoot`). **Gitignored** — copy from the committed `TESLA_CONFIG.example.json`; scripts fall back to `Tasker/Tesla/Data/` when absent |
 | `Tasker/Tesla/Data/` | JSON data files (see §5 bootstrap) |
 
@@ -213,8 +213,9 @@ Create before first run:
 | `TDS_Action_Lock.json` | `{}` | Manual_Action_Handler (legacy projection) |
 | `TDS_Reorder_Commands.json` | `[]` | TDS_State_Command enqueues; Generation_Publisher drains/clears |
 | `TDS_Route_Cache.json`, `TDS_Order_Cache.json` (+ `.txt` projections, `Temp_Route_Cache.txt`) | `{}` / `[]` | Route_Cache_Manager |
-| `TDS_Request_State.json` | `{}` | Route_Cache_Manager (REQUEST_STATE_*) |
+| `TDS_Route_Request_State.json` | `{}` | Route_Cache_Manager (REQUEST_STATE_*) |
 | `TDS_Base_Geocodes.txt` | empty | Finaliser |
+| `Geocode_Cache.json` | `{}` | Geocode_Updater |
 
 Never hand-edit these after first run — the single-writer contract applies.
 When in doubt, DELETE the file and let the owner recreate it.

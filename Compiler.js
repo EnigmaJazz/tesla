@@ -552,6 +552,13 @@ function compileTypedRow(row) {
         let stateTrips = null;
         try {
             const stRaw = readFile(DATA_ROOT + "TDS_Trip_State.json") || "";
+            if (!stRaw) {
+                flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                    component: "Compiler", severity: "warn", code: "TRIP_STATE_READ_FAILED", tripId: null, details: { path: DATA_ROOT + "TDS_Trip_State.json", reason: "empty" } }));
+            } else if (stRaw.indexOf("%") === 0) {
+                flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                    component: "Compiler", severity: "warn", code: "TRIP_STATE_READ_FAILED", tripId: null, details: { path: DATA_ROOT + "TDS_Trip_State.json", reason: "unexpanded" } }));
+            }
             if (stRaw) {
                 const parsedState = JSON.parse(stRaw);
                 stateTrips = parsedState.trips || null;

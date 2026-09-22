@@ -58,7 +58,12 @@ const MIN_ADHOC_STR_LEN = 5;           // AdHoc_Base entry length floor
 // legacy Itin_Master.json is no longer written since Phase 2 and reading it
 // regressed the published itinerary on every pass.
 function readJson(path) {
-    const raw = readFile(path) || "";
+    let raw = "";
+    try { raw = readFile(path) || ""; } catch (e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Finaliser", severity: "error", code: "FILE_READ_FAILED", tripId: null,
+            details: { path: path, reason: String(e && e.message || e) } }));
+    }
     if (!raw || raw.indexOf("%") === 0) return null;
     try { return JSON.parse(raw); } catch (e) {
         // A present-but-corrupt file must be observable — silently turning it
