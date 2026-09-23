@@ -11,3 +11,7 @@ _spec_source.md
 
 # Per-device setup constants (committed template: TESLA_CONFIG.example.json)
 Tasker/Tesla/TESLA_CONFIG.json
+
+# gentle-ai sandbox runtime state. Contains a nested Git repository created by
+# the sandbox tooling; ignoring it keeps it out of review/commit candidates.
+.sandbox-state/
