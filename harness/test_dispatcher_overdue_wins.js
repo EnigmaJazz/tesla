@@ -33,7 +33,8 @@ const globals = {
 };
 
 const files = {
-  'Tasker/Tesla/Data/Itin_Master.json': masterJson
+  'Tasker/Tesla/Data/Itin_Master.json': masterJson,
+  'Tasker/Tesla/Data/TDS_Trip_State.json': '{}'
 };
 
 const { sandbox, store } = createSandbox({ globals: globals, files: files, nowMs: nowSec * 1000 });

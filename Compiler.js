@@ -22,6 +22,7 @@ const SECONDS_PER_DAY = 86400;
 const MIN_DWELL_SECS = 60;          // hardFloor minimum dwell after arrival
 const PITSTOP_MIN_DWELL_SECS = 1800; // pitstop minimum dwell
 const BUFFER_UNSET_SENTINEL = 9999; // leg.actualBuffer unset sentinel
+const DEFAULT_BUFFER_MINS = 5;      // Arrival/Departure_Buffer_Mins fallback (minutes)
 
 // Phase 2: travel leg types whose route duration must be positive before
 // publication. Zero-duration synthetic or placeholder legs are rejected.
@@ -43,6 +44,12 @@ const LOCK_FRESH_SECS = 7200;
 // row rejects the whole queue without compiling partial rows (TYPED_QUEUE_REJECTED).
 const TYPED_QUEUE_SCHEMA_VERSION = 1;
 const TYPED_QUEUE_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Unit-conversion and leg-default constants (AGENTS.md: no magic numbers).
+const SECONDS_PER_MIN = 60;             // minutes -> seconds
+const MILES_DECIMAL_PLACES = 3;         // short local-estimate distance precision
+const DEFAULT_DROPIN_DURATION_SECS = 0; // master event duration unset fallback
+const HOLD_UNTIL_UNSET_SECS = 0;        // TDS_Hold_Until unset fallback
 
 function isValidTypedRow(row) {
     return !!row && typeof row === "object"
@@ -173,32 +180,53 @@ function readJson(path) {
         return null;
     }
 }
+// R1: three-state read. readJson collapses "missing" and "unreadable" into
+// null; this reader keeps them distinct so a read/parse failure is never
+// mistaken for a genuinely empty source. readJson is unchanged for its other
+// callers.
+function readJsonState(path) {
+    let raw = "";
+    try { raw = readFile(path); } catch (e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Compiler", severity: "error", code: "FILE_READ_FAILED", tripId: null, details: { path: path, reason: String(e && e.message || e) } }));
+        return { state: "unreadable" };
+    }
+    if (!raw) return { state: "missing" };
+    if (raw.indexOf("%") === 0) return { state: "unreadable" };
+    try { return { state: "ok", value: JSON.parse(raw) }; } catch (e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Compiler", severity: "warn", code: "FILE_PARSE_FAILED", tripId: null, details: { path: path, reason: String(e && e.message || e) } }));
+        return { state: "unreadable" };
+    }
+}
 function pathFor(g, kind) {
     return DATA_ROOT + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
 }
 // Phase 3 PR-E: Local copy of readActiveGeneration. The canonical
 // implementation lives in TDS_Helper.js. Kept local because Tasker
 // scripts are standalone and cannot call functions from other scripts.
+// R2: uses readJsonState so a read/parse failure is UNKNOWN, never an empty day.
 function readActiveGeneration(kind) {
-    const m = readJson(DATA_ROOT + "TDS_Run_Manifest.json");
+    const manifestRead = readJsonState(DATA_ROOT + "TDS_Run_Manifest.json");
+    const m = manifestRead.state === "ok" ? manifestRead.value : null;
     const key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
     if (m && m.state === "committed" && m.activeGeneration) {
-        const data = readJson(m[key] || pathFor(m.activeGeneration, kind));
-        if (data !== null) return data;
+        const activeRead = readJsonState(m[key] || pathFor(m.activeGeneration, kind));
+        if (activeRead.state === "ok" && activeRead.value !== null) return activeRead.value;
     }
     if (m && m.previousGeneration) {
-        const prev = readJson(pathFor(m.previousGeneration, kind));
-        if (prev !== null) return prev;
+        const prevRead = readJsonState(pathFor(m.previousGeneration, kind));
+        if (prevRead.state === "ok" && prevRead.value !== null) return prevRead.value;
     }
-    if (kind === "events" || kind === "master") {
-        const legacy = readJson(DATA_ROOT + "TDS_Master.json");
-        if (legacy !== null) return legacy;
-    }
-    if (kind === "itinerary") {
-        const legacyItin = readJson(DATA_ROOT + "Itin_Master.json");
-        if (legacyItin !== null) return legacyItin;
-    }
-    return [];
+    const legacyRead = readJsonState(DATA_ROOT + (kind === "events" || kind === "master" ? "TDS_Master.json" : "Itin_Master.json"));
+    if (legacyRead.state === "ok" && legacyRead.value !== null) return legacyRead.value;
+    // R2: a source that exists but yields no usable data is UNKNOWN (transient
+    // read failure / corrupt file / a manifest that promises a generation).
+    // Only the true first-publish case — manifest missing AND legacy missing —
+    // is a legitimately empty day.
+    if (manifestRead.state === "ok" || manifestRead.state === "unreadable" || legacyRead.state === "unreadable") return null;
+    if (manifestRead.state === "missing" && legacyRead.state === "missing") return [];
+    return null;
 }
 // Phase 4 Slice B: session-primary action lock. Shared by the Compiler and
 // Dispatcher readers (standalone copies). Active sessions/manual trips are
@@ -333,7 +361,7 @@ function compileTypedRow(row) {
             // Preserve positivity: one-decimal rounding turns a short but real
             // distance (e.g. 10 m) into 0.0, producing an incomplete metric
             // pair. Three decimals keeps short local estimates positive.
-            distMiles = parseFloat((distM * METERS_TO_MILES).toFixed(3));
+            distMiles = parseFloat((distM * METERS_TO_MILES).toFixed(MILES_DECIMAL_PLACES));
 
             setLocal('api_duration_secs', duration.toString());
             setLocal('api_distance_miles', distMiles.toString());
@@ -363,7 +391,7 @@ function compileTypedRow(row) {
         let pArr = pendingStopsRaw.split(",");
         for (let s = 0; s < pArr.length; s++) {
             if (!pArr[s]) continue;
-            stopPadSecs += (parseInt(pArr[s], 10) * 60);
+            stopPadSecs += (parseInt(pArr[s], 10) * SECONDS_PER_MIN);
             stopUiStr += (stopUiStr ? ", " : "") + pArr[s] + "m";
         }
 
@@ -374,9 +402,24 @@ function compileTypedRow(row) {
 
     const masterArr = readActiveGeneration("master");
 
+    // P1-2: a total generation-read failure is UNKNOWN, never an empty day.
+    // Withholding the publish candidate keeps a transient read failure from
+    // publishing a truncated one-leg itinerary (no silent state inference).
+    if (masterArr === null) {
+        flash(JSON.stringify({
+            timestamp: Math.floor(Date.now() / 1000),
+            generationId: global('TDS_Active_Generation') || null,
+            component: "Compiler",
+            severity: "error",
+            code: "ITINERARY_READ_UNKNOWN",
+            tripId: evId || null,
+            details: { source: "master" }
+        }));
+        return;
+    }
     let mEv = masterArr.find(e => (e.id || "DEFAULT") === evId);
     let evStartSecs = mEv ? parseInt(mEv.start, 10) : (row.departTime || nowSec);
-    let dropinDur = mEv ? (parseInt(mEv.duration, 10) || 0) : 0;
+    let dropinDur = mEv ? (parseInt(mEv.duration, 10) || DEFAULT_DROPIN_DURATION_SECS) : 0;
 
     let isDepartEventLateCheck = /(#leave|#depart)\b/i.test((destName || "") + " " + targetDesc);
 
@@ -441,6 +484,19 @@ function compileTypedRow(row) {
 
         let hardFloor = nowSec; 
 
+        // P1-2: UNKNOWN itinerary read -> withhold the publish candidate entirely.
+        if (itinerary === null) {
+            flash(JSON.stringify({
+                timestamp: Math.floor(Date.now() / 1000),
+                generationId: global('TDS_Active_Generation') || null,
+                component: "Compiler",
+                severity: "error",
+                code: "ITINERARY_READ_UNKNOWN",
+                tripId: evId || null,
+                details: { source: "itinerary" }
+            }));
+            return;
+        }
         if (itinerary.length > 0) {
             let prevLeg = itinerary[itinerary.length - 1];
             let prevArr = parseInt(prevLeg.arriveUnix, 10);
@@ -454,13 +510,13 @@ function compileTypedRow(row) {
                 let isPrevDropin = /(#dropin)/i.test((pEv.title || "") + " " + (pEv.desc || "")) || pEv.isDropin;
 
                 if (isPrevDropin) {
-                    let pDropinDur = parseInt(pEv.duration, 10) || 0;
+                    let pDropinDur = parseInt(pEv.duration, 10) || DEFAULT_DROPIN_DURATION_SECS;
                     let adHocSecs = 0; 
                     let stopRegex = /#stop:(\d+)/gi; 
                     let adHocMatch;
 
                     while ((adHocMatch = stopRegex.exec(pEv.desc || "")) !== null) {
-                        adHocSecs += (parseInt(adHocMatch[1], 10) * 60);
+                        adHocSecs += (parseInt(adHocMatch[1], 10) * SECONDS_PER_MIN);
                     }
 
                     hardFloor = prevArr + pDropinDur + adHocSecs;
@@ -472,10 +528,10 @@ function compileTypedRow(row) {
                     }
 
                     let depM = (pEv.desc || "").match(/(?:#dep:|#leave:)(\d+)/i);
-                    let defDepMins = parseInt(global('Departure_Buffer_Mins'), 10) || 5;
+                    let defDepMins = parseInt(global('Departure_Buffer_Mins'), 10) || DEFAULT_BUFFER_MINS;
                     let isPDep = /(#leave|#depart)\b/i.test((pEv.title || "") + " " + (pEv.desc || ""));
 
-                    hardFloor = prevEnd + (isPDep ? 0 : (depM ? parseInt(depM[1], 10) : defDepMins) * 60);
+                    hardFloor = prevEnd + (isPDep ? 0 : (depM ? parseInt(depM[1], 10) : defDepMins) * SECONDS_PER_MIN);
                 }
             } else if (prevLeg.pitstopState === "forced" || prevLeg.pitstopState === "handled") {
                 hardFloor = prevArr + PITSTOP_MIN_DWELL_SECS; 
@@ -486,7 +542,7 @@ function compileTypedRow(row) {
         
         hardFloor = Math.max(nowSec, hardFloor);
 
-        let activeHold = parseInt(global('TDS_Hold_Until'), 10) || 0;
+        let activeHold = parseInt(global('TDS_Hold_Until'), 10) || HOLD_UNTIL_UNSET_SECS;
         if (itinerary.length === 0 && activeHold > nowSec) {
             hardFloor = Math.max(hardFloor, activeHold);
         }
@@ -495,8 +551,8 @@ function compileTypedRow(row) {
         let tailLeg = pendingChain[cLen - 1];
 
         let arrMatch = tailLeg.targetDesc.match(/#arr:(\d+)/i);
-        let defArrMins = parseInt(global('Arrival_Buffer_Mins'), 10) || 5;
-        let targetBufferSecs = tailLeg.isDepart ? 0 : (arrMatch ? parseInt(arrMatch[1], 10) : defArrMins) * 60;
+        let defArrMins = parseInt(global('Arrival_Buffer_Mins'), 10) || DEFAULT_BUFFER_MINS;
+        let targetBufferSecs = tailLeg.isDepart ? 0 : (arrMatch ? parseInt(arrMatch[1], 10) : defArrMins) * SECONDS_PER_MIN;
         
         if (tailLeg.apiType === "DEPART") {
             tailLeg.depTarget = tailLeg.isDepart 
@@ -580,13 +636,13 @@ function compileTypedRow(row) {
             let delta = leg.evStartSecs - (leg.isDepart ? leg.actualDeparture : leg.actualArrival);
             
             if (delta >= 0) {
-                leg.actualBuffer = Math.floor(delta / 60);
+                leg.actualBuffer = Math.floor(delta / SECONDS_PER_MIN);
 
                 if (leg.isDepart) {
                     leg.actualBuffer = BUFFER_UNSET_SENTINEL; 
                 }
             } else {
-                leg.actualLate = Math.ceil(Math.abs(delta) / 60);
+                leg.actualLate = Math.ceil(Math.abs(delta) / SECONDS_PER_MIN);
                 leg.actualBuffer = 0;
             }
 
@@ -624,7 +680,7 @@ function compileTypedRow(row) {
                             leg.actionType !== "EOD"
                         ) {
                             departChanged = "true"; 
-                            departDiffMins = Math.round((leg.actualDeparture - oldD) / 60); 
+                            departDiffMins = Math.round((leg.actualDeparture - oldD) / SECONDS_PER_MIN); 
                         }
                     }
 

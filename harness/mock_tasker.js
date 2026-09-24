@@ -86,6 +86,7 @@ function createSandbox(options) {
   // loss mid-write). The matching path pattern fires once, then heals so a
   // retry/restore write succeeds — faithful to the rollback contract.
   const tornWrites = (failures.tornWrites || []).slice();
+  const readThrows = failures.readThrows || [];
   let now = initialNowMs;
 
   function publish(candidate) {
@@ -178,6 +179,8 @@ function createSandbox(options) {
     liveGlobals[key] = stringify(value);
   }
   function readFile(path) {
+    // Failure injection: readThrows models a transient Tasker read error.
+    if (matchesAny(path, readThrows)) throw new Error("injected read failure: " + path);
     // Faithful to the Tasker runtime: missing files return null, present
     // files return their exact bytes (including "" for an empty present
     // file). Tests that need to distinguish must check against null.

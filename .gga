@@ -23,7 +23,7 @@
 #   PROVIDER="github:deepseek-r1"
 #   PROVIDER="minimax"
 #   PROVIDER="minimax:MiniMax-M3"
-PROVIDER="opencode:opencode-go/deepseek-v4-flash"
+PROVIDER="opencode:opencode-go/deepseek-v4.1-flash"
 
 # File patterns to include in review (comma-separated)
 # Default: * (all files)

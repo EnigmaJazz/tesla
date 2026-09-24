@@ -74,16 +74,36 @@ function readJson(path) {
         return null;
     }
 }
+// R1: three-state read. readJson collapses "missing" and "unreadable" into
+// null; this reader keeps them distinct so a read/parse failure is never
+// mistaken for a genuinely empty source. readJson is unchanged for its other
+// callers.
+function readJsonState(path) {
+    let raw = "";
+    try { raw = readFile(path); } catch (e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Finaliser", severity: "error", code: "FILE_READ_FAILED", tripId: null, details: { path: path, reason: String(e && e.message || e) } }));
+        return { state: "unreadable" };
+    }
+    if (!raw) return { state: "missing" };
+    if (raw.indexOf("%") === 0) return { state: "unreadable" };
+    try { return { state: "ok", value: JSON.parse(raw) }; } catch (e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Finaliser", severity: "warn", code: "FILE_PARSE_FAILED", tripId: null, details: { path: path, reason: String(e && e.message || e) } }));
+        return { state: "unreadable" };
+    }
+}
 function pathFor(g, kind) {
     return DATA_ROOT + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
 }
 function readActiveGeneration(kind) {
-    const m = readJson(DATA_ROOT + "TDS_Run_Manifest.json");
+    const manifestRead = readJsonState(DATA_ROOT + "TDS_Run_Manifest.json");
+    const m = manifestRead.state === "ok" ? manifestRead.value : null;
     const key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
     if (m && m.state === "committed" && m.activeGeneration) {
         const p = m[key] || pathFor(m.activeGeneration, kind);
-        const data = readJson(p);
-        if (data !== null) return data;
+        const activeRead = readJsonState(p);
+        if (activeRead.state === "ok" && activeRead.value !== null) return activeRead.value;
         // A committed generation whose file is missing or corrupt must be
         // observable — the fallback chain (previous → legacy → []) would
         // otherwise mask a stale/empty publish with zero log trail.
@@ -92,12 +112,18 @@ function readActiveGeneration(kind) {
             details: { kind: kind, path: p, reason: "missing_or_corrupt" } }));
     }
     if (m && m.previousGeneration) {
-        const data = readJson(pathFor(m.previousGeneration, kind));
-        if (data !== null) return data;
+        const prevRead = readJsonState(pathFor(m.previousGeneration, kind));
+        if (prevRead.state === "ok" && prevRead.value !== null) return prevRead.value;
     }
-    const legacy = readJson(DATA_ROOT + (kind === "events" || kind === "master" ? "TDS_Master.json" : "Itin_Master.json"));
-    if (legacy !== null) return legacy;
-    return [];
+    const legacyRead = readJsonState(DATA_ROOT + (kind === "events" || kind === "master" ? "TDS_Master.json" : "Itin_Master.json"));
+    if (legacyRead.state === "ok" && legacyRead.value !== null) return legacyRead.value;
+    // R2: a source that exists but yields no usable data is UNKNOWN (transient
+    // read failure / corrupt file / a manifest that promises a generation).
+    // Only the true first-publish case — manifest missing AND legacy missing —
+    // is a legitimately empty day.
+    if (manifestRead.state === "ok" || manifestRead.state === "unreadable" || legacyRead.state === "unreadable") return null;
+    if (manifestRead.state === "missing" && legacyRead.state === "missing") return [];
+    return null;
 }
 
 // REQ-6F2-1/2: the serial Tasker model delivers only the LAST staged
@@ -344,7 +370,20 @@ try {
     // from it regressed the itinerary on every location-change pass.
     let currentItin = readActiveGeneration("itinerary");
 
-    publishCandidate({ events: validEvents, master: validEvents, itinerary: currentItin });
+    // P1-2: an UNKNOWN itinerary read must never publish an empty itinerary.
+    if (currentItin === null) {
+        flash(JSON.stringify({
+            timestamp: Math.floor(Date.now() / 1000),
+            generationId: global('TDS_Active_Generation') || null,
+            component: "Finaliser",
+            severity: "error",
+            code: "ITINERARY_READ_UNKNOWN",
+            tripId: null,
+            details: { source: "itinerary" }
+        }));
+    } else {
+        publishCandidate({ events: validEvents, master: validEvents, itinerary: currentItin });
+    }
 
     let baseFilePath = DATA_ROOT + "TDS_Base_Geocodes.txt";
     let oldBaseStr = "";

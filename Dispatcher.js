@@ -83,35 +83,57 @@ function readJson(path) {
         return null;
     }
 }
+// R1/R4: three-state read. readJson collapses "missing" and "unreadable" into
+// null; this reader keeps them distinct so a read/parse failure is never
+// mistaken for an absent generation. readJson is unchanged for its callers.
+function readJsonState(path) {
+    var raw = "";
+    try { raw = readFile(path); } catch (e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Dispatcher", severity: "error", code: "FILE_READ_FAILED", tripId: null, details: { path: path, reason: String(e && e.message || e) } }));
+        return { state: "unreadable" };
+    }
+    if (!raw) return { state: "missing" };
+    if (raw.indexOf("%") === 0) return { state: "unreadable" };
+    try { return { state: "ok", value: JSON.parse(raw) }; } catch (e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Dispatcher", severity: "warn", code: "FILE_PARSE_FAILED", tripId: null, details: { path: path, reason: String(e && e.message || e) } }));
+        return { state: "unreadable" };
+    }
+}
 function pathFor(g, kind) {
     return DATA_ROOT + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
 }
+// R4: records whether the most recent readActiveGeneration hit a read/parse
+// FAILURE (vs. a genuinely absent/not-yet-committed generation), so callers
+// can tell "unreadable" from "absent/building".
+var lastGenerationReadFailed = false;
 // Phase 3 PR-E: Local copy of readActiveGeneration. The canonical
 // implementation lives in TDS_Helper.js. Kept local because Tasker
 // scripts are standalone and cannot call functions from other scripts.
 function readActiveGeneration(kind) {
-    var m = readJson(DATA_ROOT + "TDS_Run_Manifest.json");
+    var readFailed = false;
+    var manifestRead = readJsonState(DATA_ROOT + "TDS_Run_Manifest.json");
+    if (manifestRead.state === "unreadable") readFailed = true;
+    var m = manifestRead.state === "ok" ? manifestRead.value : null;
     var key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
     if (m && m.state === "committed" && m.activeGeneration) {
-        var data = readJson(m[key] || pathFor(m.activeGeneration, kind));
-        if (data !== null) return data;
+        var activeRead = readJsonState(m[key] || pathFor(m.activeGeneration, kind));
+        if (activeRead.state === "unreadable") readFailed = true;
+        if (activeRead.state === "ok" && activeRead.value !== null) { lastGenerationReadFailed = readFailed; return activeRead.value; }
     }
     if (m && m.previousGeneration) {
-        var prev = readJson(pathFor(m.previousGeneration, kind));
-        if (prev !== null) return prev;
+        var prevRead = readJsonState(pathFor(m.previousGeneration, kind));
+        if (prevRead.state === "unreadable") readFailed = true;
+        if (prevRead.state === "ok" && prevRead.value !== null) { lastGenerationReadFailed = readFailed; return prevRead.value; }
     }
-    if (kind === "events" || kind === "master") {
-        var legacy = readJson(DATA_ROOT + "TDS_Master.json");
-        if (legacy !== null) return legacy;
-    }
-    if (kind === "itinerary") {
-        var legacyItin = readJson(DATA_ROOT + "Itin_Master.json");
-        if (legacyItin !== null) return legacyItin;
-    }
-    // Nothing readable (no manifest, or committed files missing/corrupt):
-    // return null so callers can distinguish UNKNOWN from a genuinely empty
-    // day — a failed read must never look like an empty itinerary (a
-    // transient read failure must not cancel a real scheduled departure).
+    var legacyRead = readJsonState(DATA_ROOT + (kind === "events" || kind === "master" ? "TDS_Master.json" : "Itin_Master.json"));
+    if (legacyRead.state === "unreadable") readFailed = true;
+    if (legacyRead.state === "ok" && legacyRead.value !== null) { lastGenerationReadFailed = readFailed; return legacyRead.value; }
+    // Nothing readable. null preserves the UNKNOWN signal for callers;
+    // lastGenerationReadFailed distinguishes a read/parse failure from an
+    // absent or not-yet-committed generation.
+    lastGenerationReadFailed = readFailed;
     return null;
 }
 
@@ -160,9 +182,11 @@ try {
     setLocal('itin_bolt_last', getBoltMins(lastSched).toString());
 
     var master = readActiveGeneration("itinerary");
-    // Distinguish UNKNOWN (read failure — never cancel from it) from a
-    // genuinely empty itinerary (safe to cancel stale future schedules).
+    // R4: distinguish a read/parse FAILURE (never cancel or idle from it) from
+    // a genuinely absent or not-yet-committed (building) generation, which is a
+    // legitimate empty state and keeps the idle sync.
     var masterReadable = (master !== null);
+    var masterReadFailed = lastGenerationReadFailed;
     if (master === null) master = [];
 
     // Completion exclusion (user-directed 2026-08-10): the Dispatcher never
@@ -171,35 +195,37 @@ try {
     // re-routed as overdue-within-window. Read the reducer state and exclude
     // legs whose tripId is completed (observedArrivalUnix) or whose target
     // event is in the completed stops/dropins maps — explicit state, never
-    // inferred. A failed read degrades to no exclusion (current behavior),
-    // logged TRIP_STATE_READ_FAILED.
+    // inferred.
+    // R3: a genuinely ABSENT/empty state file is a legitimate "nothing recorded
+    // yet" (bootstrap §5 mandates the file; a migrated legacy system may have a
+    // master but no state file) -> known-empty, the overdue class proceeds, and
+    // TRIP_STATE_ABSENT makes it diagnosable. An UNREADABLE state file (read
+    // threw / parse failed / %-unexpanded) cannot prove a leg is not completed
+    // -> the overdue class is withheld (P1-3).
     var completedTripIds = {};
     var completedEventIds = {};
-    try {
-        let stRaw = readFile(DATA_ROOT + "TDS_Trip_State.json") || "";
-        if (!stRaw) {
-            flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
-                component: "Dispatcher", severity: "warn", code: "TRIP_STATE_READ_FAILED", tripId: null, details: { path: DATA_ROOT + "TDS_Trip_State.json", reason: "empty" } }));
-        } else if (stRaw.indexOf("%") === 0) {
-            flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
-                component: "Dispatcher", severity: "warn", code: "TRIP_STATE_READ_FAILED", tripId: null, details: { path: DATA_ROOT + "TDS_Trip_State.json", reason: "unexpanded" } }));
-        }
-        if (stRaw && stRaw.indexOf("%") === -1) {
-            let st = JSON.parse(stRaw);
-            let trips = (st && st.trips) || {};
-            for (let tk in trips) {
-                if (trips.hasOwnProperty(tk) && typeof trips[tk].observedArrivalUnix === "number") {
-                    completedTripIds[tk] = true;
-                }
+    var tripStateReadable = false;
+    var tripStateRead = readJsonState(DATA_ROOT + "TDS_Trip_State.json");
+    if (tripStateRead.state === "ok") {
+        tripStateReadable = true;
+        let st = tripStateRead.value;
+        let trips = (st && st.trips) || {};
+        for (let tk in trips) {
+            if (trips.hasOwnProperty(tk) && typeof trips[tk].observedArrivalUnix === "number") {
+                completedTripIds[tk] = true;
             }
-            let stopMap = (st && st.completedStops) || {};
-            for (let sk in stopMap) if (stopMap.hasOwnProperty(sk)) completedEventIds[sk] = true;
-            let dropinMap = (st && st.completedDropins) || {};
-            for (let dk in dropinMap) if (dropinMap.hasOwnProperty(dk)) completedEventIds[dk] = true;
         }
-    } catch (e) {
+        let stopMap = (st && st.completedStops) || {};
+        for (let sk in stopMap) if (stopMap.hasOwnProperty(sk)) completedEventIds[sk] = true;
+        let dropinMap = (st && st.completedDropins) || {};
+        for (let dk in dropinMap) if (dropinMap.hasOwnProperty(dk)) completedEventIds[dk] = true;
+    } else if (tripStateRead.state === "missing") {
+        tripStateReadable = true;
         flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
-            component: "Dispatcher", severity: "warn", code: "TRIP_STATE_READ_FAILED", tripId: null, details: { reason: String(e && e.message || e) } }));
+            component: "Dispatcher", severity: "warn", code: "TRIP_STATE_ABSENT", tripId: null, details: { path: DATA_ROOT + "TDS_Trip_State.json" } }));
+    } else {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Dispatcher", severity: "warn", code: "TRIP_STATE_READ_FAILED", tripId: null, details: { path: DATA_ROOT + "TDS_Trip_State.json", reason: "unreadable" } }));
     }
 
     let targetDrive = undefined;
@@ -286,8 +312,23 @@ try {
         targetDrive = bestFuture;
         driveIdx = bestFutureIdx;
     } else if (bestOverdue !== null) {
-        targetDrive = bestOverdue;
-        driveIdx = bestOverdueIdx;
+        // P1-3: an UNKNOWN trip state cannot prove a leg is not already
+        // completed; withhold the overdue class rather than risk re-routing a
+        // completed stop. Future/PLANNED selection is unaffected.
+        if (tripStateReadable) {
+            targetDrive = bestOverdue;
+            driveIdx = bestOverdueIdx;
+        } else {
+            flash(JSON.stringify({
+                timestamp: nowSec,
+                generationId: global('TDS_Active_Generation') || null,
+                component: "Dispatcher",
+                severity: "warn",
+                code: "OVERDUE_SUPPRESSED_STATE_UNKNOWN",
+                tripId: bestOverdue.tripId || bestOverdue.targetEventId || null,
+                details: { depUnix: parseInt(bestOverdue.departUnix || bestOverdue.time || 0, 10) || 0 }
+            }));
+        }
     }
 
     if (targetDrive) {
@@ -510,17 +551,33 @@ try {
     if (isActionLocked) {
         syncIntervalMins = SYNC_INTERVAL_HIGH_MINS;
     } else if (targetDrive === undefined) {
-        // INV-0.6 AC-10: no actionable trip → idle sync.
-        syncIntervalMins = IDLE_SYNC_MINS;
-        flash(JSON.stringify({
-            timestamp: nowSec,
-            generationId: global('TDS_Active_Generation') || null,
-            component: "Dispatcher",
-            severity: "info",
-            code: "IDLE_SYNC_ENGAGED",
-            tripId: null,
-            details: { syncIntervalMins: IDLE_SYNC_MINS }
-        }));
+        if (masterReadFailed) {
+            // R4: a master read/parse FAILURE must not idle 60 min; a real
+            // departure 10-50 min out would otherwise fall outside the nav window.
+            syncIntervalMins = SOON_SYNC_MINS;
+            flash(JSON.stringify({
+                timestamp: nowSec,
+                generationId: global('TDS_Active_Generation') || null,
+                component: "Dispatcher",
+                severity: "warn",
+                code: "GENERATION_READ_UNKNOWN_SYNC",
+                tripId: null,
+                details: { syncIntervalMins: SOON_SYNC_MINS, reason: "master_unreadable" }
+            }));
+        } else {
+            // R4: an absent or not-yet-committed (building) master is the normal
+            // no-actionable-trip case → idle sync (INV-0.6 AC-10).
+            syncIntervalMins = IDLE_SYNC_MINS;
+            flash(JSON.stringify({
+                timestamp: nowSec,
+                generationId: global('TDS_Active_Generation') || null,
+                component: "Dispatcher",
+                severity: "info",
+                code: "IDLE_SYNC_ENGAGED",
+                tripId: null,
+                details: { syncIntervalMins: IDLE_SYNC_MINS }
+            }));
+        }
     } else {
         var gapMins = Math.floor((targetDrive.departUnix - nowSec) / 60);
         if (gapMins > SYNC_GAP_HIGH_MINS) syncIntervalMins = SYNC_INTERVAL_HIGH_MINS;

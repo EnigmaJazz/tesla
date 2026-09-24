@@ -1,0 +1,12 @@
+{"timestamp":"2026-09-21T19:44:10.902Z","level":"INFO","event":"session_status_retry_seen","sessionID":"ses_f3a81f749ffexvJ19EjGNDJfYa","attempt":1,"next":1790019853184,"message":"Connection reset by server"}
+{"timestamp":"2026-09-21T19:44:10.904Z","level":"INFO","event":"event_excluded","sessionID":"ses_f3a81f749ffexvJ19EjGNDJfYa","reason":"Connection reset by server"}
+{"timestamp":"2026-09-21T19:44:45.828Z","level":"INFO","event":"session_status_retry_seen","sessionID":"ses_f3a820d0fffevLxCXFbMVruPJ7","attempt":1,"next":1790019887906,"message":"Cannot connect to API: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()"}
+{"timestamp":"2026-09-21T19:44:45.830Z","level":"INFO","event":"event_excluded","sessionID":"ses_f3a820d0fffevLxCXFbMVruPJ7","reason":"Cannot connect to API: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()"}
+{"timestamp":"2026-09-21T22:13:35.474Z","level":"INFO","event":"session_status_retry_seen","sessionID":"ses_f39fa2deeffeRJ1XSABQAq5wk8","attempt":1,"next":1790028817612,"message":"Connection reset by server"}
+{"timestamp":"2026-09-21T22:13:35.477Z","level":"INFO","event":"event_excluded","sessionID":"ses_f39fa2deeffeRJ1XSABQAq5wk8","reason":"Connection reset by server"}
+{"timestamp":"2026-09-23T22:15:41.402Z","level":"INFO","event":"session_status_retry_seen","sessionID":"ses_f2fabac65ffe0nRbYDHhSxVaxa","attempt":1,"next":1790201743529,"message":"Connection reset by server"}
+{"timestamp":"2026-09-23T22:15:41.407Z","level":"INFO","event":"event_excluded","sessionID":"ses_f2fabac65ffe0nRbYDHhSxVaxa","reason":"Connection reset by server"}
+{"timestamp":"2026-09-23T22:16:58.716Z","level":"INFO","event":"session_status_retry_seen","sessionID":"ses_f2fabac65ffe0nRbYDHhSxVaxa","attempt":2,"next":1790201822933,"message":"Connection reset by server"}
+{"timestamp":"2026-09-23T22:16:58.717Z","level":"INFO","event":"event_excluded","sessionID":"ses_f2fabac65ffe0nRbYDHhSxVaxa","reason":"Connection reset by server"}
+{"timestamp":"2026-09-23T22:38:59.518Z","level":"INFO","event":"session_status_retry_seen","sessionID":"ses_f2f95d1f8ffeBrp2otejH2MUyO","attempt":1,"next":1790203141746,"message":"Connection reset by server"}
+{"timestamp":"2026-09-23T22:38:59.522Z","level":"INFO","event":"event_excluded","sessionID":"ses_f2f95d1f8ffeBrp2otejH2MUyO","reason":"Connection reset by server"}

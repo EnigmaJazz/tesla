@@ -2,7 +2,7 @@
 // Covers: happy-path merge + courtesy staging, key normalization, empty and
 // unexpanded %http_data, invalid JSON, ZERO_RESULTS, corrupt-cache abort
 // (file must survive byte-identical), write-failure injection, empty
-// location, nonfinite coordinates.
+// location, nonfinite coordinates, custom TESLA_CONFIG dataRoot (P1-1).
 
 process.env.TZ = 'UTC';
 const assert = require('node:assert/strict');
@@ -176,6 +176,19 @@ try {
   assert.strictEqual(inv[0].details.reason, 'nonfinite_coords', 'details.reason must be nonfinite_coords');
 } catch (e) { fail('nonfinite coords: ' + e.message); }
 
+// T11 (P1-1): a custom TESLA_CONFIG dataRoot must move the cache path with
+// DATA_ROOT so the writer commits where Alpha/Finaliser read.
+try {
+  const customPath = 'Custom/Data/Geocode_Cache.json';
+  const files = {};
+  files['Tasker/Tesla/TESLA_CONFIG.json'] = JSON.stringify({ dataRoot: 'Custom/Data' });
+  const store = make(okResponse, 'Some Place', { files: files });
+  assert.strictEqual(store.locals['return_value'], 'ok:updated', 'custom dataRoot must still commit');
+  const cache = JSON.parse(store.files[customPath] || 'null');
+  assert(cache && cache['some place'] === '51.95,-2.05', 'custom dataRoot must receive the write');
+  assert.strictEqual(store.files[CACHE], undefined, 'default path must not be written under a custom dataRoot');
+} catch (e) { fail('custom dataRoot: ' + e.message); }
+
 if (failures > 0) { console.log('FAIL: geocode-updater — ' + failures + ' scenario(s) failed'); process.exit(1); }
-console.log('PASS: geocode-updater — merge+normalize, no-data/invalid/no-result skips, corrupt abort, write failure, empty loc, nonfinite coords');
+console.log('PASS: geocode-updater — merge+normalize, no-data/invalid/no-result skips, corrupt abort, write failure, empty loc, nonfinite coords, custom dataRoot');
 process.exit(0);

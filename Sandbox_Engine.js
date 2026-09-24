@@ -55,6 +55,36 @@ const EOF_SKIP_OFFSET = 99;                // EOF skipIdxUntil offset
 const LATENESS_DELTA_MINS = 5;             // lateness-reduction delta threshold
 const DAY_GROUP_DUPE_LIMIT = 3;            // same-day group duplicates before fetch
 
+const DURATION_MAX_SENTINEL = 99999999999;        // getBase shortest-duration init sentinel
+// TDS_Base_Geocodes.txt always-active base: start "0" and end "5000000000"
+// means the base is active at any time. Fields are strings, so the sentinels
+// are strings (numeric constants would never match the === comparison).
+const ALWAYS_ACTIVE_BASE_START = "0";             // always-active base start field
+const ALWAYS_ACTIVE_BASE_END = "5000000000";      // always-active base end field
+const DEFAULT_BUFFER_MINS = 5;                    // Arrival/Departure_Buffer_Mins fallback (minutes)
+const DEFAULT_LIVE_TRAFFIC_THRESHOLD_SECS = 7200; // Live_Traffic_Threshold fallback (seconds)
+
+// Typed-queue envelope schema version. Producer side of the wire contract whose
+// consumer (Compiler.js) names the same value TYPED_QUEUE_SCHEMA_VERSION.
+const TYPED_QUEUE_SCHEMA_VERSION = 1;
+// Unit-conversion, raw-data and field-index constants (AGENTS.md: no magic numbers).
+const SECONDS_PER_MIN = 60;            // minutes -> seconds
+const MS_PER_SEC = 1000;               // milliseconds per second
+const MINUTES_PER_HOUR = 60;           // minutes per hour (tod decomposition)
+const MIN_RAW_DATA_LEN = 3;            // raw base/AdHoc data string length floor
+const MIN_ADHOC_FIELDS = 3;            // AdHoc_Base ~-separated field floor
+const BASE_FIELD_COORDS = 2;           // TDS_Base_Geocodes.txt field: lat,lon
+const BASE_FIELD_NAME = 4;             // TDS_Base_Geocodes.txt field: display name
+const BASE_FIELD_ID = 6;               // TDS_Base_Geocodes.txt field: base id
+const ADHOC_FIELD_COORDS = 2;          // AdHoc_Base field: lat,lon
+const WEEKDAY_NAME_HORIZON_DAYS = 6;   // days past which a weekday is "Next <day>"
+const TWO_DIGIT_PAD_WIDTH = 2;         // zero-pad width for date/time components
+const DEFAULT_BLOCK_INDEX = 1;         // idx local fallback
+const DEFAULT_GENERATION_ID = "gen:0:0000"; // generationId fallback
+const DEFAULT_DAILY_WALK_METERS = 0;   // Daily_Walk_Meters fallback
+const HOLD_UNTIL_UNSET_SECS = 0;       // TDS_Hold_Until fallback
+const TOD_UNSET_SENTINEL = -999;       // route-cache tod unset sentinel
+
 let ovrRaw = "";
 try { ovrRaw = readFile(DATA_ROOT + "TDS_Overrides.json") || "{}"; } catch(e) {
     flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
@@ -239,6 +269,25 @@ function readJson(path) {
         return null;
     }
 }
+// R1: three-state read. readJson collapses "missing" and "unreadable" into
+// null; this reader keeps them distinct so a read/parse failure is never
+// mistaken for a genuinely empty source. readJson is unchanged for its other
+// callers.
+function readJsonState(path) {
+    let raw = "";
+    try { raw = readFile(path); } catch (e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Sandbox", severity: "error", code: "FILE_READ_FAILED", tripId: null, details: { path: path, reason: String(e && e.message || e) } }));
+        return { state: "unreadable" };
+    }
+    if (!raw) return { state: "missing" };
+    if (raw.indexOf("%") === 0) return { state: "unreadable" };
+    try { return { state: "ok", value: JSON.parse(raw) }; } catch (e) {
+        flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+            component: "Sandbox", severity: "error", code: "FILE_PARSE_FAILED", tripId: null, details: { path: path, reason: String(e && e.message || e) } }));
+        return { state: "unreadable" };
+    }
+}
 function pathFor(g, kind) {
     return DATA_ROOT + (kind === "events" ? "TDS_Events." : kind === "master" ? "TDS_Master." : "Itin_Master.") + String(g).replace(/:/g, "_") + ".json";
 }
@@ -246,26 +295,47 @@ function pathFor(g, kind) {
 // Phase 3 PR-E: Local copy of readActiveGeneration. The canonical
 // implementation lives in TDS_Helper.js. Kept local because Tasker
 // scripts are standalone and cannot call functions from other scripts.
+// R2: uses readJsonState so a read/parse failure is UNKNOWN, never an empty day.
 function readActiveGeneration(kind) {
-    let m = readJson(DATA_ROOT + "TDS_Run_Manifest.json");
-    let key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
+    const manifestRead = readJsonState(DATA_ROOT + "TDS_Run_Manifest.json");
+    const m = manifestRead.state === "ok" ? manifestRead.value : null;
+    const key = kind === "events" ? "eventsPath" : kind === "master" ? "masterPath" : "itineraryPath";
     if (m && m.state === "committed" && m.activeGeneration) {
-        let data = readJson(m[key] || pathFor(m.activeGeneration, kind));
-        if (data !== null) return data;
+        const activeRead = readJsonState(m[key] || pathFor(m.activeGeneration, kind));
+        if (activeRead.state === "ok" && activeRead.value !== null) return activeRead.value;
     }
     if (m && m.previousGeneration) {
-        let prev = readJson(pathFor(m.previousGeneration, kind));
-        if (prev !== null) return prev;
+        const prevRead = readJsonState(pathFor(m.previousGeneration, kind));
+        if (prevRead.state === "ok" && prevRead.value !== null) return prevRead.value;
     }
-    if (kind === "events" || kind === "master") {
-        let legacy = readJson(DATA_ROOT + "TDS_Master.json");
-        if (legacy !== null) return legacy;
+    const legacyRead = readJsonState(DATA_ROOT + (kind === "events" || kind === "master" ? "TDS_Master.json" : "Itin_Master.json"));
+    if (legacyRead.state === "ok" && legacyRead.value !== null) return legacyRead.value;
+    // R2: a source that exists but yields no usable data is UNKNOWN (transient
+    // read failure / corrupt file / a manifest that promises a generation).
+    // Only the true first-publish case — manifest missing AND legacy missing —
+    // is a legitimately empty day.
+    if (manifestRead.state === "ok" || manifestRead.state === "unreadable" || legacyRead.state === "unreadable") return null;
+    if (manifestRead.state === "missing" && legacyRead.state === "missing") return [];
+    return null;
+}
+
+// P1-2: an UNKNOWN itinerary read degrades to "nothing carried" (never a
+// crash); the ITINERARY_READ_UNKNOWN flash is the degradation signal.
+function readActiveItinerarySafe() {
+    let itin = readActiveGeneration("itinerary");
+    if (itin === null) {
+        flash(JSON.stringify({
+            timestamp: Math.floor(Date.now() / 1000),
+            generationId: global('TDS_Active_Generation') || null,
+            component: "Sandbox",
+            severity: "error",
+            code: "ITINERARY_READ_UNKNOWN",
+            tripId: null,
+            details: { kind: "itinerary" }
+        }));
+        return [];
     }
-    if (kind === "itinerary") {
-        let legacyItin = readJson(DATA_ROOT + "Itin_Master.json");
-        if (legacyItin !== null) return legacyItin;
-    }
-    return [];
+    return itin;
 }
 
 function getTrimmedEnd(evId, rawEnd, start, trimRaw) {
@@ -332,10 +402,10 @@ function getBase(targetTimeSecs) {
     let baseName = "Home"; 
     let baseData = readFile(DATA_ROOT + "TDS_Base_Geocodes.txt") || "none";
     
-    if (baseData !== "none" && baseData.length > 3) {
+    if (baseData !== "none" && baseData.length > MIN_RAW_DATA_LEN) {
         let bases = baseData.split("|");
         let bestBase = null;
-        let shortestDuration = 99999999999; 
+        let shortestDuration = DURATION_MAX_SENTINEL; 
 
         for (let j = 0; j < bases.length; j++) {
             if (!bases[j]) continue; 
@@ -343,7 +413,7 @@ function getBase(targetTimeSecs) {
             let bStart = parseFloat(parts[0]);
             let bEnd = parseFloat(parts[1]);
             
-            let bId = parts[6];
+            let bId = parts[BASE_FIELD_ID];
             if (bId) {
                 bEnd = getTrimmedEnd(bId, bEnd, bStart, trimmedEventsRaw);
                 bEnd = getTrimmedEnd(bId + "_OUT", bEnd, bStart, trimmedEventsRaw);
@@ -353,7 +423,7 @@ function getBase(targetTimeSecs) {
             if (targetTimeSecs >= bStart && targetTimeSecs <= bEnd) {
                 if (bDur < shortestDuration) {
                     shortestDuration = bDur;
-                    bestBase = { coords: parts[2], name: parts[4] || "Base" };
+                    bestBase = { coords: parts[BASE_FIELD_COORDS], name: parts[BASE_FIELD_NAME] || "Base" };
                 }
             }
         }
@@ -367,19 +437,19 @@ function getDayPrefix(targetUnixSecs, currentUnixSecs) {
     let cDate = new Date(currentUnixSecs * 1000);
     let tMidnight = new Date(tDate.getFullYear(), tDate.getMonth(), tDate.getDate()).getTime();
     let cMidnight = new Date(cDate.getFullYear(), cDate.getMonth(), cDate.getDate()).getTime();
-    let diffDays = Math.round((tMidnight - cMidnight) / (SECONDS_PER_DAY * 1000));
+    let diffDays = Math.round((tMidnight - cMidnight) / (SECONDS_PER_DAY * MS_PER_SEC));
     
     if (diffDays === 0) return "Today";
     if (diffDays === 1) return "Tomorrow";
     let days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    return (diffDays > 6) ? ("Next " + days[tDate.getDay()]) : days[tDate.getDay()];
+    return (diffDays > WEEKDAY_NAME_HORIZON_DAYS) ? ("Next " + days[tDate.getDay()]) : days[tDate.getDay()];
 }
 
 function localPlanningDay(targetUnixSecs) {
     let d = new Date(targetUnixSecs * 1000);
     let y = d.getFullYear();
-    let m = ("0" + (d.getMonth() + 1)).slice(-2);
-    let day = ("0" + d.getDate()).slice(-2);
+    let m = ("0" + (d.getMonth() + 1)).slice(-TWO_DIGIT_PAD_WIDTH);
+    let day = ("0" + d.getDate()).slice(-TWO_DIGIT_PAD_WIDTH);
     return y + "-" + m + "-" + day;
 }
 
@@ -487,7 +557,7 @@ function getRemainingStops(evId, desc, completedRaw) {
         if (cIdx !== -1) {
             completed.splice(cIdx, 1);
         } else {
-            remSecs += (dur * 60);
+            remSecs += (dur * SECONDS_PER_MIN);
             pendingArr.push(dur);
         }
     }
@@ -515,13 +585,32 @@ function stageReducerCommand(name, payload) {
 }
 
 try {
-    let idx = parseInt(local('idx'), 10) || 1; 
+    let idx = parseInt(local('idx'), 10) || DEFAULT_BLOCK_INDEX; 
     let master = readActiveGeneration("master");
+    // P1-2: a total generation-read failure is UNKNOWN, never a legitimately
+    // empty day. Rows are withheld and the degradation is signalled through the
+    // envelope's existing stepConflict channel (schema unchanged); the flash is
+    // the authoritative observable.
+    let masterReadable = (master !== null);
+    if (!masterReadable) {
+        flash(JSON.stringify({
+            timestamp: Math.floor(Date.now() / 1000),
+            generationId: global('TDS_Active_Generation') || null,
+            component: "Sandbox",
+            severity: "error",
+            code: "ITINERARY_READ_UNKNOWN",
+            tripId: null,
+            details: { kind: "master" }
+        }));
+        master = [];
+    }
     GLOBAL_MASTER_ARR = master;
 
     if (idx > master.length) { 
         // REQ-5QUEUE-1: EOF is an empty-row envelope, never a bare token.
-        setLocal('block_queue', JSON.stringify({ schemaVersion: 1, rows: [], eof: true, skipIdxUntil: (master.length + EOF_SKIP_OFFSET), stepConflict: null, notifications: [] }));
+        // P1-2: an UNKNOWN master withholds rows and marks the degradation; a
+        // genuinely empty day keeps stepConflict null.
+        setLocal('block_queue', JSON.stringify({ schemaVersion: TYPED_QUEUE_SCHEMA_VERSION, rows: [], eof: true, skipIdxUntil: (master.length + EOF_SKIP_OFFSET), stepConflict: masterReadable ? null : "ITINERARY_READ_UNKNOWN", notifications: [] }));
         setLocal('is_drive_block', "false");
     } else {
         let nowSec = Math.floor(Date.now() / 1000);
@@ -546,36 +635,36 @@ try {
                 if (isAtHome) nextLatch = ""; 
 
                 let isAtAdHocBase = false; let adHocRaw = global('AdHoc_Base') || "";
-                if (!isAtHome && adHocRaw.indexOf("%") !== 0 && adHocRaw.length > 3) {
+                if (!isAtHome && adHocRaw.indexOf("%") !== 0 && adHocRaw.length > MIN_RAW_DATA_LEN) {
                     let aParts = adHocRaw.split("~");
-                    if (aParts.length >= 3) {
-                        let dA = getDist(uLat, uLng, parseFloat(aParts[2].split(",")[0]), parseFloat(aParts[2].split(",")[1]));
-                        let isALatched = (activeLatch === "ADHOC~" + aParts[2] && dA < LATCH_RELEASE_RADIUS_M);
-                        if (dA < SNAP_RADIUS_M || isALatched) { isAtAdHocBase = true; nextLatch = "ADHOC~" + aParts[2]; } 
-                        else if (activeLatch === "ADHOC~" + aParts[2] && dA >= LATCH_RELEASE_RADIUS_M) {
+                    if (aParts.length >= MIN_ADHOC_FIELDS) {
+                        let dA = getDist(uLat, uLng, parseFloat(aParts[ADHOC_FIELD_COORDS].split(",")[0]), parseFloat(aParts[ADHOC_FIELD_COORDS].split(",")[1]));
+                        let isALatched = (activeLatch === "ADHOC~" + aParts[ADHOC_FIELD_COORDS] && dA < LATCH_RELEASE_RADIUS_M);
+                        if (dA < SNAP_RADIUS_M || isALatched) { isAtAdHocBase = true; nextLatch = "ADHOC~" + aParts[ADHOC_FIELD_COORDS]; } 
+                        else if (activeLatch === "ADHOC~" + aParts[ADHOC_FIELD_COORDS] && dA >= LATCH_RELEASE_RADIUS_M) {
                             if (nextLatch === activeLatch) nextLatch = "";
                         }
                     }
                 }
 
                 let baseData = readFile(DATA_ROOT + "TDS_Base_Geocodes.txt") || "";
-                if (!isAtHome && !isAtAdHocBase && baseData.indexOf("%") !== 0 && baseData.length > 3) {
+                if (!isAtHome && !isAtAdHocBase && baseData.indexOf("%") !== 0 && baseData.length > MIN_RAW_DATA_LEN) {
                     let bases = baseData.split("|");
                     for (let b = 0; b < bases.length; b++) {
                         if (!bases[b]) continue; let parts = bases[b].split("~");
-                        if (parts[0] === "0" && parts[1] === "5000000000") continue; 
+                        if (parts[0] === ALWAYS_ACTIVE_BASE_START && parts[1] === ALWAYS_ACTIVE_BASE_END) continue; 
                         let bStart = parseFloat(parts[0]); let bEnd = parseFloat(parts[1]);
-                        let bId = parts[6];
+                        let bId = parts[BASE_FIELD_ID];
                         if (bId) {
                             bEnd = getTrimmedEnd(bId, bEnd, bStart, trimmedEventsRaw);
                             bEnd = getTrimmedEnd(bId + "_OUT", bEnd, bStart, trimmedEventsRaw);
                         }
                         if (nowSec >= bStart && nowSec <= bEnd) {
-                            let bCStr = parts[2] || "0,0";
+                            let bCStr = parts[BASE_FIELD_COORDS] || "0,0";
                             let dB = getDist(uLat, uLng, parseFloat(bCStr.split(",")[0]), parseFloat(bCStr.split(",")[1]));
                             let isBLatched = (activeLatch === "BASE~" + bCStr && dB < LATCH_RELEASE_RADIUS_M);
                             if (dB < SNAP_RADIUS_M || isBLatched) { 
-                                isAtBase = true; activeBaseName = parts[4] || "Base"; activeBaseId = bId || "";
+                                isAtBase = true; activeBaseName = parts[BASE_FIELD_NAME] || "Base"; activeBaseId = bId || "";
                                 nextLatch = "BASE~" + bCStr; break; 
                             } 
                             else if (activeLatch === "BASE~" + bCStr && dB >= LATCH_RELEASE_RADIUS_M) {
@@ -606,14 +695,14 @@ try {
                 
                 currentlyAtBase = (isAtHome || isAtAdHocBase || isAtBase);
                 let prevAtBase = (global('User_At_Base') === "true");
-                let oldItin = readActiveGeneration("itinerary");
+                let oldItin = readActiveItinerarySafe();
                 if (currentlyAtBase && !prevAtBase) {
                     // Phase 3 PR-B: stage OBSERVE_LIVE_BASE to the reducer. The reducer
                     // is the sole writer of TDS_Trip_State.json and tracks currentOrigin.
                     // Phase 6: the legacy User_At_Base/Base_Arrival_Unix writes are gone —
                     // the reducer's project() owns those projections post-commit.
                     stageReducerCommand('OBSERVE_LIVE_BASE', {
-                        generationId: global('TDS_Active_Generation') || "gen:0:0000",
+                        generationId: global('TDS_Active_Generation') || DEFAULT_GENERATION_ID,
                         at: nowSec
                     });
                     // Slice B (AC-5/0E): base arrival completes the active
@@ -651,7 +740,7 @@ try {
                     }
                     activeManualTrips.forEach(function (tid) {
                         const completionPayload = {
-                            generationId: global('TDS_Active_Generation') || "gen:0:0000",
+                            generationId: global('TDS_Active_Generation') || DEFAULT_GENERATION_ID,
                             tripId: tid,
                             at: nowSec,
                             planningDay: localPlanningDay(nowSec)
@@ -665,12 +754,12 @@ try {
                     // targetEventId; cross-day diff authority, REQ-6STATE-4). project()
                     // owns the User_At_Base/Base_Arrival_Unix projections.
                     stageReducerCommand('OBSERVE_BASE_LEAVE', {
-                        generationId: global('TDS_Active_Generation') || "gen:0:0000",
+                        generationId: global('TDS_Active_Generation') || DEFAULT_GENERATION_ID,
                         at: nowSec
                     });
                     if (oldItin.length > 0 && oldItin[0].targetEventId) {
                         stageReducerCommand('OBSERVE_DEPARTURE', {
-                            generationId: global('TDS_Active_Generation') || "gen:0:0000",
+                            generationId: global('TDS_Active_Generation') || DEFAULT_GENERATION_ID,
                             tripId: oldItin[0].targetEventId,
                             at: nowSec,
                             planningDay: localPlanningDay(nowSec)
@@ -743,7 +832,7 @@ try {
                             }
                             if (!departureRecordedToday) {
                                 stageReducerCommand('OBSERVE_DEPARTURE', {
-                                    generationId: global('TDS_Active_Generation') || "gen:0:0000",
+                                    generationId: global('TDS_Active_Generation') || DEFAULT_GENERATION_ID,
                                     tripId: targetId,
                                     at: nowSec,
                                     planningDay: localPlanningDay(nowSec)
@@ -753,7 +842,7 @@ try {
                     } else resolvedStatus = "Idle";
                 }
                 stageReducerCommand('OBSERVE_STATUS', {
-                    generationId: global('TDS_Active_Generation') || "gen:0:0000",
+                    generationId: global('TDS_Active_Generation') || DEFAULT_GENERATION_ID,
                     status: resolvedStatus,
                     at: nowSec
                 });
@@ -851,11 +940,11 @@ try {
         let ignoredLateness = getOvr('Ignored_Lateness'); let ignoredWalks = getOvr('Ignored_Walks');
 
         let maxWalk = parseInt(global('Max_Walk_Meters'), 10) || DEFAULT_MAX_WALK_METERS; 
-        let dailyWalkDist = parseInt(global('Daily_Walk_Meters'), 10) || 0;
-        let liveThreshold = parseInt(global('Live_Traffic_Threshold'), 10) || 7200;
+        let dailyWalkDist = parseInt(global('Daily_Walk_Meters'), 10) || DEFAULT_DAILY_WALK_METERS;
+        let liveThreshold = parseInt(global('Live_Traffic_Threshold'), 10) || DEFAULT_LIVE_TRAFFIC_THRESHOLD_SECS;
 
-        let defArrMins = parseInt(global('Arrival_Buffer_Mins'), 10) || 5; 
-        let defDepMins = parseInt(global('Departure_Buffer_Mins'), 10) || 5; 
+        let defArrMins = parseInt(global('Arrival_Buffer_Mins'), 10) || DEFAULT_BUFFER_MINS; 
+        let defDepMins = parseInt(global('Departure_Buffer_Mins'), 10) || DEFAULT_BUFFER_MINS; 
 
         // Slice D (REQ-5CACHE-1/2): read-only JSON cache readers. The Route
         // Cache Manager is the SOLE writer of TDS_Route_Cache.json and
@@ -957,12 +1046,12 @@ try {
                 let e = routeJson[rKeys[s]];
                 if (typeof e.meanDurationSecs !== "number" || !(e.meanDurationSecs > 0)
                     || typeof e.originCell !== "string" || typeof e.destinationCell !== "string" || typeof e.mode !== "string") continue;
-                ssdTier.push({ o: e.originCell, d: e.destinationCell, m: e.mode, meanDur: e.meanDurationSecs, updatedSec: (typeof e.updatedAt === "number") ? e.updatedAt : 0, tod: (e.bucket === null) ? -999 : e.bucket, dayType: (typeof e.dayClass === "number") ? e.dayClass : -999 });
+                ssdTier.push({ o: e.originCell, d: e.destinationCell, m: e.mode, meanDur: e.meanDurationSecs, updatedSec: (typeof e.updatedAt === "number") ? e.updatedAt : 0, tod: (e.bucket === null) ? TOD_UNSET_SENTINEL : e.bucket, dayType: (typeof e.dayClass === "number") ? e.dayClass : TOD_UNSET_SENTINEL });
             }
         }
 
         let simAtBase = false;
-        let oldItin = readActiveGeneration("itinerary");
+        let oldItin = readActiveItinerarySafe();
 
         const liveAtBase = (global('User_At_Base') === "true");
         const currentStatus = (global('Current_Status') || "").trim();
@@ -1015,7 +1104,7 @@ try {
         // the pass has read its live User_At_Base/Current_Status/Base_Arrival_Unix
         // inputs — a reducer commit here would otherwise re-project stale state
         // bytes over those inputs before they are consumed.
-        stageReducerCommand('OBSERVE_LATENESS_HALT', { generationId: global('TDS_Active_Generation') || "gen:0:0000", halt: false, at: nowSec });
+        stageReducerCommand('OBSERVE_LATENESS_HALT', { generationId: global('TDS_Active_Generation') || DEFAULT_GENERATION_ID, halt: false, at: nowSec });
 
         // INV-0.3: a fresh pass with a stale away itinerary and live base must
         // plan from the actual base coords, not from the stale virtual origin.
@@ -1042,7 +1131,7 @@ try {
                 }
                 if (bestRamDur !== -1) return bestRamDur; 
             }
-            let d = new Date(targetUnix * 1000); let targetTod = (d.getHours() * 60) + d.getMinutes(); let targetDayType = (d.getDay() === 0 || d.getDay() === 6) ? 1 : 0;
+            let d = new Date(targetUnix * 1000); let targetTod = (d.getHours() * MINUTES_PER_HOUR) + d.getMinutes(); let targetDayType = (d.getDay() === 0 || d.getDay() === 6) ? 1 : 0;
             if (mode === "WALK") {
                 for (let w = ssdTier.length - 1; w >= 0; w--) {
                     if (ssdTier[w].o === orig && ssdTier[w].d === dest && ssdTier[w].m === mode && !isNaN(ssdTier[w].meanDur) && ssdTier[w].meanDur > 0) return ssdTier[w].meanDur;
@@ -1051,9 +1140,9 @@ try {
                 for (let s = ssdTier.length - 1; s >= 0; s--) {
                     let row = ssdTier[s];
                     if (row.o === orig && row.d === dest && row.m === mode) {
-                        if (isNaN(row.meanDur) || row.meanDur <= 0 || row.meanDur > 86400) continue;
+                        if (isNaN(row.meanDur) || row.meanDur <= 0 || row.meanDur > SECONDS_PER_DAY) continue;
                         if ((nowSec - row.updatedSec) < CACHE_RECENCY_WINDOW_SECS && row.updatedSec > 0) return row.meanDur;
-                        if (row.tod !== -999 && row.dayType === targetDayType) {
+                        if (row.tod !== TOD_UNSET_SENTINEL && row.dayType === targetDayType) {
                             let diff = Math.abs(targetTod - row.tod);
                             if (diff > TOD_WRAP_MINUTES) diff = TOD_DAY_MINUTES - diff;
                             if (diff <= TOD_BUCKET_TOLERANCE_MINUTES) return row.meanDur;
@@ -1084,8 +1173,8 @@ try {
                 let isDepart = /(#leave|#depart)\b/i.test((sEv.title || "") + " " + sDesc);
                 let sArrMatch = sDesc.match(/#arr:(\d+)/i); 
                 let sDepMatch = sDesc.match(/(?:#dep:|#leave:)(\d+)/i);
-                let sArrBuf = isDepart ? 0 : (sArrMatch ? parseInt(sArrMatch[1], 10) : defArrMins) * 60;
-                let sDepBuf = isDepart ? 0 : (sDepMatch ? parseInt(sDepMatch[1], 10) : defDepMins) * 60;
+                let sArrBuf = isDepart ? 0 : (sArrMatch ? parseInt(sArrMatch[1], 10) : defArrMins) * SECONDS_PER_MIN;
+                let sDepBuf = isDepart ? 0 : (sDepMatch ? parseInt(sDepMatch[1], 10) : defDepMins) * SECONDS_PER_MIN;
                 
                 let travelSecs = 0; let recSecs = 0;
                 if (targetMode === "DRIVE") {
@@ -1152,8 +1241,8 @@ try {
                 let isDep = /(#leave|#depart)\b/i.test(sText);
                 let arrM = (sEv.desc || "").match(/#arr:(\d+)/i); 
                 let depM = (sEv.desc || "").match(/(?:#dep:|#leave:)(\d+)/i);
-                let bufArr = isDep ? 0 : (arrM ? parseInt(arrM[1], 10) : defArrMins) * 60;
-                let bufDep = isDep ? 0 : (depM ? parseInt(depM[1], 10) : defDepMins) * 60;
+                let bufArr = isDep ? 0 : (arrM ? parseInt(arrM[1], 10) : defArrMins) * SECONDS_PER_MIN;
+                let bufDep = isDep ? 0 : (depM ? parseInt(depM[1], 10) : defDepMins) * SECONDS_PER_MIN;
                 
                 let calc = calcMode(simLoc, sCoords, sEv.start ? sEv.start.toString() : "", sText, sId);
                 let mode = ov.mode || calc.mode; let legSecs = 0;
@@ -1174,7 +1263,7 @@ try {
 
                 let doorArr = simTime + legSecs;
                 let doorTarget = isDep ? (sStart + legSecs) : (sStart - bufArr);
-                let stepLate = Math.max(0, Math.ceil((doorArr - doorTarget) / 60));
+                let stepLate = Math.max(0, Math.ceil((doorArr - doorTarget) / SECONDS_PER_MIN));
 
                 if (m === targetIdx) targetResult = { arr: doorArr, late: stepLate };
                 else if (m > targetIdx && stepLate > maxDownstreamLate) maxDownstreamLate = stepLate;
@@ -1279,7 +1368,7 @@ try {
             // the tail EOD return stays suppressed.
             if (evId.toUpperCase().indexOf("_OUT") !== -1 && (distToEventDirect < BASE_DISTANCE_M || isMeetingLatched)) {
                 let sDepMatch = evDesc.match(/(?:#dep:|#leave:)(\d+)/i);
-                let evDepBufSecs = (sDepMatch ? parseInt(sDepMatch[1], 10) : defDepMins) * 60;
+                let evDepBufSecs = (sDepMatch ? parseInt(sDepMatch[1], 10) : defDepMins) * SECONDS_PER_MIN;
                 state.time = Math.max(state.time, evEnd) + evDepBufSecs;
                 state.loc = evCoords;
                 simAtBase = false;
@@ -1328,8 +1417,8 @@ try {
             let isDepart = /(#leave|#depart)\b/i.test(evText);
             let arrMatch = evDesc.match(/#arr:(\d+)/i); 
             let depMatch = evDesc.match(/(?:#dep:|#leave:)(\d+)/i);
-            let evArrBufSecs = isDepart ? 0 : (arrMatch ? parseInt(arrMatch[1], 10) : defArrMins) * 60;
-            let evDepBufSecs = isDepart ? 0 : (depMatch ? parseInt(depMatch[1], 10) : defDepMins) * 60;
+            let evArrBufSecs = isDepart ? 0 : (arrMatch ? parseInt(arrMatch[1], 10) : defArrMins) * SECONDS_PER_MIN;
+            let evDepBufSecs = isDepart ? 0 : (depMatch ? parseInt(depMatch[1], 10) : defDepMins) * SECONDS_PER_MIN;
             
             let evStartTarget = isDepart ? evStart + (getDist(parseFloat(state.loc.split(",")[0]), parseFloat(state.loc.split(",")[1]), parseFloat(evCoords.split(",")[0]), parseFloat(evCoords.split(",")[1])) / getSpeed("DRIVE")) : evStart - evArrBufSecs;
 
@@ -1363,7 +1452,7 @@ try {
                     let sLocP = state.loc.split(",");
                     let ghostDriveSecs = Math.round(getDist(parseFloat(sLocP[0]), parseFloat(sLocP[1]), parseFloat(nC[0]), parseFloat(nC[1])) / getSpeed("DRIVE"));
                     let nArrMatch = (nextStrict.desc || "").match(/#arr:(\d+)/i);
-                    let nArrBuf = nArrMatch ? (parseInt(nArrMatch[1], 10) * 60) : (defArrMins * 60);
+                    let nArrBuf = nArrMatch ? (parseInt(nArrMatch[1], 10) * SECONDS_PER_MIN) : (defArrMins * SECONDS_PER_MIN);
                     
                     let ghostArrival = forceSeconds(nextStrict.start) - nArrBuf;
                     let ghostDepart = ghostArrival - ghostDriveSecs;
@@ -1382,7 +1471,7 @@ try {
                         let baseDriveSecs = Math.round(getDist(parseFloat(eLocP[0]), parseFloat(eLocP[1]), parseFloat(nC[0]), parseFloat(nC[1])) / getSpeed("DRIVE"));
                         
                         let nArrMatch = (nextStrict.desc || "").match(/#arr:(\d+)/i);
-                        let nArrBuf = nArrMatch ? (parseInt(nArrMatch[1], 10) * 60) : (defArrMins * 60);
+                        let nArrBuf = nArrMatch ? (parseInt(nArrMatch[1], 10) * SECONDS_PER_MIN) : (defArrMins * SECONDS_PER_MIN);
                         let adHocObjDropin = getRemainingStops(evId, evDesc, completedStopsRaw);
                         
                         let strictAnchor = forceSeconds(nextStrict.start) - nArrBuf - baseDriveSecs - (ev.duration || 1800) - adHocObjDropin.secs - evDepBufSecs;
@@ -1397,7 +1486,7 @@ try {
                                 s: ["SKIP_EVENT|" + evId, "IGNORE_paradox|" + evId]
                             };
                             stepConflict = JSON.stringify({ config: { notify: true, notifyTitle: "Drop-in Paradox", notifyText: "Arriving before open breaks timeline." }, menu: paradoxMenu });
-                            stageReducerCommand('OBSERVE_LATENESS_HALT', { generationId: global('TDS_Active_Generation') || "gen:0:0000", halt: true, at: nowSec }); queue = []; skipIdx = idx; blockMode = null; break;
+                            stageReducerCommand('OBSERVE_LATENESS_HALT', { generationId: global('TDS_Active_Generation') || DEFAULT_GENERATION_ID, halt: true, at: nowSec }); queue = []; skipIdx = idx; blockMode = null; break;
                         }
                     } else {
                         evStartTarget = closeUnix - (ev.duration || 0) - evArrBufSecs;
@@ -1487,11 +1576,11 @@ try {
                         let safeEvTitle = evTitle.replace(/[~|,]/g, "");
                         let pitMenu = {
                             title: "⚠️ [" + dayTag + "] Pitstop Conflict: " + activeBase.name,
-                            labels: ["Skip Pitstop & go straight to " + safeEvTitle, "Force Pitstop (Arrive " + Math.ceil((state.time + totalDetour - evStartTarget)/60) + "m late)"],
+                            labels: ["Skip Pitstop & go straight to " + safeEvTitle, "Force Pitstop (Arrive " + Math.ceil((state.time + totalDetour - evStartTarget)/SECONDS_PER_MIN) + "m late)"],
                             s: ["SKIP_PITSTOP|" + evId, "FORCE_PITSTOP|" + evId]
                         };
                         stepConflict = JSON.stringify({ config: { notify: true, notifyTitle: "Pitstop Decision Required", notifyText: "Detour to " + activeBase.name + " causes lateness." }, menu: pitMenu });
-                        stageReducerCommand('OBSERVE_LATENESS_HALT', { generationId: global('TDS_Active_Generation') || "gen:0:0000", halt: true, at: nowSec }); break; 
+                        stageReducerCommand('OBSERVE_LATENESS_HALT', { generationId: global('TDS_Active_Generation') || DEFAULT_GENERATION_ID, halt: true, at: nowSec }); break; 
                     }
                     
                     let simArr = state.time + recTimeBase + timeToBase;
@@ -1567,7 +1656,7 @@ try {
                     s: ["LIFT|" + evId, "IGNORE_WALK|" + evId]
                 };
                 stepConflict = JSON.stringify({ config: { notify: true, notifyTitle: "Walk Limit Reached", notifyText: "Daily walking threshold breached." }, menu: walkMenu });
-                stageReducerCommand('OBSERVE_LATENESS_HALT', { generationId: global('TDS_Active_Generation') || "gen:0:0000", halt: true, at: nowSec }); break; 
+                stageReducerCommand('OBSERVE_LATENESS_HALT', { generationId: global('TDS_Active_Generation') || DEFAULT_GENERATION_ID, halt: true, at: nowSec }); break; 
             }
 
             let testTargetTime = state.time + estTravelSecs;
@@ -1610,16 +1699,16 @@ try {
                     let nTravel = Math.round(nDist / getSpeed("DRIVE")); 
                     simTime += nTravel;
                     
-                    let nTarget = forceSeconds(nEv.start) - (defArrMins * 60);
+                    let nTarget = forceSeconds(nEv.start) - (defArrMins * SECONDS_PER_MIN);
                     if (simTime > nTarget) {
-                        lookAheadLate = Math.ceil((simTime - nTarget) / 60);
+                        lookAheadLate = Math.ceil((simTime - nTarget) / SECONDS_PER_MIN);
                     }
                     break; 
                 }
             }
 
             let doorTarget = isDepart ? (evStart + estTravelSecs) : evStartTarget;
-            let rawDeltaMins = Math.ceil((testTargetTime - doorTarget) / 60);
+            let rawDeltaMins = Math.ceil((testTargetTime - doorTarget) / SECONDS_PER_MIN);
             let timeGapFromNow = evStart - nowSec;
             let engineLateMins = (timeGapFromNow <= RELEVANCE_WINDOW_SECS && Math.abs(rawDeltaMins) <= RAW_DELTA_BOUND_MINS) ? Math.max(0, rawDeltaMins) : 0;
             
@@ -1633,8 +1722,8 @@ try {
                 if (lookAheadLate > 0 && rawDeltaMins <= 0) {
                     latenessStr = "Projected +" + lookAheadLate + "m late for NEXT strict event";
                 } else {
-                    let actualLateMins = Math.ceil((testTargetTime - doorTarget) / 60);
-                    let remBufferMins = Math.floor((doorTarget - testTargetTime) / 60);
+                    let actualLateMins = Math.ceil((testTargetTime - doorTarget) / SECONDS_PER_MIN);
+                    let remBufferMins = Math.floor((doorTarget - testTargetTime) / SECONDS_PER_MIN);
                     latenessStr = (remBufferMins > 0) ? ("Buffer: " + remBufferMins + "m") : ("No buffer, " + Math.max(0, actualLateMins) + "m late");
                 }
                 
@@ -1673,16 +1762,16 @@ try {
                     }
                     
                     let currentStateObj = { time: state.time, loc: state.loc, carLoc: state.carLoc };
-                    let tArr = simulateChainArrival(i, i, currentStateObj, "TRANSIT", null); let tLate = Math.max(0, Math.ceil((tArr - doorTarget) / 60));
+                    let tArr = simulateChainArrival(i, i, currentStateObj, "TRANSIT", null); let tLate = Math.max(0, Math.ceil((tArr - doorTarget) / SECONDS_PER_MIN));
                     if (routeToEv.mode === "DRIVE") {
                         rawOptions.push({ label: "Park & take Transit" + getFlag("TRANSIT"), payload: "TRANSIT|" + evId + "|" + routeSig, late: tLate });
-                        let wArr = simulateChainArrival(i, i, currentStateObj, "WALK", null); let wLate = Math.max(0, Math.ceil((wArr - doorTarget) / 60));
+                        let wArr = simulateChainArrival(i, i, currentStateObj, "WALK", null); let wLate = Math.max(0, Math.ceil((wArr - doorTarget) / SECONDS_PER_MIN));
                         rawOptions.push({ label: "Park & Walk from here" + getFlag("WALK"), payload: "WALK|" + evId + "|" + routeSig, late: wLate });
                     } else {
                         rawOptions.push({ label: "Take Transit instead" + getFlag("TRANSIT"), payload: "TRANSIT|" + evId + "|" + routeSig, late: tLate });
-                        let lArr = simulateChainArrival(i, i, currentStateObj, "LIFT", null); let lLate = Math.max(0, Math.ceil((lArr - doorTarget) / 60));
+                        let lArr = simulateChainArrival(i, i, currentStateObj, "LIFT", null); let lLate = Math.max(0, Math.ceil((lArr - doorTarget) / SECONDS_PER_MIN));
                         rawOptions.push({ label: "Take Lift instead" + getFlag("LIFT"), payload: "LIFT|" + evId + "|" + routeSig, late: lLate });
-                        let dArr = simulateChainArrival(i, i, currentStateObj, "DRIVE", null); let dLate = Math.max(0, Math.ceil((dArr - doorTarget) / 60));
+                        let dArr = simulateChainArrival(i, i, currentStateObj, "DRIVE", null); let dLate = Math.max(0, Math.ceil((dArr - doorTarget) / SECONDS_PER_MIN));
                         rawOptions.push({ label: "Get Car now & Drive" + getFlag("DRIVE"), payload: "DRIVE_CHAIN|" + evId + "~" + tailId + "|" + routeSig, late: dLate });
                     }
 
@@ -1712,7 +1801,7 @@ try {
                         let pIsEssential = pEv.isEssential || /(#essential)/i.test((pEv.title || "") + " " + (pEv.desc || ""));
                         
                         if (routeToEv.mode !== "DRIVE") {
-                            let cArrD = simulateChainArrival(k, i, currentStateObj, "DRIVE", null); let cLateD = Math.max(0, Math.ceil((cArrD - doorTarget) / 60));
+                            let cArrD = simulateChainArrival(k, i, currentStateObj, "DRIVE", null); let cLateD = Math.max(0, Math.ceil((cArrD - doorTarget) / SECONDS_PER_MIN));
                             rawOptions.push({ label: "Get Car before " + pTitle + " & Drive", payload: "DRIVE_CHAIN|" + pId + "~" + tailId, late: cLateD });
                         }
                         
@@ -1730,7 +1819,7 @@ try {
                         let evalStart = forceSeconds(pEv.start);
                         if (pId.indexOf("_OUT") !== -1) evalStart = Math.min(nowSec, forceSeconds(pEv.start) - EARLY_EOD_EVAL_WINDOW_SECS); 
 
-                        let deadDrop = pEnd - ((engineLateMins - Math.max(0, Math.ceil((simulateChainArrival(k, i, currentStateObj, routeToEv.mode, pId) - doorTarget) / 60))) * 60);
+                        let deadDrop = pEnd - ((engineLateMins - Math.max(0, Math.ceil((simulateChainArrival(k, i, currentStateObj, routeToEv.mode, pId) - doorTarget) / SECONDS_PER_MIN))) * SECONDS_PER_MIN);
 
                         if (deadDrop < pEnd && deadDrop > evalStart) {
                             let simTrim = simulateScenario(i, { [k]: { trimEnd: deadDrop } });
@@ -1738,7 +1827,7 @@ try {
                                 let globalLateReduction = engineLateMins - Math.max(simTrim.target.late, simTrim.maxSpill);
                                 if (simTrim.target.late === 0 || globalLateReduction >= deltaThreshold) {
                                     let dObj = new Date(deadDrop * 1000);
-                                    let timeStr = ("0" + dObj.getHours()).slice(-2) + ":" + ("0" + dObj.getMinutes()).slice(-2);
+                                    let timeStr = ("0" + dObj.getHours()).slice(-TWO_DIGIT_PAD_WIDTH) + ":" + ("0" + dObj.getMinutes()).slice(-TWO_DIGIT_PAD_WIDTH);
                                     rawOptions.push({ label: "Leave '" + pTitle + "' early at " + timeStr, payload: "TRIM_EVENT|" + pId + "~" + deadDrop, late: simTrim.target.late });
                                 }
                             }
@@ -1788,7 +1877,7 @@ try {
                     rootMenu.s.push("HALT_ENGINE");
 
                     stepConflict = JSON.stringify({ config: { notify: true, notifyTitle: "⚠️ Late: " + safeUIEvTitle, notifyText: "Projected: " + latenessStr }, menu: rootMenu });
-                    stageReducerCommand('OBSERVE_LATENESS_HALT', { generationId: global('TDS_Active_Generation') || "gen:0:0000", halt: true, at: nowSec }); queue = []; skipIdx = idx; blockMode = null; break; 
+                    stageReducerCommand('OBSERVE_LATENESS_HALT', { generationId: global('TDS_Active_Generation') || DEFAULT_GENERATION_ID, halt: true, at: nowSec }); queue = []; skipIdx = idx; blockMode = null; break; 
                 } 
             }
 
@@ -1825,7 +1914,7 @@ try {
                 apiTimeType = "ACTIVE_TRAVEL";
             }
 
-            let holdUntil = parseInt(global('TDS_Hold_Until'), 10) || 0;
+            let holdUntil = parseInt(global('TDS_Hold_Until'), 10) || HOLD_UNTIL_UNSET_SECS;
             if (i === idx && holdUntil > nowSec) {
                 trueDepartureTime = Math.max(trueDepartureTime, holdUntil);
             }
@@ -1921,7 +2010,7 @@ try {
         // skip/conflict/notification controls travel as one JSON document.
         // Tasker Variable Split never processes it; the Compiler parses it.
         setLocal('block_queue', JSON.stringify({
-            schemaVersion: 1,
+            schemaVersion: TYPED_QUEUE_SCHEMA_VERSION,
             rows: queue,
             eof: false,
             skipIdxUntil: skipIdx,

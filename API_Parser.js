@@ -192,6 +192,9 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
                 component: "API_Parser", severity: "warn", code: "API_METRICS_INVALID", tripId: null,
                 details: { durationSecs: dur, distanceMeters: distM, reason: "nonpositive_or_out_of_range" } }));
             setLocal('api_return_json', '{}');
+            setLocal('api_duration_secs', '');
+            setLocal('api_distance_miles', '');
+            setLocal('api_transit_steps', '');
             setLocal('par1', '');
             setLocal('par2', '');
             writeFile(DATA_ROOT + "temp_payload.json", "{}", false);
@@ -227,6 +230,9 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
             component: "API_Parser", severity: "error", code: "API_PARSER_FAULT", tripId: null,
             details: { message: String(e && e.message || e) } }));
         setLocal('api_return_json', '{}');
+        setLocal('api_duration_secs', '');
+        setLocal('api_distance_miles', '');
+        setLocal('api_transit_steps', '');
         setLocal('par1', '');
         setLocal('par2', '');
         try { writeFile(DATA_ROOT + "temp_payload.json", "{}", false); } catch(err){}

@@ -51,6 +51,17 @@ try {
     return coords || (homeCoords || "");
   }
 
+  // INV-0.2: DST-safe LOCAL planning-day label. The device timezone is the
+  // configured timezone; local getters resolve the day exactly, so (y, m, d)
+  // equality is DST-safe by construction (mirrors Sandbox_Engine/Dispatcher).
+  function localPlanningDay(targetUnixSecs) {
+    let d = new Date(targetUnixSecs * 1000);
+    let y = d.getFullYear();
+    let m = ("0" + (d.getMonth() + 1)).slice(-2);
+    let day = ("0" + d.getDate()).slice(-2);
+    return y + "-" + m + "-" + day;
+  }
+
   // ------------------------------------------------------------------
   // Parse input events
   // ------------------------------------------------------------------
@@ -100,9 +111,18 @@ try {
 
   for (let i = 0; i < events.length; i++) {
     let ev = events[i];
+    // P1-6 / CLUSTER-12: a group never crosses the local planning day.
+    let evDay = (typeof ev.start === "number" && isFinite(ev.start)) ? localPlanningDay(ev.start) : null;
     if (isDropin(ev)) {
+      if (currentGroup && currentGroup.planningDay !== null && evDay !== null
+          && currentGroup.planningDay !== evDay) {
+        flashLog("warn", "CLUSTER_SPLIT_DAY_BOUNDARY", {
+          index: groups.length + 1, fromDay: currentGroup.planningDay, toDay: evDay
+        });
+        flushGroup();
+      }
       if (!currentGroup) {
-        currentGroup = { waypoints: [], skippedIds: [], prevNonDropin: lastAnchor, nextNonDropin: null };
+        currentGroup = { waypoints: [], skippedIds: [], prevNonDropin: lastAnchor, nextNonDropin: null, planningDay: evDay };
       }
       // Only include waypoints with usable coords
       if (ev.coords && ev.coords !== UNUSABLE_COORDS) {
@@ -119,8 +139,18 @@ try {
     } else {
       lastAnchor = ev;
       if (currentGroup) {
-        currentGroup.nextNonDropin = ev;
-        flushGroup();
+        // A destination anchor on a different local day must not combine with
+        // the prior-day dropins: close the group as a tail (BASE) instead.
+        if (currentGroup.planningDay !== null && evDay !== null
+            && currentGroup.planningDay !== evDay) {
+          flashLog("warn", "CLUSTER_SPLIT_DAY_BOUNDARY", {
+            index: groups.length + 1, fromDay: currentGroup.planningDay, toDay: evDay
+          });
+          flushGroup();
+        } else {
+          currentGroup.nextNonDropin = ev;
+          flushGroup();
+        }
       }
     }
   }

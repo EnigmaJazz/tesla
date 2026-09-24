@@ -2,7 +2,8 @@
 // Covers: consecutive-dropin grouping, next-main destination, BASE tail
 // destination (raw_base_data field 2 / Home_Coords fallback), forced
 // dropinOrder passthrough, multi-group index selection + eof, no-dropin days,
-// unusable-coords waypoint skips (per-event + whole group), malformed input.
+// unusable-coords waypoint skips (per-event + whole group), malformed input,
+// local planning-day boundary splits (P1-6 / CLUSTER-12).
 
 process.env.TZ = 'UTC';
 const assert = require('node:assert/strict');
@@ -169,6 +170,40 @@ try {
   assert(c && c.destination.id === 'main_a_kx8f00', 'missing idx must stage the first cluster');
 } catch (e) { fail('missing cluster_idx: ' + e.message); }
 
+// SCN-13 (P1-6 / CLUSTER-12): consecutive dropins straddling local midnight
+// must NOT merge — the chain terminates at the local planning day. TZ=UTC:
+// 1700006100 = 2023-11-14T23:55Z, 1700006700 = 2023-11-15T00:05Z.
+try {
+  const nov14Late = ev('drop1_m5xg00', 'Shop', d1Coords, { isDropin: true, desc: '#dropin', start: 1700006100 });
+  const nov15Early = ev('drop2_n6yh11', 'Bank', d2Coords, { isDropin: true, desc: '#dropin', start: 1700006700 });
+  const nov15Main = ev('main_b_lx8g01', 'Gym', bCoords, { start: 1700010000 });
+  const store = make([mainA, nov14Late, nov15Early, nov15Main]);
+  assert.strictEqual(store.locals['cluster_count'], '2', 'cross-midnight dropins must produce two clusters');
+  assert(hasCode(store, 'CLUSTER_SPLIT_DAY_BOUNDARY'), 'the day-boundary split must be logged');
+
+  const c1 = parsedCluster(store);
+  assert.strictEqual(c1.destination.id, 'BASE', 'prior-day cluster must terminate at BASE');
+  assert.strictEqual(c1.waypoints.length, 1, 'first cluster carries only the prior-day dropin');
+  assert.strictEqual(c1.waypoints[0].id, 'drop1_m5xg00', 'first cluster waypoint id');
+
+  const store2 = make([mainA, nov14Late, nov15Early, nov15Main], { cluster_idx: '2' });
+  const c2 = parsedCluster(store2);
+  assert.strictEqual(c2.destination.id, 'main_b_lx8g01', 'next-day cluster destination is the next-day anchor');
+  assert.strictEqual(c2.waypoints.length, 1, 'second cluster carries only the next-day dropin');
+  assert.strictEqual(c2.waypoints[0].id, 'drop2_n6yh11', 'second cluster waypoint id');
+} catch (e) { fail('cross-midnight split: ' + e.message); }
+
+// SCN-14: same-day control — two dropins on the same local day still group.
+try {
+  const d1 = ev('drop1_m5xg00', 'Shop', d1Coords, { isDropin: true, desc: '#dropin', start: 1700006100 });
+  const d2 = ev('drop2_n6yh11', 'Bank', d2Coords, { isDropin: true, desc: '#dropin', start: 1700006300 });
+  const store = make([mainA, d1, d2, mainB]);
+  assert.strictEqual(store.locals['cluster_count'], '1', 'same-day dropins must stay one cluster');
+  const c = parsedCluster(store);
+  assert.strictEqual(c.waypoints.length, 2, 'same-day control keeps both waypoints');
+  assert(!hasCode(store, 'CLUSTER_SPLIT_DAY_BOUNDARY'), 'same-day grouping must not log a day-boundary split');
+} catch (e) { fail('same-day control: ' + e.message); }
+
 if (failures > 0) { console.log('FAIL: cluster-builder — ' + failures + ' group(s) failed'); process.exit(1); }
-console.log('PASS: cluster-builder — grouping, BASE tail, forced order, multi-group eof, waypoint skips, fault handling');
+console.log('PASS: cluster-builder — grouping, BASE tail, forced order, multi-group eof, waypoint skips, fault handling, day-boundary splits');
 process.exit(0);

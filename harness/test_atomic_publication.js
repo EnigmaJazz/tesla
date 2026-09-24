@@ -428,7 +428,10 @@ function testReadersRequireCommittedState() {
   runScript(DISPATCHER, sandbox, store);
   if (store.runError) throw new Error(store.runError.message);
   assert.strictEqual(sandbox.local('itin_mode1'), 'NONE', 'Dispatcher must treat building manifest as empty');
-  assert(store.flashLog.some(function (f) { return f.indexOf('IDLE_SYNC_ENGAGED') !== -1; }), 'Dispatcher should idle-sync with building manifest');
+  // R4: a not-yet-committed (building) manifest is an absent generation, not a
+  // read failure -> the normal idle sync (never the short retry).
+  assert(store.flashLog.some(function (f) { return f.indexOf('IDLE_SYNC_ENGAGED') !== -1; }), 'Dispatcher should idle-sync when the manifest is not committed');
+  assert(!store.flashLog.some(function (f) { return f.indexOf('GENERATION_READ_UNKNOWN_SYNC') !== -1; }), 'a building manifest must not short-retry');
 
   const committedManifest = JSON.parse(files[MANIFEST]);
   committedManifest.state = 'committed';
@@ -444,8 +447,10 @@ function testEmptyFallback() {
   runScript(DISPATCHER, sandbox, store);
   if (store.runError) throw new Error(store.runError.message);
   assert.strictEqual(sandbox.local('itin_mode1'), 'NONE', 'Dispatcher should see NONE with no manifest');
-  const flash = store.flashLog.find(function (f) { return f.indexOf('IDLE_SYNC_ENGAGED') !== -1; });
-  assert(flash, 'Dispatcher should idle sync with no manifest');
+  // R4: an absent master is a legitimate empty state -> idle, not short retry.
+  const idle = store.flashLog.find(function (f) { return f.indexOf('IDLE_SYNC_ENGAGED') !== -1; });
+  assert(idle, 'Dispatcher should idle-sync when no master exists');
+  assert(!store.flashLog.some(function (f) { return f.indexOf('GENERATION_READ_UNKNOWN_SYNC') !== -1; }), 'an absent master must not short-retry');
 }
 
 function testCutoverProof() {
@@ -692,9 +697,28 @@ function testPlaceholderDispatcherIdle() {
   const { sandbox, store } = createSandbox({ files: {}, globals: { Current_Status: 'Idle', TDS_Active_Generation: activeGen }, nowMs: nowSec * 1000 });
   runScript(DISPATCHER, sandbox, store);
   if (store.runError) throw new Error(store.runError.message);
+  // R4: no master at all -> idle sync with the generation propagated.
   const flash = store.flashLog.find(function (f) { return f.indexOf('IDLE_SYNC_ENGAGED') !== -1; });
   assert(flash, 'expected IDLE_SYNC_ENGAGED flash');
   assert.strictEqual(JSON.parse(flash).generationId, activeGen, 'Dispatcher idle flash must propagate active generation');
+}
+
+function testUnreadableMasterShortRetry() {
+  // R4: a master READ/PARSE failure is UNKNOWN, never an empty day — it must
+  // short-retry with GENERATION_READ_UNKNOWN_SYNC, not idle.
+  const activeGen = 'gen:1700000000:ab12';
+  const DISPATCHER = path.resolve(__dirname, '..', 'Dispatcher.js');
+  const { sandbox, store } = createSandbox({
+    files: { [DATA + 'Itin_Master.json']: '{oops' },
+    globals: { Current_Status: 'Idle', TDS_Active_Generation: activeGen },
+    nowMs: nowSec * 1000
+  });
+  runScript(DISPATCHER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+  const flash = store.flashLog.find(function (f) { return f.indexOf('GENERATION_READ_UNKNOWN_SYNC') !== -1; });
+  assert(flash, 'expected GENERATION_READ_UNKNOWN_SYNC flash for an unreadable master');
+  assert(!store.flashLog.some(function (f) { return f.indexOf('IDLE_SYNC_ENGAGED') !== -1; }), 'an unreadable master must not idle-sync');
+  assert.strictEqual(JSON.parse(flash).generationId, activeGen, 'short-retry flash must propagate the active generation');
 }
 
 function testManifestLastWriteOrder() {
@@ -1150,6 +1174,7 @@ try {
   testPlaceholderSandboxPolicyFallback();
   testPlaceholderDispatcherStale();
   testPlaceholderDispatcherIdle();
+  testUnreadableMasterShortRetry();
   testDepartNowCommandAdapter();
   testReturnToBaseCommandAdapter();
   testManifestLastWriteOrder();
