@@ -15,3 +15,6 @@ Tasker/Tesla/TESLA_CONFIG.json
 # gentle-ai sandbox runtime state. Contains a nested Git repository created by
 # the sandbox tooling; ignoring it keeps it out of review/commit candidates.
 .sandbox-state/
+
+# gentle-ai sandbox skill-registry cache and plugin logs
+.atl/
