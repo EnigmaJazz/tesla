@@ -368,6 +368,23 @@ Cause: an invalid Dispatcher departure can poison dwell comparisons with `NaN`, 
 - **A2 evidence.** Before: `localDayBoundaryUnix(nowSec) + EOD_HORIZON_DAYS * SECONDS_PER_DAY - 1`. After: normalize with `localDayBoundaryUnix`, add `EOD_HORIZON_DAYS` to local date components, then subtract the named `EOD_HORIZON_INCLUSIVE_OFFSET_SECS` (1).
 - **A2 red/green.** With a non-empty TDS master row, instrumented assertions reached the production horizon assignment. Before the fix, spring-forward was 3,599 seconds later than expected and fall-back 3,601 seconds earlier; after, both equal the inclusive second before local midnight eight calendar days ahead.
 
+## P2 work package A — correctness, part 2 (2026-09-24)
+
+Cause: transient request-state read failures and malformed cache roots were mistaken for valid stale/empty state, while rejected or empty optimization results polluted cached ordering or the published timeline.
+
+| ID | Task | Files | Route / specialist | Status |
+|---|---|---|---|---|
+| A3 | Preserve valid API callbacks when request state is unreadable; retain stale cleanup only for missing state | API_Parser.js, harness/test_api_parser.js | route: delegated / general | done |
+| A4 | Treat an empty optimized waypoint index as no optimization | API_Parser.js, harness/test_api_parser.js | route: delegated / general | done |
+| A5 | Abort geocode cache updates when parsed cache root is not an object | Geocode_Updater.js, harness/test_geocode_updater.js | route: delegated / general | done |
+| A6 | Keep rejected zero-duration legs out of published timeline advancement | Compiler.js, harness/test_p2_compiler_timeline.js | route: delegated / general | done |
+
+- **A3 evidence.** Before: `readLatestByCluster()` returned `null` for both missing and unreadable request state, so `correlationOk()` rejected both as stale and overwrote the callback payload with `{}`. After: the parser distinguishes `{state:"ok",value}`, `{state:"missing"}` and `{state:"unreadable"}`; unreadable returns before cache staging, payload overwrite or request consumption and logs `REQUEST_STATE_UNREADABLE` (`warn`). Genuine absence follows the existing `STALE_API_RESPONSE_DISCARDED` cleanup. **Red/green:** before the fix the read-throw test observed `temp_payload.json` changed from its full callback envelope to `{}`; after it passes with payload and request entry retained. The absent-file control proves the stale cleanup remains. Both cases are in the reachable test flow before `process.exit`.
+- **A4 evidence.** Before: the CLUSTER branch tested `optimizedIntermediateWaypointIndex` only for truthiness, so `[]` produced `ORDER_CACHE_UPSERT` with `orderedEventIds: []`. After: that branch requires an array with `length > 0`; the existing preserve-original-order branch handles empty arrays. The non-empty reorder loop is unchanged. **Red/green:** before the fix the reachable test expected `['wp1','wp2']` but got `[]`; after it passes and stages the original waypoint order.
+- **A5 evidence.** Before: after `cache = JSON.parse(raw)`, all parsed JSON values were accepted; an array property write was omitted by `JSON.stringify`. After: `null`, primitives and arrays throw into the existing `GEOCODE_CACHE_CORRUPT_ABORT` path; the cache is not written and `return_value` is `abort:corrupt_cache`. **Red/green:** before the fix the array fixture returned `ok:updated` instead of `abort:corrupt_cache`; after it passes. Existing corrupt-JSON control still asserts byte-identical input and no write.
+- **A6 evidence.** Before: `currentUnix = leg.actualArrival + (leg.dropinDur || 0) + leg.stopPadSecs` ran before `ZERO_DURATION_LEG_REJECTED`, making the following published leg inherit a rejected stop's padding. After: only non-rejected legs advance `currentUnix`; rejection details include `withheldSeconds` (dwell plus padding). **Deliberate rule:** the published timeline is a function of PUBLISHED legs only. Rejection criteria are unchanged. **Red/green:** before the fix the reachable three-invocation attached-chain fixture published C at `1700000720`, 120 seconds late; after it publishes at the concrete expected `1700000600`, and the B rejection log reports `withheldSeconds: 120`.
+- **Verification:** added cases execute before any process exit. API parser, geocode updater and compiler timeline tests pass after their respective fixes; the pre-fix red evidence above was observed for each changed behavior.
+
 ## Next step
 
 User reviews the B→C diff and approves the sandbox apply; the user commits

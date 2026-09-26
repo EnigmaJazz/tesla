@@ -34,17 +34,25 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
     // Request state is manager-owned (documented read-only schema); the parser
     // only reads it for exact correlation and never writes it.
     function readLatestByCluster() {
-        let rawState = readFile(DATA_ROOT + "TDS_Route_Request_State.json");
-        if (!rawState) return null;
+        const statePath = DATA_ROOT + "TDS_Route_Request_State.json";
+        let rawState = "";
+        try { rawState = readFile(statePath); } catch (e) {
+            flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                component: "API_Parser", severity: "warn", code: "FILE_READ_FAILED", tripId: null,
+                details: { path: statePath, reason: String(e && e.message || e) } }));
+            return { state: "unreadable" };
+        }
+        if (!rawState) return { state: "missing" };
+        if (rawState.indexOf("%") === 0) return { state: "unreadable" };
         try {
             let st = JSON.parse(rawState);
-            if (st && st.schemaVersion === 1 && st.latestByCluster) return st.latestByCluster;
+            if (st && st.schemaVersion === 1 && st.latestByCluster) return { state: "ok", value: st.latestByCluster };
         } catch (e) {
             flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
-                component: "API_Parser", severity: "warn", code: "REQUEST_STATE_READ_FAILED", tripId: null,
-                details: { reason: String(e && e.message || e) } }));
+                component: "API_Parser", severity: "warn", code: "FILE_PARSE_FAILED", tripId: null,
+                details: { path: statePath, reason: String(e && e.message || e) } }));
         }
-        return null;
+        return { state: "unreadable" };
     }
 
     // Exact correlation (REQ-5REQID-2): generation MUST equal the active
@@ -61,7 +69,8 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
         if (typeof correlation.clusterId !== "string" || correlation.clusterId.length === 0) return false;
         if (typeof correlation.requestId !== "string" || correlation.requestId.length === 0) return false;
         let latest = readLatestByCluster();
-        let rec = latest ? latest[correlation.clusterId] : null;
+        if (latest.state === "unreadable") return null;
+        let rec = latest.state === "ok" ? latest.value[correlation.clusterId] : null;
         if (!rec) return false;
         if (rec.requestId !== correlation.requestId) return false;
         if ((rec.generationId || null) !== corrGen) return false;
@@ -92,7 +101,13 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
             if (staged && typeof staged === "object" && !Array.isArray(staged) && typeof staged.response === "object" && !Array.isArray(staged.response)) res = staged.response;
         }
 
-        if (!correlationOk(correlation)) {
+        let correlationState = correlationOk(correlation);
+        if (correlationState === null) {
+            flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                component: "API_Parser", severity: "warn", code: "REQUEST_STATE_UNREADABLE", tripId: null, details: { reason: "request state could not be read" } }));
+            return;
+        }
+        if (!correlationState) {
             logEvt("STALE_API_RESPONSE_DISCARDED", "warn", { reason: "correlation mismatch", correlation: correlation || null });
             setLocal('par1', '');
             setLocal('par2', '');
@@ -128,7 +143,7 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
 
             let orderedIds = [];
             
-            if (res.routes && res.routes.length > 0 && res.routes[0].optimizedIntermediateWaypointIndex) {
+            if (res.routes && res.routes.length > 0 && Array.isArray(res.routes[0].optimizedIntermediateWaypointIndex) && res.routes[0].optimizedIntermediateWaypointIndex.length > 0) {
                 let optIndexes = res.routes[0].optimizedIntermediateWaypointIndex;
                 for (let x = 0; x < optIndexes.length; x++) orderedIds.push(cluster.waypoints[optIndexes[x]].id);
             } else {

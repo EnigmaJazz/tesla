@@ -102,6 +102,7 @@ try {
   if (raw && raw.charAt(0) !== "%") {
     try {
       cache = JSON.parse(raw);
+      if (!cache || typeof cache !== "object" || Array.isArray(cache)) throw new Error("cache root must be a plain object");
     } catch (e) {
       flashLog("error", "GEOCODE_CACHE_CORRUPT_ABORT", { reason: String(e && e.message || e) });
       setLocal("return_value", "abort:corrupt_cache");

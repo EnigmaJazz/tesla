@@ -189,6 +189,17 @@ try {
   assert.strictEqual(store.files[CACHE], undefined, 'default path must not be written under a custom dataRoot');
 } catch (e) { fail('custom dataRoot: ' + e.message); }
 
+// T12: valid JSON arrays are corrupt cache values and must never be rewritten.
+try {
+  const files = {};
+  files[CACHE] = '[]';
+  const store = make(okResponse, 'Some Place', { files: files });
+  assert.strictEqual(store.locals['return_value'], 'abort:corrupt_cache', 'array cache must abort as corrupt');
+  assert.strictEqual(store.files[CACHE], '[]', 'array cache must remain byte-identical');
+  assert.strictEqual(store.writeOrder.indexOf(CACHE), -1, 'array cache must not be written');
+  assert(hasCode(store, 'GEOCODE_CACHE_CORRUPT_ABORT'), 'array cache must use the corrupt-cache log code');
+} catch (e) { fail('array cache: ' + e.message); }
+
 if (failures > 0) { console.log('FAIL: geocode-updater — ' + failures + ' scenario(s) failed'); process.exit(1); }
 console.log('PASS: geocode-updater — merge+normalize, no-data/invalid/no-result skips, corrupt abort, write failure, empty loc, nonfinite coords, custom dataRoot');
 process.exit(0);

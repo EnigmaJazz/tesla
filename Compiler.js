@@ -646,8 +646,6 @@ function compileTypedRow(row) {
                 leg.actualBuffer = 0;
             }
 
-            currentUnix = leg.actualArrival + (leg.dropinDur || 0) + leg.stopPadSecs;
-
             if (i === cLen - 1) {
                 let oldD = null;
 
@@ -709,17 +707,19 @@ function compileTypedRow(row) {
         }
 
         if (TRAVEL_API_TYPES[leg.apiType] && (leg.durationSecs <= 0 || !(leg.distanceMiles > 0))) {
+            const withheldSeconds = (leg.dropinDur || 0) + leg.stopPadSecs;
             flash(JSON.stringify({
                 timestamp: nowSec,
                 generationId: global('TDS_Active_Generation') || null,
                 component: "Compiler",
-                severity: "WARN",
+                severity: "warn",
                 code: "ZERO_DURATION_LEG_REJECTED",
                 tripId: leg.targetEventId || null,
-                details: { apiType: leg.apiType, durationSecs: leg.durationSecs, distanceMiles: leg.distanceMiles, targetTitle: leg.targetTitle }
+                details: { apiType: leg.apiType, durationSecs: leg.durationSecs, distanceMiles: leg.distanceMiles, targetTitle: leg.targetTitle, withheldSeconds: withheldSeconds }
             }));
             continue;
         }
+        currentUnix = leg.actualArrival + (leg.dropinDur || 0) + leg.stopPadSecs;
 
         // Phase 6 (REQ-6STATE-1): departure records are trip-state-only.
         // OBSERVE_DEPARTURE (staged by the Sandbox base-leave caller) is the

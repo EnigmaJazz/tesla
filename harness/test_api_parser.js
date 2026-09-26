@@ -44,7 +44,8 @@ function run(response, opts) {
   };
   const locals = Object.assign({}, baseLocals, opts.locals || {});
   const globals = Object.assign({ TDS_Active_Generation: GEN, User_Loc: '51.9,-2.1' }, opts.globals || {});
-  const { sandbox, store } = createSandbox({ locals: locals, globals: globals, files: files, nowMs: nowSec * 1000 });
+  if (opts.omitRequestState) delete files[DATA + 'TDS_Route_Request_State.json'];
+  const { sandbox, store } = createSandbox({ locals: locals, globals: globals, files: Object.assign(files, opts.files || {}), failures: opts.failures || {}, nowMs: nowSec * 1000 });
   runScript(PARSER, sandbox, store);
   return store;
 }
@@ -117,6 +118,31 @@ try {
   assert.strictEqual(store.locals['api_distance_miles'], '', 'fault case: api_distance_miles must be cleared');
   assert.strictEqual(store.locals['api_transit_steps'], '', 'fault case: api_transit_steps must be cleared');
 } catch (e) { fail('fault case: ' + e.message); }
+
+try {
+  const payloadPath = DATA + 'temp_payload.json';
+  const original = JSON.stringify({ correlation: { generationId: GEN, clusterId: CLUSTER_ID, requestId: REQUEST_ID }, response: route('600s', 1000) });
+  const unreadable = run(route('600s', 1000), { files: { [payloadPath]: original }, failures: { readThrows: ['TDS_Route_Request_State.json'] } });
+  assert.strictEqual(unreadable.files[payloadPath], original, 'unreadable request state must preserve payload');
+  assert(!unreadable.locals.par1, 'unreadable state must not stage a cache command');
+  assert(unreadable.files[DATA + 'TDS_Route_Request_State.json'].indexOf(REQUEST_ID) !== -1, 'unreadable request state must remain available for retry');
+  assert(hasCode(unreadable, 'REQUEST_STATE_UNREADABLE'), 'unreadable state must be logged');
+  const missing = run(route('600s', 1000), { omitRequestState: true, files: { [payloadPath]: original } });
+  assert(hasCode(missing, 'STALE_API_RESPONSE_DISCARDED'), 'missing state must remain stale');
+  assert.strictEqual(missing.files[payloadPath], '{}', 'missing state must clear payload');
+} catch (e) { fail('request-state unreadable/missing: ' + e.message); }
+
+try {
+  const cluster = { origin: '51.9,-2.1', waypoints: [{ id: 'wp1' }, { id: 'wp2' }], destination: { id: 'dest1' } };
+  const clusterId = '51.9,-2.1|dest1|wp1,wp2';
+  const files = {};
+  files[DATA + 'TDS_Route_Request_State.json'] = JSON.stringify({ schemaVersion: 1, latestByCluster: { [clusterId]: { requestId: REQUEST_ID, generationId: GEN } } });
+  files[DATA + 'temp_payload.json'] = JSON.stringify({ correlation: { generationId: GEN, clusterId: clusterId, requestId: REQUEST_ID }, response: { routes: [{ optimizedIntermediateWaypointIndex: [] }] } });
+  const { sandbox, store } = createSandbox({ locals: { api_route_mode: 'CLUSTER', api_cluster_json: JSON.stringify(cluster) }, globals: { TDS_Active_Generation: GEN }, files: files, nowMs: nowSec * 1000 });
+  runScript(PARSER, sandbox, store);
+  assert.strictEqual(sandbox.local('par1'), 'ORDER_CACHE_UPSERT', 'empty index must preserve order through cache command');
+  assert.deepStrictEqual(JSON.parse(sandbox.local('par2')).orderedEventIds, ['wp1', 'wp2'], 'empty index must retain original waypoint order');
+} catch (e) { fail('empty optimized waypoint index: ' + e.message); }
 
 if (failures > 0) { console.log('FAIL: api-parser — ' + failures + ' scenario(s) failed'); process.exit(1); }
 console.log('PASS: api-parser — metrics rejection clears derived locals, stages empty json and no cache command; valid control stages it');
