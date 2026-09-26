@@ -180,7 +180,7 @@ try {
   assert.strictEqual(r1.local('cache_hit'), 'true', 'master cache hit must set cache_hit');
   const api = JSON.parse(r1.local('api_return_json'));
   assert.strictEqual(api.durationSecs, 1800, 'master hit must return the Welford mean 1800');
-  assert.strictEqual(api.distanceMiles, (12000 / METERS_PER_MILE).toFixed(1), 'master hit distanceMiles must be miles (1dp)');
+  assert.strictEqual(api.distanceMiles, (12000 / METERS_PER_MILE).toFixed(3), 'master hit distanceMiles must be miles (3dp)');
   assert.strictEqual(api.distanceMeters, Math.round((12000 / METERS_PER_MILE) * METERS_PER_MILE), 'master hit distanceMeters must round-trip to 12000');
   assert(api.transitSteps.indexOf('Master Cache') !== -1, 'master hit must cite the master cache source');
   assert(!s1.writeLog.some(function (w) { return w.path.indexOf('RouteCache') !== -1 || w.path.indexOf('Temp_Route_Cache') !== -1; }),

@@ -48,6 +48,7 @@ const TYPED_QUEUE_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Unit-conversion and leg-default constants (AGENTS.md: no magic numbers).
 const SECONDS_PER_MIN = 60;             // minutes -> seconds
 const MILES_DECIMAL_PLACES = 3;         // short local-estimate distance precision
+const ARRIVAL_EVENT_ID_SUFFIX = "_IN";
 const DEFAULT_DROPIN_DURATION_SECS = 0; // master event duration unset fallback
 const HOLD_UNTIL_UNSET_SECS = 0;        // TDS_Hold_Until unset fallback
 
@@ -523,7 +524,7 @@ function compileTypedRow(row) {
                 } else {
                     let prevEnd = parseInt(pEv.end, 10);
 
-                    if (pId.indexOf("_IN") !== -1 && pEv.deadline) {
+                    if (pId.slice(-ARRIVAL_EVENT_ID_SUFFIX.length) === ARRIVAL_EVENT_ID_SUFFIX && pEv.deadline) {
                         prevEnd = parseInt(pEv.deadline, 10);
                     }
 

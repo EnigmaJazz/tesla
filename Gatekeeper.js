@@ -25,6 +25,7 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
 
 (function() {
     const METERS_PER_MILE = 1609.344; // Slice D: JSON distanceMiles field unit
+    const DISTANCE_MILES_DECIMAL_PLACES = 3;
     const CACHE_MODE_WALK = "WALK";   // route-entry mode constant (manager parity)
     // Named sentinels/windows (AGENTS.md: no magic numbers).
     const UNUSABLE_COORDS = "0,0";
@@ -295,7 +296,7 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
 
                 if (cachedDurSecs !== -1) {
                     setLocal('cache_hit', 'true');
-                    setLocal('api_return_json', JSON.stringify({ durationSecs: cachedDurSecs, distanceMeters: Math.round(cachedDistM * METERS_PER_MILE), distanceMiles: cachedDistM.toFixed(1), transitSteps: "⚡ Resolved via " + cacheSource }));
+                    setLocal('api_return_json', JSON.stringify({ durationSecs: cachedDurSecs, distanceMeters: Math.round(cachedDistM * METERS_PER_MILE), distanceMiles: cachedDistM.toFixed(DISTANCE_MILES_DECIMAL_PLACES), transitSteps: "⚡ Resolved via " + cacheSource }));
                 }
             }
         }

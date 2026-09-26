@@ -140,8 +140,9 @@ try {
   files[DATA + 'temp_payload.json'] = JSON.stringify({ correlation: { generationId: GEN, clusterId: clusterId, requestId: REQUEST_ID }, response: { routes: [{ optimizedIntermediateWaypointIndex: [] }] } });
   const { sandbox, store } = createSandbox({ locals: { api_route_mode: 'CLUSTER', api_cluster_json: JSON.stringify(cluster) }, globals: { TDS_Active_Generation: GEN }, files: files, nowMs: nowSec * 1000 });
   runScript(PARSER, sandbox, store);
-  assert.strictEqual(sandbox.local('par1'), 'ORDER_CACHE_UPSERT', 'empty index must preserve order through cache command');
-  assert.deepStrictEqual(JSON.parse(sandbox.local('par2')).orderedEventIds, ['wp1', 'wp2'], 'empty index must retain original waypoint order');
+  assert.strictEqual(sandbox.local('par1'), '', 'empty index must not stage an order-cache command');
+  assert.strictEqual(sandbox.local('par2'), '', 'empty index must not stage an order-cache payload');
+  assert(logs(store).some(function (entry) { return entry.code === 'CLUSTER_ORDER_UNOPTIMIZED' && entry.severity === 'warn'; }), 'empty index must log CLUSTER_ORDER_UNOPTIMIZED');
 } catch (e) { fail('empty optimized waypoint index: ' + e.message); }
 
 if (failures > 0) { console.log('FAIL: api-parser — ' + failures + ' scenario(s) failed'); process.exit(1); }

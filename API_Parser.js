@@ -30,6 +30,7 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
     // Gatekeeper.js — 1609.344, not 1609.34.
     const METERS_PER_MILE = 1609.344;
     const MAX_DISTANCE_METERS = 5000000;
+    const DISTANCE_MILES_DECIMAL_PLACES = 3;
 
     // Request state is manager-owned (documented read-only schema); the parser
     // only reads it for exact correlation and never writes it.
@@ -143,14 +144,25 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
 
             let orderedIds = [];
             
-            if (res.routes && res.routes.length > 0 && Array.isArray(res.routes[0].optimizedIntermediateWaypointIndex) && res.routes[0].optimizedIntermediateWaypointIndex.length > 0) {
+            const hasUsableOptimization = res.routes && res.routes.length > 0
+                && Array.isArray(res.routes[0].optimizedIntermediateWaypointIndex)
+                && res.routes[0].optimizedIntermediateWaypointIndex.length > 0;
+            if (hasUsableOptimization) {
                 let optIndexes = res.routes[0].optimizedIntermediateWaypointIndex;
                 for (let x = 0; x < optIndexes.length; x++) orderedIds.push(cluster.waypoints[optIndexes[x]].id);
             } else {
                 for (let k = 0; k < cluster.waypoints.length; k++) orderedIds.push(cluster.waypoints[k].id);
             }
             
-            let finalOrderStr = orderedIds.join(",");
+            if (!hasUsableOptimization) {
+                flash(JSON.stringify({ timestamp: Math.floor(Date.now() / 1000), generationId: global('TDS_Active_Generation') || null,
+                    component: "API_Parser", severity: "warn", code: "CLUSTER_ORDER_UNOPTIMIZED", tripId: null,
+                    details: { clusterId: correlation && correlation.clusterId || null, reason: "usable optimization unavailable" } }));
+                setLocal('par1', '');
+                setLocal('par2', '');
+                writeFile(DATA_ROOT + "temp_payload.json", "{}", false);
+                return;
+            }
             // Phase 5 Slice B (REQ-5CACHE-1): API Parser never writes the order
             // cache directly. It stages ORDER_CACHE_UPSERT; Route_Cache_Manager
             // owns TDS_Order_Cache.json/.txt and re-stages ENQUEUE_REORDER for
@@ -216,7 +228,7 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
             return;
         }
 
-        let resultObj = { durationSecs: dur, distanceMeters: distM, distanceMiles: (distM / METERS_PER_MILE).toFixed(1), transitSteps: stepsStr.length > 0 ? ("\n" + stepsStr) : "" };
+        let resultObj = { durationSecs: dur, distanceMeters: distM, distanceMiles: (distM / METERS_PER_MILE).toFixed(DISTANCE_MILES_DECIMAL_PLACES), transitSteps: stepsStr.length > 0 ? ("\n" + stepsStr) : "" };
         setLocal('api_return_json', JSON.stringify(resultObj));
         
         let nowSec = Math.floor(Date.now() / 1000);

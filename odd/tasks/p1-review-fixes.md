@@ -385,6 +385,21 @@ Cause: transient request-state read failures and malformed cache roots were mist
 - **A6 evidence.** Before: `currentUnix = leg.actualArrival + (leg.dropinDur || 0) + leg.stopPadSecs` ran before `ZERO_DURATION_LEG_REJECTED`, making the following published leg inherit a rejected stop's padding. After: only non-rejected legs advance `currentUnix`; rejection details include `withheldSeconds` (dwell plus padding). **Deliberate rule:** the published timeline is a function of PUBLISHED legs only. Rejection criteria are unchanged. **Red/green:** before the fix the reachable three-invocation attached-chain fixture published C at `1700000720`, 120 seconds late; after it publishes at the concrete expected `1700000600`, and the B rejection log reports `withheldSeconds: 120`.
 - **Verification:** added cases execute before any process exit. API parser, geocode updater and compiler timeline tests pass after their respective fixes; the pre-fix red evidence above was observed for each changed behavior.
 
+## P2 work package B — ordering, precision, event IDs (2026-09-24)
+
+Cause: unusable cluster responses were cached as optimizations, one-decimal miles rounded short routes to zero, and Compiler arrival recognition accepted any ID containing the marker _IN.
+
+| ID | Task | Files | Status |
+|---|---|---|---|
+| B1 | Cache cluster order only when the response supplies a usable optimization; otherwise warn and leave cache command unstaged | API_Parser.js, harness/test_p2_ordering_precision_ids.js, harness/test_api_parser.js | done |
+| B2 | Serialize API and Gatekeeper-cache distances to three decimals | API_Parser.js, Gatekeeper.js, harness/test_p2_ordering_precision_ids.js, harness/test_cache_readers.js | done |
+| B3 | Match the exact synthetic-arrival _IN suffix, not substring occurrence | Compiler.js, harness/test_p2_ordering_precision_ids.js | done |
+
+- **B1 evidence.** Before: the CLUSTER parser used original waypoint order when no usable optimization existed and unconditionally staged ORDER_CACHE_UPSERT (API_Parser.js, formerly lines 146–158). After: the same usable-optimization condition gates the cache staging; absent optimization now flashes structured CLUSTER_ORDER_UNOPTIMIZED (warn, epoch-seconds timestamp, clusterId), clears par1/par2, consumes the payload and returns without cache command. **Red/green:** the reachable no-routes regression failed before the fix because par1 was ORDER_CACHE_UPSERT; after it asserts no command/payload and the warning. The optimized [1,0] control still stages [wp2,wp1]; empty-index legacy coverage was updated to expect no cache command.
+- **B2 evidence.** Before: API_Parser .toFixed(1) and Gatekeeper cache-hit .toFixed(1) serialized a 50 m route as 0.0. After: each file defines DISTANCE_MILES_DECIMAL_PLACES = 3 and uses it at serialization; Compiler.js already uses named MILES_DECIMAL_PLACES = 3 for its local estimate. The direct API response and Gatekeeper cache-hit now preserve positive sub-80 m miles; a 2 km route remains 1.243. The legacy cache-reader assertion now expects 3dp. **Red/green:** the regression test failed before the fix because API_Parser returned a nonpositive rounded metric; after, the API and Gatekeeper cache-hit assertions pass with positive distance and the multi-km controls remain unchanged.
+- **B3 evidence.** Before: if (pId.indexOf("_IN") !== -1 && pEv.deadline) treated dinner_IN_city_kx8f00 as arrival. After: named ARRIVAL_EVENT_ID_SUFFIX = "_IN" and suffix-only comparison. The convention is established in source: Alpha.js constructs synthetic arrival IDs as occurrence ID plus exactly "_IN" (id + "_IN" at lines 192 and 196); harness/test_id_parsing.js documents occurrence IDs as <coreId>_<base36StartUnix>. **Red/green:** before the fix the decoy's departure was 1700002300 (deadline-based) instead of 1700000400 (event end + 5-minute buffer); after the decoy is 1700000400, while the exact abc123_kx8f00_IN arrival remains deadline-based at 1700002300.
+- **Verification:** all 41 harness/test_*.js suites PASS under bun, one command per test; git diff --check is clean. No commits were created.
+
 ## Next step
 
 User reviews the B→C diff and approves the sandbox apply; the user commits
