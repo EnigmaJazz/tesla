@@ -354,6 +354,20 @@ comparisons are byte-for-byte unchanged.
   - `new Date(x * 1000)` / `getTime() / 1000` / `Math.floor(Date.now() / 1000)` — the repo's inline epoch-conversion idiom.
   - `0`, `1`, `-1`, `10` (parseInt radix), `NaN`, `null`, `""`, `true`/`false` — idiomatic, not magic numbers, per AGENTS.md.
 
+## P2 work package A — correctness, part 1 (2026-09-24)
+
+Cause: an invalid Dispatcher departure can poison dwell comparisons with `NaN`, while fixed-second EOD horizon math drifts from local midnight across DST.
+
+| ID | Task | Files | Route / specialist | Status |
+|---|---|---|---|---|
+| A1 | Break the nav chain and warn when a stop departure or prior arrival is non-finite | Dispatcher.js, harness/test_p2_chain_horizon.js | route: delegated / general | done |
+| A2 | Calculate the EOD horizon by local calendar-day addition | Sandbox_Engine.js, harness/test_p2_chain_horizon.js | route: delegated / general | done |
+
+- **A1 evidence.** Before: `let nextDep = parseInt(nextT.departUnix || nextT.time || 0);`. After: `let nextDep = parseInt(nextT.departUnix || nextT.time || 0, 10);`, followed by a finite-value chain break that flashes `CHAIN_BREAK_INVALID_DEPART` with `warn`, trip/leg identity and departure/arrival details. The existing negative-gap and dwell-length checks are unchanged. The `nextT.time` fallback is explicitly preserved; trailing `|| 0` is also kept, so an absent value retains the old zero/negative-gap break behavior.
+- **A1 red/green.** The malformed-departure test failed before the guard because the payload included both later stops; after the guard it passes with only the head coordinate and the warning present. The time-only control passes and proves a leg without `departUnix` still sequences via `time`.
+- **A2 evidence.** Before: `localDayBoundaryUnix(nowSec) + EOD_HORIZON_DAYS * SECONDS_PER_DAY - 1`. After: normalize with `localDayBoundaryUnix`, add `EOD_HORIZON_DAYS` to local date components, then subtract the named `EOD_HORIZON_INCLUSIVE_OFFSET_SECS` (1).
+- **A2 red/green.** With a non-empty TDS master row, instrumented assertions reached the production horizon assignment. Before the fix, spring-forward was 3,599 seconds later than expected and fall-back 3,601 seconds earlier; after, both equal the inclusive second before local midnight eight calendar days ahead.
+
 ## Next step
 
 User reviews the B→C diff and approves the sandbox apply; the user commits

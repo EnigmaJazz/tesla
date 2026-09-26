@@ -44,6 +44,7 @@ const EARLY_EOD_EVAL_WINDOW_SECS = 14400; // early-EOD evalStart window (4h)
 const CLOSE_UNSET_SENTINEL = 2000000000;  // no-close sentinel (year 2033)
 const DIST_UNKNOWN_SENTINEL = 99999;      // no-base distance sentinel
 const EOD_HORIZON_DAYS = 8;               // sevenDayHorizonSec horizon (8 days)
+const EOD_HORIZON_INCLUSIVE_OFFSET_SECS = 1; // include the final second before the calendar-day boundary
 const DURATION_ESTIMATE_SECS = 3600;       // EOD/event duration fallback estimate
 const CACHE_RECENCY_WINDOW_SECS = 900;     // master-cache recency window (15m)
 const TOD_WRAP_MINUTES = 720;              // tod-diff wrap point (12h)
@@ -615,7 +616,10 @@ try {
     } else {
         let nowSec = Math.floor(Date.now() / 1000);
         let incomingStatus = global('Current_Status') || "Idle";
-        const sevenDayHorizonSec = localDayBoundaryUnix(nowSec) + EOD_HORIZON_DAYS * SECONDS_PER_DAY - 1;
+        const localDayStart = localDayBoundaryUnix(nowSec);
+        const localDayStartDate = new Date(localDayStart * MS_PER_SEC);
+        const horizonDayStartUnix = new Date(localDayStartDate.getFullYear(), localDayStartDate.getMonth(), localDayStartDate.getDate() + EOD_HORIZON_DAYS).getTime() / MS_PER_SEC;
+        const sevenDayHorizonSec = horizonDayStartUnix - EOD_HORIZON_INCLUSIVE_OFFSET_SECS;
 
         let resolvedStatus = incomingStatus;
         let isAtMeeting = false;

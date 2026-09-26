@@ -364,7 +364,20 @@ try {
 
             for (let j = driveIdx + 1; j < master.length; j++) {
                 let nextT = master[j];
-                let nextDep = parseInt(nextT.departUnix || nextT.time || 0);
+                let nextDep = parseInt(nextT.departUnix || nextT.time || 0, 10);
+
+                if (!isFinite(nextDep) || !isFinite(lastArrive)) {
+                    flash(JSON.stringify({
+                        timestamp: Math.floor(Date.now() / 1000),
+                        generationId: global('TDS_Active_Generation') || null,
+                        component: "Dispatcher",
+                        severity: "warn",
+                        code: "CHAIN_BREAK_INVALID_DEPART",
+                        tripId: nextT.tripId || nextT.targetEventId || null,
+                        details: { departUnix: nextT.departUnix, time: nextT.time, lastArrive: lastArrive }
+                    }));
+                    break;
+                }
                 
                 // The Tesla nav payload is DRIVE-only: a non-DRIVE next stop
                 // (WALK/TRANSIT) is a separate navigation mode and never
