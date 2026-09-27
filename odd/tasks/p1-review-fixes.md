@@ -424,3 +424,4 @@ Cause: several regression claims were not discriminating, fault branches lacked 
 
 User reviews the B→C diff and approves the sandbox apply; the user commits
 manually (no broker commit; the repo pre-commit hook blocks broker commits).
+- **Native RDD review (2026-09-27).** Lineage review-829c9e7179f91cc0, tier medium, one lens (review-reliability), 0 findings, approved then acknowledged; authority burned. Reviewed candidate: the B4-B6 commit only (6 files, 285 lines). Coverage defect: a base-ref yields base..HEAD, so the P1, R, S, P2 A and P2 B1-B3 commits cannot be isolated; their accumulated candidate totalled 30 files and 2438 lines and was refused at preflight with lens_context_budget_exceeded. Cause: the review boundary was never advanced per work unit, so the slice passed the reviewer budget before it was ever assessed as sliceable.
