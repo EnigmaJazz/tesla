@@ -16,7 +16,7 @@ const { createSandbox } = require('./mock_tasker');
 const { runScript } = require('./runner');
 const { isSameLocalDay, localDayBoundaryUnix } = require('./day_utils');
 
-const testName = 'DST: LOCAL day-boundary math is correct across UK BST→GMT and GMT→BST transitions';
+const testName = 'DST: local-day helpers and Dispatcher short-dwell chain across midnight';
 
 function fail(msg) {
     console.log('FAIL: ' + testName + ' — ' + msg);
@@ -82,37 +82,30 @@ try {
     );
 
     // -----------------------------------------------------------------
-    // 3. Dispatcher multi-waypoint chain break at the LOCAL midnight
-    //
-    // Old code compared UTC days, so two legs straddling LOCAL midnight
-    // (23:00 BST on 14 Jul → 00:30 BST on 15 Jul, both UTC 14 Jul) would
-    // cluster. The local helper must break the chain at the local boundary.
-    // Stay is 90 min (> 45 min) so the stay fallback cannot mask the result,
-    // and the pair shares a UTC day so a UTC-only implementation would NOT
-    // break — the single waypoint can only come from the local-day check.
+    // 3. Dispatcher chain uses the dwell-length gate, not a local-day gate.
+    // A ten-minute dwell across local midnight is within SHORT_STAY_MINS and
+    // therefore must keep the two-stop payload. This specifically verifies the
+    // user-directed dwell-only rule rather than claiming a day-boundary break.
     // -----------------------------------------------------------------
     const nowSec = Date.parse('2026-07-14T21:50:00Z') / 1000;
 
-    const leg0Arrive = bstEvening;            // local 23:00 BST, 14 Jul
-    const leg1Depart = bstAfterMidnight;      // local 00:30 BST, 15 Jul (same UTC day)
+    const leg0Arrive = Date.parse('2026-07-14T22:55:00Z') / 1000; // local 23:55 BST, 14 Jul
+    const leg1Depart = Date.parse('2026-07-14T23:05:00Z') / 1000; // local 00:05 BST, 15 Jul (10-minute dwell)
 
-    assert.equal(
-        isSameLocalDay(leg0Arrive, leg1Depart),
-        false,
-        'Dispatcher chain-break probe: different LOCAL days despite same UTC date'
-    );
+    assert.equal(isSameLocalDay(leg0Arrive, leg1Depart), false,
+        'fixture must straddle local midnight while remaining on one UTC date');
 
     const chainBreakMaster = JSON.stringify([
         {
             mode: 'DRIVE',
-            departUnix: leg1Depart,
+            departUnix: nowSec + 1800,
             arriveUnix: leg0Arrive,
             targetTitle: 'Leg0',
             targetCoords: '51.0,-1.0'
         },
         {
             mode: 'DRIVE',
-            departUnix: leg1Depart + 3600,
+            departUnix: leg1Depart,
             arriveUnix: leg1Depart + 3600,
             targetTitle: 'Leg1',
             targetCoords: '52.0,-2.0'
@@ -150,8 +143,8 @@ try {
 
     assert.equal(
         waypoints.length,
-        1,
-        'Dispatcher must break multi-waypoint chain at the LOCAL day boundary; expected 1 waypoint, got ' + waypoints.length
+        2,
+        'Dispatcher must keep the chain for a dwell within SHORT_STAY_MINS across local midnight; expected 2 waypoints, got ' + waypoints.length
     );
 
     // -----------------------------------------------------------------
@@ -251,7 +244,7 @@ try {
     console.log('  BST 22:00Z/23:30Z = different local days, same UTC day = false');
     console.log('  localDayBoundaryUnix(1700000000) = ' + boundaryForT1);
     console.log('  BST local midnight = 23:00Z previous UTC day (verified)');
-    console.log('  Dispatcher chain-break waypoints = ' + waypoints.length);
+    console.log('  Dispatcher short-dwell midnight-crossing waypoints = ' + waypoints.length);
     console.log('  DST-local planningDay = ' + dstHead.planningDay + ' (local, typed envelope)');
     process.exit(0);
 } catch (e) {

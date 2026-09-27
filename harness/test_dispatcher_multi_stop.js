@@ -111,6 +111,18 @@ try {
     'a dropin with a long dwell must not sequence the next stop, got: ' + store.locals['tds_next_coords']);
 } catch (e) { fail('dropin long-dwell no carve-out: ' + e.message); }
 
+// SCN-13: a negative gap (next departure before prior arrival) terminates the chain.
+try {
+  const master = [
+    leg('leg0', aCoords, nowSec + 600, nowSec + 1800, '#dropin'),
+    leg('leg1', bCoords, nowSec + 1200, nowSec + 3000, '#dropin'),
+    leg('leg2', cCoords, nowSec + 2400, nowSec + 4200, '#dropin')
+  ];
+  const store = make(master);
+  assert.strictEqual(store.locals['tds_next_coords'], aCoords,
+    'a negative gap must stop the chain before either later coordinate is added, got: ' + store.locals['tds_next_coords']);
+} catch (e) { fail('negative-gap chain break: ' + e.message); }
+
 // SCN-2: broken chain (next stop is a >5h overnight gap) -> single coords.
 try {
   const master = [

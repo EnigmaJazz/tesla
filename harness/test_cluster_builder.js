@@ -154,6 +154,34 @@ try {
   assert(hasCode(store, 'CLUSTER_SKIPPED'), 'per-event skip must be logged');
 } catch (e) { fail('mixed usable waypoints: ' + e.message); }
 
+// SCN-15: a non-array %tds_temp_json is a structured fault, never a cluster.
+try {
+  const store = make([], { tds_temp_json: JSON.stringify({ events: [dropin1] }) });
+  const fault = logs(store).filter(function (l) { return l.code === 'CLUSTER_BUILDER_FAULT'; })[0];
+  assert(fault && fault.details && fault.details.message.indexOf('not an array') !== -1, 'non-array input fault must include its reason');
+  assert.strictEqual(store.locals['par1'], '', 'non-array input must not stage a cluster');
+  assert.strictEqual(store.locals['cluster_count'], '0', 'non-array input must have zero clusters');
+  assert.strictEqual(store.locals['return_value'], 'fault', 'non-array input must be faulted');
+} catch (e) { fail('non-array input: ' + e.message); }
+
+// SCN-16: invalid destination coordinates skip the group with a reason.
+try {
+  const store = make([mainA, dropin1, Object.assign({}, mainB, { coords: '' })]);
+  assert.strictEqual(store.locals['cluster_count'], '0', 'missing destination coordinates must skip the cluster');
+  const skip = logs(store).filter(function (l) { return l.code === 'CLUSTER_SKIPPED' && l.details.reason === 'no_destination_coords'; });
+  assert.strictEqual(skip.length, 1, 'destination skip reason must be flashed');
+  assert.strictEqual(store.locals['par1'], '', 'invalid destination must not stage a cluster');
+} catch (e) { fail('invalid destination coords: ' + e.message); }
+
+// SCN-17: invalid/0,0 origin coordinates skip the group with a reason.
+try {
+  const store = make([Object.assign({}, mainA, { coords: '0,0' }), dropin1, mainB]);
+  assert.strictEqual(store.locals['cluster_count'], '0', 'unusable origin coordinates must skip the cluster');
+  const skip = logs(store).filter(function (l) { return l.code === 'CLUSTER_SKIPPED' && l.details.reason === 'no_origin_coords'; });
+  assert.strictEqual(skip.length, 1, 'origin skip reason must be flashed');
+  assert.strictEqual(store.locals['par1'], '', 'invalid origin must not stage a cluster');
+} catch (e) { fail('invalid origin coords: ' + e.message); }
+
 // SCN-8: malformed %tds_temp_json -> fault, empty staging.
 try {
   const store = make('{not json');
