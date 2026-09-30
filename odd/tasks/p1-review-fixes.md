@@ -420,6 +420,23 @@ Cause: several regression claims were not discriminating, fault branches lacked 
 - **Touched files:** harness/test_dst_utc.js, harness/test_dispatcher_multi_stop.js, harness/test_cluster_builder.js, harness/test_day_helper_drift.js, harness/test_cache_validation_drift.js, and this tracker only. No production files changed and no production probe/temporary edit remains.
 - **Verification:** full harness, one `bun harness/<test>.js` invocation per test file: all 43 `harness/test_*.js` PASS. Runtime was Bun; no dependencies added. No commit was created.
 
+## #26 — Dispatcher actionability horizon replacing the local-day gate (2026-09-30)
+
+Cause: `planningDay` is stamped using the device timezone when the plan is built, while Dispatcher recomputed the current local date from the device's current timezone. A westward timezone change can make a near-term leg's stamped day appear to be in the future; an eastward change can make it appear stale. Comparing those zone-relative labels is not safe for actionability.
+
+| ID | Task | Files | Route / specialist | Status |
+|---|---|---|---|---|
+| #26 | Replace Dispatcher local-day selection rejection with an absolute-time horizon; cover timezone-label drift and all standalone local-day helper copies | Dispatcher.js, harness/test_ac5.js, harness/test_day_helper_drift.js, odd/tasks/p1-review-fixes.md | route: delegated / general | done |
+
+- **Dispatcher before:** `const tripDay = (trip.planningDay || "").trim();`; `const todayDay = localPlanningDay(nowSec);`; `if (tripDay !== "" && tripDay > todayDay) {`.
+- **Dispatcher after:** added `const FUTURE_TRIP_HORIZON_SECS = 86400;` next to the existing constants, with a comment distinguishing it from the later schedule-push gate. The gate is now `if (depUnix - nowSec > FUTURE_TRIP_HORIZON_SECS) {`. The explanatory comment records that `planningDay` is planning-time-zone stamped and the recomputed local date can use a different zone; an absolute-time horizon avoids cross-zone rejection. The existing `FUTURE_TRIP_NOT_DUE` severity, code, trip ID and log details are retained, including `planningDay`, `depUnix`/`nowSec`, and `horizonSecs`.
+- **Behavior change:** a leg on the next local day but within the horizon is now actionable. A leg more than the horizon ahead continues to be rejected with `FUTURE_TRIP_NOT_DUE`.
+- **RED:** before the production change, `bun harness/test_ac5.js` failed the new `dispatcher-future-day-within-horizon-selected` assertion with `'NONE' !== 'DRIVE'`; the far-horizon control and same-day control passed. The new past/zero fall-through check also failed before the change (`past-trip` was `NONE`) because the existing local-day gate rejected the future label.
+- **GREEN:** after the production change, `bun harness/test_ac5.js` reported `ok: dispatcher-future-day-rejection`, `ok: dispatcher-future-day-within-horizon-selected`, `ok: dispatcher-past-and-unparseable-departures-fall-through`, and `ok: dispatcher-today-still-selected`, followed by `PASS: AC-5 — completion isolation, future-day rejection, suppression, handler-only lock cleanup`.
+- **Past and unparseable departure fall-through:** the added test uses a future `planningDay` label for a departure in the past and for `departUnix: 0`, while both retain an arrival inside the existing relevance window. Both are selected through the existing relevance/overdue path and neither emits `FUTURE_TRIP_NOT_DUE`. This verifies that their negative `depUnix - nowSec` values do not satisfy the new horizon comparison.
+- **Drift guard:** expanded `SCRIPTS` to include `Return_to_Base.js` and `Trip_State_Reducer.js`, in addition to the prior six scripts and `harness/day_utils.js`. The guard's existing in-memory `getDate() + 1` mutation probe remains and was observed passing.
+- **Verification:** full harness under Bun, one `bun harness/<test>.js` invocation per test file: all 43 `harness/test_*.js` PASS. No FAIL results. The two requested focused suites, `test_ac5.js` and `test_day_helper_drift.js`, also passed in the full run; the latter reports behavioral agreement across all present copies and detects the in-memory drift probe.
+
 ## Next step
 
 User reviews the B→C diff and approves the sandbox apply; the user commits

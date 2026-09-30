@@ -18,6 +18,7 @@ const { runScript } = require('./runner');
 const nowSec = 1700000000;                    // 2023-11-14T22:13:20Z
 const todayDay = '2023-11-14';
 const tomorrowDay = '2023-11-15';
+const FUTURE_TRIP_HORIZON_SECS = 86400;
 const DATA = 'Tasker/Tesla/Data/';
 const STATE = DATA + 'TDS_Trip_State.json';
 const LOCK = DATA + 'TDS_Action_Lock.json';
@@ -162,8 +163,8 @@ section('dispatcher-future-day-rejection', function () {
     tripId: 'tomorrow_trip',
     targetEventId: 'ev_tomorrow',
     mode: 'DRIVE',
-    departUnix: nowSec + 86400,
-    arriveUnix: nowSec + 86400 + 3600,
+    departUnix: nowSec + FUTURE_TRIP_HORIZON_SECS + 60,
+    arriveUnix: nowSec + FUTURE_TRIP_HORIZON_SECS + 60 + 3600,
     targetTitle: 'Work',
     targetCoords: '52.1,-2.2',
     planningDay: tomorrowDay
@@ -180,9 +181,55 @@ section('dispatcher-future-day-rejection', function () {
   assert(futureFlash, 'Dispatcher must log EVT-FUTURE_TRIP_NOT_DUE');
   assert.strictEqual(futureFlash.tripId, 'tomorrow_trip', 'future-trip log must name the trip');
   assert.strictEqual(futureFlash.details.planningDay, tomorrowDay, 'future-trip log must include the planning day');
+  assert.strictEqual(futureFlash.details.horizonSecs, FUTURE_TRIP_HORIZON_SECS, 'future-trip log must include the selection horizon');
 
   const idle = logs.find(function (l) { return l.code === 'IDLE_SYNC_ENGAGED'; });
   assert(idle, 'Dispatcher must fall back to idle sync when the only candidate is future-day');
+});
+
+section('dispatcher-future-day-within-horizon-selected', function () {
+  const itin = JSON.stringify([{
+    tripId: 'westward-trip',
+    targetEventId: 'ev_westward',
+    mode: 'DRIVE',
+    departUnix: nowSec + 1800,
+    arriveUnix: nowSec + 3600,
+    targetTitle: 'Work',
+    targetCoords: '52.1,-2.2',
+    planningDay: tomorrowDay
+  }]);
+  const { sandbox, store } = make({ [DATA + 'Itin_Master.json']: itin }, dispatcherGlobals, {});
+  runScript(DISPATCHER, sandbox, store);
+  if (store.runError) throw new Error(store.runError.message);
+
+  assert.strictEqual(sandbox.local('itin_mode1'), 'DRIVE', 'future planning-day label within the actionability horizon must be selected');
+  const logs = parseLog(store);
+  const futureFlash = logs.find(function (l) { return l.code === 'FUTURE_TRIP_NOT_DUE'; });
+  assert(!futureFlash, 'future planning-day label within the actionability horizon must not emit EVT-FUTURE_TRIP_NOT_DUE');
+});
+
+section('dispatcher-past-and-unparseable-departures-fall-through', function () {
+  [
+    { tripId: 'past-trip', departUnix: nowSec - 600 },
+    { tripId: 'unknown-departure-trip', departUnix: 0 }
+  ].forEach(function (caseData) {
+    const itin = JSON.stringify([{
+      tripId: caseData.tripId,
+      mode: 'DRIVE',
+      departUnix: caseData.departUnix,
+      arriveUnix: nowSec + 3600,
+      targetTitle: 'Work',
+      targetCoords: '52.1,-2.2',
+      planningDay: tomorrowDay
+    }]);
+    const { sandbox, store } = make({ [DATA + 'Itin_Master.json']: itin }, dispatcherGlobals, {});
+    runScript(DISPATCHER, sandbox, store);
+    if (store.runError) throw new Error(store.runError.message);
+
+    assert.strictEqual(sandbox.local('itin_mode1'), 'DRIVE', caseData.tripId + ' must reach existing relevance/overdue selection');
+    const logs = parseLog(store);
+    assert(!logs.some(function (l) { return l.code === 'FUTURE_TRIP_NOT_DUE'; }), caseData.tripId + ' must not be rejected by the future-trip gate');
+  });
 });
 
 section('dispatcher-today-still-selected', function () {

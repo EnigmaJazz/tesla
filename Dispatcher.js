@@ -17,6 +17,7 @@ if (DATA_ROOT.charAt(DATA_ROOT.length - 1) !== "/") { DATA_ROOT += "/"; }
 const IDLE_SYNC_MINS = 60;  // INV-0.6 AC-10: idle sync default when no actionable trip.
 const SOON_SYNC_MINS = 10;  // Bucket for actionable heads within 30 minutes (replaces the stale-leg 3-min loop).
 const ACTIONABLE_LOOKAHEAD_SECS = 86400;  // First-slice default lookahead; per-leg relevanceDeadlineUnix is second slice.
+const FUTURE_TRIP_HORIZON_SECS = 86400;  // Absolute-time selection horizon; distinct from the later schedule-push gate.
 const RELEVANCE_DEFAULT_SECS = 4 * 3600;  // INV-0.6: fallback relevance window (planned arrival + 4h).
 const RELEVANCE_RECOVERY_SECS = 2 * 3600;  // INV-0.6: recovery leg relevance window (planned arrival + 2h).
 const RELEVANCE_EOD_SECS = 24 * 3600;  // INV-0.6: EOD return remains actionable for the rest of the day.
@@ -261,13 +262,11 @@ try {
         const depUnix = parseInt(trip.departUnix || trip.time || 0, 10) || 0;
 
         if (tripMode === "DRIVE" || tripMode === "EOD_RETURN" || tripMode === "WALK" || tripMode === "TRANSIT" || tripMode === "LIFT") {
-            // AC-5 (Slice B): a leg on a FUTURE local planning day is never
-            // actionable today. Compare day labels lexicographically (YYYY-
-            // MM-DD sorts correctly); prior-day legs fall through to the
-            // stale/relevance logic below rather than being mislabelled.
+            // planningDay is stamped in the planning-time device zone, while
+            // a recomputed local date can use a different zone after travel. The
+            // absolute-time horizon avoids rejecting actionable legs across zones.
             const tripDay = (trip.planningDay || "").trim();
-            const todayDay = localPlanningDay(nowSec);
-            if (tripDay !== "" && tripDay > todayDay) {
+            if (depUnix - nowSec > FUTURE_TRIP_HORIZON_SECS) {
                 flash(JSON.stringify({
                     timestamp: nowSec,
                     generationId: global('TDS_Active_Generation') || null,
@@ -275,7 +274,7 @@ try {
                 severity: "info",
                 code: "FUTURE_TRIP_NOT_DUE",
                     tripId: trip.tripId || null,
-                    details: { planningDay: tripDay, depUnix: depUnix, nowSec: nowSec }
+                    details: { planningDay: tripDay, depUnix: depUnix, nowSec: nowSec, horizonSecs: FUTURE_TRIP_HORIZON_SECS }
                 }));
                 continue;
             }

@@ -8,7 +8,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const ROOT = path.resolve(__dirname, '..');
-const SCRIPTS = ['Alpha.js', 'Sandbox_Engine.js', 'Finaliser.js', 'Compiler.js', 'Dispatcher.js', 'Cluster_Builder.js'];
+const SCRIPTS = ['Alpha.js', 'Sandbox_Engine.js', 'Finaliser.js', 'Compiler.js', 'Dispatcher.js', 'Cluster_Builder.js', 'Return_to_Base.js', 'Trip_State_Reducer.js'];
 const HARNESS_DAY_UTILS = path.join(__dirname, 'day_utils.js');
 const helperNames = ['localPlanningDay', 'localDayBoundaryUnix', 'isSameLocalDay'];
 const instants = [
